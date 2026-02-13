@@ -60,3 +60,18 @@ BITVIBE_BACKEND="https://your-server.example" BITVIBE_APP_TOKEN="optional-token"
 3. Test `Managed` generation and `Revert`.
 4. Test `BYOK` generation with at least one provider.
 5. Rebuild + extension reload before re-testing code changes.
+
+## Playwright audit scripts
+
+- `npm run audit:smoke` -> deterministic UI smoke run with screenshot artefacts.
+- `npm run audit:live` -> optional live managed/BYOK verification using secrets.
+- `npm run audit:install` -> installs Chromium for local Playwright runs.
+
+Audit output root:
+
+- `output/playwright/audits/`
+
+Secrets for live audits:
+
+- keep in `.env.audit` (gitignored) or process environment variables.
+- template: `.env.audit.example`.

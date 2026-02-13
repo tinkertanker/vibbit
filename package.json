@@ -6,6 +6,12 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:watch": "node --watch scripts/build.mjs",
-    "package": "npm run build && node scripts/package.mjs"
+    "package": "npm run build && node scripts/package.mjs",
+    "audit:smoke": "node scripts/audit/smoke.mjs",
+    "audit:live": "node scripts/audit/live.mjs",
+    "audit:install": "npx playwright install chromium"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2"
   }
 }

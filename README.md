@@ -121,6 +121,39 @@ This builds first, then creates:
    - confirm generation and paste both work
 7. If updating config values (`BITVIBE_BACKEND` or `BITVIBE_APP_TOKEN`), rebuild and reload the extension.
 
+## Playwright audits
+
+Two audit tiers are available:
+
+1. `npm run audit:smoke`
+   - No secrets needed.
+   - Runs build/package checks and captures UI smoke screenshots.
+2. `npm run audit:live`
+   - Optional live checks for managed backend and BYOK provider calls.
+   - Reads secrets from environment variables or `.env.audit`.
+
+Install browser support once:
+
+```bash
+npm run audit:install
+```
+
+Smoke audit:
+
+```bash
+npm run audit:smoke
+```
+
+Live audit with secrets:
+
+```bash
+cp .env.audit.example .env.audit
+# edit .env.audit with real values
+npm run audit:live
+```
+
+Audit artefacts are written under `output/playwright/audits/<run-id>/` and are ignored from Git.
+
 ## Bookmarklet usage
 
 You can also run `work.js` as a bookmarklet payload. The same panel supports both `Managed` and `BYOK` modes.

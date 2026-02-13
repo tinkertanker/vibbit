@@ -1,3 +1,7 @@
 dist/
 artifacts/
 node_modules/
+output/playwright/
+.DS_Store
+.env.audit
+.env.audit.local
