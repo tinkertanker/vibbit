@@ -30,24 +30,24 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const ui = document.createElement("div");
   ui.id = "bitvibe-panel";
-  ui.style.cssText = "position:fixed;right:12px;bottom:12px;width:460px;max-height:84vh;overflow:auto;background:#0b1020;color:#e6e8ef;font-family:system-ui,Segoe UI,Arial,sans-serif;border:1px solid #21304f;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:none;flex-direction:column;z-index:2147483647";
+  ui.style.cssText = "position:fixed;right:12px;bottom:12px;width:460px;max-height:84vh;overflow:auto;background:#0b1020;color:#e6e8ef;font-family:system-ui,Segoe UI,Arial,sans-serif;border:1px solid #21304f;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:none;flex-direction:column;z-index:2147483647;transform-origin:bottom right;transition:transform .2s ease,opacity .2s ease";
   ui.innerHTML = ""
     + '<div id="h" style="cursor:move;display:flex;align-items:center;padding:10px 12px;background:#111936;border-bottom:1px solid #21304f">'
     + '  <span style="font-weight:600;font-size:13px">bit:vibe</span>'
     + '  <span id="status" style="margin-left:10px;font-size:11px;color:#9bb1dd">Idle</span>'
-    + '  <button id="x" style="margin-left:auto;background:transparent;border:none;color:#93a4c4;font-size:16px;cursor:pointer">x</button>'
+    + '  <button id="x" aria-label="Close" style="margin-left:auto;background:transparent;border:none;color:#93a4c4;cursor:pointer;padding:4px;display:flex;align-items:center"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg></button>'
     + "</div>"
     + '<div style="padding:10px 12px;display:grid;gap:8px;border-bottom:1px solid #21304f">'
     + '  <div style="display:grid;gap:6px">'
     + '    <div style="font-size:11px;color:#9eb2ff;text-transform:uppercase;letter-spacing:0.08em">Mode</div>'
-    + '    <select id="mode" style="padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef">'
+    + '    <select id="mode" style="padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef;cursor:pointer">'
     + '      <option value="managed">Managed (school account)</option>'
     + '      <option value="byok">Bring your own key</option>'
     + "    </select>"
     + "  </div>"
     + '  <div id="managedHint" style="font-size:12px;color:#b8c6e8">Managed mode uses your configured backend at <span style="color:#d5e4ff">BACKEND</span>.</div>'
     + '  <div id="byokRow" style="display:none;gap:8px">'
-    + '    <select id="prov" style="flex:1;padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef">'
+    + '    <select id="prov" style="flex:1;padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef;cursor:pointer">'
     + '      <option value="openai">OpenAI</option>'
     + '      <option value="gemini">Gemini</option>'
     + '      <option value="openrouter">OpenRouter</option>'
@@ -59,12 +59,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '    <button id="save" style="padding:8px 12px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:600;cursor:pointer">Save Key</button>'
     + "  </div>"
     + '  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
-    + '    <select id="target" style="flex:1 1 48%;padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef">'
+    + '    <select id="target" style="flex:1 1 48%;padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef;cursor:pointer">'
     + '      <option value="microbit">micro:bit</option>'
     + '      <option value="arcade">Arcade</option>'
     + '      <option value="maker">Maker</option>'
     + "    </select>"
-    + '    <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:#c7d2fe"><input id="inc" type="checkbox" checked>Use current code</label>'
+    + '    <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:#c7d2fe;cursor:pointer"><input id="inc" type="checkbox" checked style="cursor:pointer">Use current code</label>'
     + "  </div>"
     + '  <textarea id="p" rows="3" placeholder="Describe what you want the block code to do - try to be specific" style="resize:vertical;min-height:64px;padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef"></textarea>'
     + '  <div style="display:flex;gap:8px;flex-wrap:wrap">'
@@ -97,7 +97,32 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '</svg>';
   fab.onmouseenter = function () { fab.style.transform = "scale(1.1)"; fab.style.boxShadow = "0 6px 20px rgba(99,102,241,.55)"; };
   fab.onmouseleave = function () { fab.style.transform = "scale(1)"; fab.style.boxShadow = "0 4px 14px rgba(59,130,246,.45)"; };
-  fab.onclick = function () { fab.style.display = "none"; ui.style.display = "flex"; };
+
+  const openPanel = function () {
+    fab.style.display = "none";
+    ui.style.transform = "scale(0)";
+    ui.style.opacity = "0";
+    ui.style.display = "flex";
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        ui.style.transform = "scale(1)";
+        ui.style.opacity = "1";
+      });
+    });
+  };
+
+  const closePanel = function () {
+    ui.style.transform = "scale(0)";
+    ui.style.opacity = "0";
+    var onEnd = function () {
+      ui.removeEventListener("transitionend", onEnd);
+      ui.style.display = "none";
+      fab.style.display = "flex";
+    };
+    ui.addEventListener("transitionend", onEnd);
+  };
+
+  fab.onclick = openPanel;
   document.body.appendChild(fab);
 
   const $ = (s) => ui.querySelector(s);
@@ -850,8 +875,5 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     });
   })();
 
-  closeBtn.onclick = () => {
-    ui.style.display = "none";
-    fab.style.display = "flex";
-  };
+  closeBtn.onclick = closePanel;
 })();

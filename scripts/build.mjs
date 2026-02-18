@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile, copyFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,10 +8,17 @@ const root = path.resolve(__dirname, "..");
 const distDir = path.join(root, "dist");
 const sourcePath = path.join(root, "work.js");
 const manifestPath = path.join(root, "extension", "manifest.json");
+const iconsSourceDir = path.join(root, "extension", "icons");
 const byokHostPermissions = [
   "https://api.openai.com/*",
   "https://generativelanguage.googleapis.com/*",
   "https://openrouter.ai/*"
+];
+
+const makecodeHostPermissions = [
+  "https://makecode.microbit.org/*",
+  "https://arcade.makecode.com/*",
+  "https://maker.makecode.com/*"
 ];
 
 const userscriptHeaderPattern = /^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/;
@@ -45,7 +52,8 @@ async function build() {
   if (backend) {
     builtClient = overrideConst(builtClient, "BACKEND", backend);
     const backendPermission = hostPermissionForBackend(backend);
-    manifest.host_permissions = [...new Set([backendPermission, ...byokHostPermissions])];
+    // Preserve MakeCode host permissions for toolbar-click flow
+    manifest.host_permissions = [...new Set([...makecodeHostPermissions, backendPermission, ...byokHostPermissions])];
   }
 
   if (appToken !== undefined) {
@@ -54,6 +62,20 @@ async function build() {
 
   await rm(distDir, { recursive: true, force: true });
   await mkdir(distDir, { recursive: true });
+
+  // Copy background.js
+  const backgroundSrc = path.join(root, "extension", "background.js");
+  await copyFile(backgroundSrc, path.join(distDir, "background.js"));
+
+  // Copy icons
+  const iconsDir = path.join(distDir, "icons");
+  await mkdir(iconsDir, { recursive: true });
+  const iconFiles = await readdir(iconsSourceDir);
+  await Promise.all(
+    iconFiles.map(file =>
+      copyFile(path.join(iconsSourceDir, file), path.join(iconsDir, file))
+    )
+  );
 
   await Promise.all([
     writeFile(path.join(distDir, "content-script.js"), builtClient, "utf8"),

@@ -46,7 +46,7 @@ chrome.action.onClicked.addListener(async (tab) => {
       func: () => {
         const panel = document.getElementById('bitvibe-panel');
         const fab = document.getElementById('bitvibe-fab');
-        if (panel) panel.style.display = 'none';
+        if (panel) { panel.style.transform = 'scale(0)'; panel.style.opacity = '0'; panel.style.display = 'none'; }
         if (fab) fab.style.display = 'flex';
       }
     });
@@ -57,7 +57,7 @@ chrome.action.onClicked.addListener(async (tab) => {
       func: () => {
         const panel = document.getElementById('bitvibe-panel');
         const fab = document.getElementById('bitvibe-fab');
-        if (panel) panel.style.display = 'flex';
+        if (panel) { panel.style.transform = 'scale(1)'; panel.style.opacity = '1'; panel.style.display = 'flex'; }
         if (fab) fab.style.display = 'none';
       }
     });
@@ -77,7 +77,7 @@ chrome.action.onClicked.addListener(async (tab) => {
       func: () => {
         const panel = document.getElementById('bitvibe-panel');
         const fab = document.getElementById('bitvibe-fab');
-        if (panel) panel.style.display = 'flex';
+        if (panel) { panel.style.transform = 'scale(1)'; panel.style.opacity = '1'; panel.style.display = 'flex'; }
         if (fab) fab.style.display = 'none';
       }
     });
@@ -93,7 +93,7 @@ chrome.action.onClicked.addListener(async (tab) => {
       func: () => {
         const panel = document.getElementById('bitvibe-panel');
         const fab = document.getElementById('bitvibe-fab');
-        if (panel) panel.style.display = 'flex';
+        if (panel) { panel.style.transform = 'scale(1)'; panel.style.opacity = '1'; panel.style.display = 'flex'; }
         if (fab) fab.style.display = 'none';
       }
     });
