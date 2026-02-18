@@ -43,6 +43,8 @@ Use this exact flow when asked to prepare a testable build:
 - Gemini key -> `https://generativelanguage.googleapis.com/v1/models/{model}:generateContent`
 - OpenRouter key -> `https://openrouter.ai/api/v1/chat/completions`
 
+BYOK calls go directly from the browser to provider APIs. CORS is bypassed by the extension's `host_permissions` in the manifest — this only works in the Chrome extension context, not as a bookmarklet.
+
 ## Build-time overrides
 
 - `VIBBIT_BACKEND`

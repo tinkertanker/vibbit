@@ -54,6 +54,7 @@ This repository provides the `Vibbit` panel for MakeCode micro:bit and supports 
 - School supplies model + API key in the panel
 - Key is stored in browser local storage for convenience
 - Useful when teams prefer to use their own billing and policy setup
+- **Extension-only**: BYOK makes direct `fetch()` calls to provider APIs from the browser. This works in the Chrome extension because `host_permissions` in the manifest bypass CORS. It will **not** work as a bookmarklet — regular web pages are subject to CORS and the providers do not set permissive `Access-Control-Allow-Origin` headers.
 
 ## Configure defaults
 
@@ -191,7 +192,7 @@ You can also run `work.js` as a bookmarklet payload. The same panel supports bot
 - `Request failed: Unauthorized`: verify `APP_TOKEN` and server settings.
 - `No code returned`: try a clearer prompt or switch model in BYOK mode.
 - `Monaco not found`: open an actual MakeCode project first (not the landing page).
-- `CORS/network errors`: ensure backend origins are allowed; for BYOK, check provider key and API availability.
+- `CORS/network errors`: for managed mode, ensure backend origins are allowed. For BYOK, CORS is handled by the extension's `host_permissions` — if you see CORS errors, make sure you are running as the installed extension, not as a bookmarklet.
 
 ## Credits
 
