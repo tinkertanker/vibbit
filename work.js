@@ -627,6 +627,97 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     });
   };
 
+  const collectBlocklyWorkspaces = (rootWin) => {
+    const workspaces = [];
+    const queue = [rootWin, window];
+    const seen = new Set();
+
+    while (queue.length) {
+      const ctx = queue.shift();
+      if (!ctx || seen.has(ctx)) continue;
+      seen.add(ctx);
+
+      try {
+        const blockly = ctx.Blockly;
+        const ws = blockly && (typeof blockly.getMainWorkspace === "function" ? blockly.getMainWorkspace() : blockly.mainWorkspace);
+        if (ws && typeof ws.getAllBlocks === "function") workspaces.push(ws);
+      } catch (error) {
+      }
+
+      try {
+        const frames = ctx.document ? [...ctx.document.querySelectorAll("iframe")] : [];
+        for (const frame of frames) {
+          try {
+            if (frame.contentWindow) queue.push(frame.contentWindow);
+          } catch (error) {
+          }
+        }
+      } catch (error) {
+      }
+    }
+
+    return workspaces;
+  };
+
+  const inspectGreyBlocks = (rootWin) => {
+    const workspaces = collectBlocklyWorkspaces(rootWin);
+    if (!workspaces.length) {
+      return { checked: false, ok: true, greyBlocks: 0, reason: "Blockly workspace unavailable" };
+    }
+
+    let greyBlocks = 0;
+    const snippets = [];
+
+    for (const ws of workspaces) {
+      let blocks = [];
+      try {
+        blocks = ws.getAllBlocks(false) || [];
+      } catch (error) {
+        blocks = [];
+      }
+      for (const block of blocks) {
+        if (!block || block.type !== "typescript_statement") continue;
+        greyBlocks += 1;
+        if (snippets.length < 3) {
+          let preview = "";
+          try { preview = (block.getFieldValue && block.getFieldValue("EXPRESSION")) || ""; } catch (error) {}
+          try { if (!preview && block.toString) preview = block.toString(); } catch (error) {}
+          preview = String(preview || "grey block").replace(/\s+/g, " ").trim();
+          snippets.push(preview.slice(0, 140));
+        }
+      }
+    }
+
+    if (greyBlocks > 0) {
+      return {
+        checked: true,
+        ok: false,
+        greyBlocks,
+        reason: "Detected " + greyBlocks + " grey JavaScript block(s)",
+        snippets
+      };
+    }
+    return { checked: true, ok: true, greyBlocks: 0, snippets };
+  };
+
+  const waitForDecompileProbe = (rootWin, timeoutMs = 6000) => {
+    const deadline = performance.now() + timeoutMs;
+    return new Promise((resolve) => {
+      (function poll() {
+        const report = inspectGreyBlocks(rootWin);
+        if (report.checked) {
+          resolve(report);
+          return;
+        }
+        if (performance.now() >= deadline) {
+          resolve(report);
+          return;
+        }
+        setTimeout(poll, 120);
+      })();
+    });
+  };
+
   const pasteToMakeCode = (code) => {
     return findMonacoCtx().then((ctx) => {
       logLine("Switching to JavaScript tab.");
@@ -653,6 +744,19 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             return clickLike(ctx.win.document, ["blocks"]);
           }
         })();
+        return wait(120).then(() => waitForDecompileProbe(ctx.win)).then((probe) => {
+          if (!probe.checked) {
+            logLine("Live decompile check unavailable in this session.");
+            return;
+          }
+          if (!probe.ok) {
+            const details = probe.snippets && probe.snippets.length
+              ? (" Examples: " + probe.snippets.join(" | "))
+              : "";
+            throw new Error((probe.reason || "Code failed live blocks decompile check.") + details);
+          }
+          logLine("Live decompile check passed (no grey blocks).");
+        });
       });
     });
   };
@@ -1156,10 +1260,20 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         }
 
         setStatus("Pasting");
-        return pasteToMakeCode(code).then(() => {
-          setStatus("Done");
-          logLine("Pasted and switched back to Blocks.");
-        });
+        return pasteToMakeCode(code)
+          .catch((error) => {
+            const message = error && error.message ? error.message : String(error);
+            if (!/grey JavaScript block/i.test(message)) throw error;
+            logLine("Live decompile check failed: " + message);
+            logLine("Applying minimal fallback stub.");
+            const fallbackFeedback = feedback.concat(["Live editor fallback: " + message]);
+            renderFeedback(fallbackFeedback);
+            return pasteToMakeCode(stubForTarget(target));
+          })
+          .then(() => {
+            setStatus("Done");
+            logLine("Pasted and switched back to Blocks.");
+          });
       })
       .catch((error) => {
         setStatus("Error");
