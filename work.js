@@ -356,22 +356,26 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     refs.managedServer.style.display = isByok ? "none" : "grid";
   };
 
+  const setupModeRefs = {
+    byokProvider: setupByokProvider,
+    byokModel: setupByokModel,
+    byokKey: setupByokKey,
+    managedServer: setupManagedServer
+  };
+
+  const settingsModeRefs = {
+    byokProvider: setByokProvider,
+    byokModel: setByokModel,
+    byokKey: setByokKey,
+    managedServer: setManagedServer
+  };
+
   const applySetupMode = () => {
-    setModeVisibility(setupMode.value, {
-      byokProvider: setupByokProvider,
-      byokModel: setupByokModel,
-      byokKey: setupByokKey,
-      managedServer: setupManagedServer
-    });
+    setModeVisibility(setupMode.value, setupModeRefs);
   };
 
   const applySettingsMode = () => {
-    setModeVisibility(setMode.value, {
-      byokProvider: setByokProvider,
-      byokModel: setByokModel,
-      byokKey: setByokKey,
-      managedServer: setManagedServer
-    });
+    setModeVisibility(setMode.value, settingsModeRefs);
     storageSet(STORAGE_MODE, setMode.value);
   };
 
