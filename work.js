@@ -702,15 +702,39 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const waitForDecompileProbe = (rootWin, timeoutMs = 6000) => {
     const deadline = performance.now() + timeoutMs;
+    const startedAt = performance.now();
+    const minSettleMs = 1500;
+    const requiredStableReads = 4;
     return new Promise((resolve) => {
+      let lastSignature = "";
+      let stableReads = 0;
+      let lastReport = { checked: false, ok: true, greyBlocks: 0, reason: "Blockly workspace unavailable" };
       (function poll() {
         const report = inspectGreyBlocks(rootWin);
-        if (report.checked) {
+        lastReport = report;
+        const signature = [
+          report.checked ? "checked" : "unchecked",
+          report.ok ? "ok" : "bad",
+          String(report.greyBlocks || 0),
+          Array.isArray(report.snippets) ? report.snippets.join("|") : ""
+        ].join("::");
+        if (signature === lastSignature) {
+          stableReads += 1;
+        } else {
+          lastSignature = signature;
+          stableReads = 1;
+        }
+
+        if (
+          report.checked
+          && (performance.now() - startedAt) >= minSettleMs
+          && stableReads >= requiredStableReads
+        ) {
           resolve(report);
           return;
         }
         if (performance.now() >= deadline) {
-          resolve(report);
+          resolve(lastReport);
           return;
         }
         setTimeout(poll, 120);
@@ -718,18 +742,21 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     });
   };
 
-  const pasteToMakeCode = (code) => {
+  const pasteToMakeCode = (code, options) => {
+    const shouldSnapshot = !options || options.snapshot !== false;
     return findMonacoCtx().then((ctx) => {
       logLine("Switching to JavaScript tab.");
       clickLike(ctx.win.document, ["javascript", "typescript", "text"]);
       return wait(20).then(() => {
-        try {
-          const previous = ctx.model.getValue() || "";
-          undoStack.push(previous);
-          revertBtn.disabled = false;
-          logLine("Snapshot saved for revert.");
-        } catch (error) {
-          logLine("Snapshot failed: " + error);
+        if (shouldSnapshot) {
+          try {
+            const previous = ctx.model.getValue() || "";
+            undoStack.push(previous);
+            revertBtn.disabled = false;
+            logLine("Snapshot saved for revert.");
+          } catch (error) {
+            logLine("Snapshot failed: " + error);
+          }
         }
         logLine("Pasting generated code into editor.");
         ctx.model.setValue(code);
@@ -839,9 +866,6 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       { re: /console\./g, why: "console calls" },
       { re: /^\s*\/\//m, why: "line comments" },
       { re: /\/\*[\s\S]*?\*\//g, why: "block comments" },
-      { re: /\bnull\b/g, why: "null" },
-      { re: /\bundefined\b/g, why: "undefined" },
-      { re: /\bas\s+[A-Z_a-z][A-Z_a-z0-9_.]*/g, why: "casts" },
       { re: /(\*=|\/=|%=|\|=|&=|\^=|<<=|>>=|>>>=)/g, why: "unsupported assignment operators" }
     ];
     const bitwiseRules = [
@@ -860,9 +884,16 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
 
     const violations = [];
+    const stringStrippedCode = code.replace(
+      /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+      (match) => " ".repeat(match.length)
+    );
     for (const rule of rules) {
       if (rule.re.test(code)) violations.push(rule.why);
     }
+    if (/\bnull\b/.test(stringStrippedCode)) violations.push("null");
+    if (/\bundefined\b/.test(stringStrippedCode)) violations.push("undefined");
+    if (/\bas\s+[A-Z_a-z][A-Z_a-z0-9_.]*/.test(stringStrippedCode)) violations.push("casts");
     if (bitwiseRules.some((rule) => rule.test(code))) violations.push("bitwise operators");
     if (/\bfor\s*\([^)]*\bin\b[^)]*\)/.test(code)) violations.push("for...in loops");
 
@@ -1268,7 +1299,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             logLine("Applying minimal fallback stub.");
             const fallbackFeedback = feedback.concat(["Live editor fallback: " + message]);
             renderFeedback(fallbackFeedback);
-            return pasteToMakeCode(stubForTarget(target));
+            return pasteToMakeCode(stubForTarget(target), { snapshot: false });
           })
           .then(() => {
             setStatus("Done");

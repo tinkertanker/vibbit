@@ -133,9 +133,6 @@ function validateBlocksCompatibility(code, target) {
     { re: /console\./g, why: "console calls" },
     { re: /^\s*\/\//m, why: "line comments" },
     { re: /\/\*[\s\S]*?\*\//g, why: "block comments" },
-    { re: /\bnull\b/g, why: "null" },
-    { re: /\bundefined\b/g, why: "undefined" },
-    { re: /\bas\s+[A-Z_a-z][A-Z_a-z0-9_.]*/g, why: "casts" },
     { re: /(\*=|\/=|%=|\|=|&=|\^=|<<=|>>=|>>>=)/g, why: "unsupported assignment operators" }
   ];
   const bitwiseRules = [
@@ -154,9 +151,16 @@ function validateBlocksCompatibility(code, target) {
   }
 
   const violations = [];
+  const stringStrippedCode = code.replace(
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+    (match) => " ".repeat(match.length)
+  );
   for (const rule of rules) {
     if (rule.re.test(code)) violations.push(rule.why);
   }
+  if (/\bnull\b/.test(stringStrippedCode)) violations.push("null");
+  if (/\bundefined\b/.test(stringStrippedCode)) violations.push("undefined");
+  if (/\bas\s+[A-Z_a-z][A-Z_a-z0-9_.]*/.test(stringStrippedCode)) violations.push("casts");
   if (bitwiseRules.some((rule) => rule.test(code))) violations.push("bitwise operators");
   if (/\bfor\s*\([^)]*\bin\b[^)]*\)/.test(code)) violations.push("for...in loops");
 
