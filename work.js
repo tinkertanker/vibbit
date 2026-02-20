@@ -26,11 +26,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       { id: "gemini-3-pro-preview", label: "Gemini 3 Pro" }
     ],
     openrouter: [
-      { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2" },
+      { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2", default: true },
       { id: "google/gemini-3-flash-preview", label: "Gemini 3 Flash" },
-      { id: "z-ai/glm-5", label: "GLM-5" },
-      { id: "x-ai/grok-4.1-fast", label: "Grok 4.1 Fast" },
-      { id: "moonshotai/kimi-k2.5", label: "Kimi K2.5", default: true },
+      { id: "google/gemini-2.5-flash-lite-preview-09-2025", label: "Gemini 2.5 Flash Lite (Preview)" },
+      { id: "openai/gpt-5.2", label: "GPT-5.2" },
       { id: "minimax/minimax-m2.5", label: "MiniMax M2.5" }
     ]
   };
