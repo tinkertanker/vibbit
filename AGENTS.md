@@ -68,6 +68,29 @@ VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" n
 4. Test `BYOK` generation with at least one provider.
 5. Rebuild + extension reload before re-testing code changes.
 
+## Auto-reload dev loop (Chrome)
+
+When iterating on extension UI/runtime code, prefer this loop so Chrome reloads the unpacked extension after edits:
+
+1. Start Chrome with remote debugging and a persistent profile, e.g.
+   - `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.chrome-debug-profile"`
+2. Load unpacked extension once from `dist/` at `chrome://extensions`.
+3. Ensure `Developer mode` is enabled (reload button required).
+4. Run:
+   - `npm run dev:watch-reload`
+
+Defaults:
+
+- CDP endpoint: `http://localhost:9222`
+- watched paths: `work.js`, `extension/`
+
+Optional env overrides:
+
+- `VIBBIT_DEVTOOLS_URL` (custom CDP URL)
+- `VIBBIT_EXTENSION_ID` (target extension id instead of manifest name)
+- `VIBBIT_WATCH_PATHS` (comma-separated watch paths)
+- `VIBBIT_RELOAD_DEBOUNCE_MS` (debounce in milliseconds)
+
 ## Playwright audit scripts
 
 - `npm run audit:smoke` -> deterministic UI smoke run with screenshot artefacts.

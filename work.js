@@ -144,7 +144,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '  <textarea id="p" rows="6" placeholder="Describe what you want the block code to do \u2013 try to be specific" style="resize:vertical;min-height:96px;padding:10px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef;font-size:13px;line-height:1.4"></textarea>'
     + '  <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:#c7d2fe;cursor:pointer"><input id="inc" type="checkbox" checked style="cursor:pointer">Use current code</label>'
     + '  <div style="display:flex;gap:8px;align-items:center">'
-    + '    <button id="go" style="flex:1 1 auto;padding:10px;border:none;border-radius:8px;background:#3b82f6;color:#fff;font-weight:600;cursor:pointer">Generate</button>'
+    + '    <button id="go" style="flex:1 1 auto;padding:10px;border:none;border-radius:8px;background:#3454D1;color:#fff;font-weight:600;cursor:pointer">Generate</button>'
     + '    <button id="revert" aria-label="Revert to previous code" title="Revert to previous code" style="width:38px;height:38px;display:none;align-items:center;justify-content:center;border:1px solid #2b3a5a;border-radius:999px;background:#1a2745;color:#d6e4ff;cursor:pointer" disabled><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4.5H8a4.5 4.5 0 1 1-4.5 4.5"/><path d="M3.5 4.5L6 2"/><path d="M3.5 4.5 6 7"/></svg></button>'
     + '  </div>'
     + '  <div id="activity" style="min-height:18px;font-size:12px;line-height:1.2;color:#9bb1dd" aria-live="polite"></div>'
@@ -252,14 +252,14 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const fab = document.createElement("div");
   fab.id = "vibbit-fab";
   fab.title = "Vibbit \u2013 AI code generator";
-  fab.style.cssText = "position:fixed;right:20px;bottom:68px;width:44px;height:44px;border-radius:5px;background:linear-gradient(135deg,#3b82f6,#6366f1);display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 14px rgba(59,130,246,.45);z-index:2147483647;transition:transform .15s ease,box-shadow .15s ease;border:none;";
-  fab.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none">'
+  fab.style.cssText = "position:fixed;right:20px;bottom:68px;width:44px;height:44px;border-radius:5px;background:#3454D1;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 14px rgba(52,84,209,.45);z-index:2147483647;transition:transform .15s ease,box-shadow .15s ease;border:none;";
+  fab.innerHTML = '<svg width="26.4" height="26.4" viewBox="0 0 24 24" fill="none">'
     + '<path d="M9.5 2L10.7 6.5 15 8l-4.3 1.5L9.5 14l-1.2-4.5L4 8l4.3-1.5L9.5 2z" fill="#fff"/>'
     + '<path d="M19 10l.8 2.7L22.5 14l-2.7.8L19 17.5l-.8-2.7-2.7-.8 2.7-.8L19 10z" fill="#fff" opacity=".75"/>'
     + '<path d="M14.5 2l.4 1.5L16.5 4l-1.6.5-.4 1.5-.4-1.5L12.5 4l1.6-.5.4-1.5z" fill="#fff" opacity=".5"/>'
     + '</svg>';
-  fab.onmouseenter = function () { fab.style.transform = "scale(1.1)"; fab.style.boxShadow = "0 6px 20px rgba(99,102,241,.55)"; };
-  fab.onmouseleave = function () { fab.style.transform = "scale(1)"; fab.style.boxShadow = "0 4px 14px rgba(59,130,246,.45)"; };
+  fab.onmouseenter = function () { fab.style.background = "var(--secondary-background-color-hover, #2f4bc0)"; fab.style.boxShadow = "0 6px 20px rgba(52,84,209,.6)"; };
+  fab.onmouseleave = function () { fab.style.background = "#3454D1"; fab.style.boxShadow = "0 4px 14px rgba(52,84,209,.45)"; };
 
   const openPanel = function () {
     fab.style.display = "none";

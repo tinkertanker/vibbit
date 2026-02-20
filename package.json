@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:watch": "node --watch scripts/build.mjs",
+    "dev:watch-reload": "node scripts/dev/watch-build-reload.mjs",
     "package": "npm run build && node scripts/package.mjs",
     "backend:start": "node apps/backend/src/server.mjs",
     "backend:dev": "node --watch apps/backend/src/server.mjs",
