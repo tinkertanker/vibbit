@@ -40,7 +40,7 @@ Use this exact flow when asked to prepare a testable build:
 ### BYOK mode
 
 - OpenAI key -> `https://api.openai.com/v1/chat/completions`
-- Gemini key -> `https://generativelanguage.googleapis.com/v1/models/{model}:generateContent`
+- Gemini key -> `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
 - OpenRouter key -> `https://openrouter.ai/api/v1/chat/completions`
 
 ## Build-time overrides
@@ -67,6 +67,7 @@ VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" n
 3. Test `Managed` generation and `Revert`.
 4. Test `BYOK` generation with at least one provider.
 5. Rebuild + extension reload before re-testing code changes.
+6. After reloading the extension, refresh any open MakeCode tabs before testing again.
 
 ## Auto-reload dev loop (Chrome)
 

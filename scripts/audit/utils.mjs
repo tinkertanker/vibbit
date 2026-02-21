@@ -145,12 +145,12 @@ export function providerConfigFromEnv() {
   }
 
   if (provider === "gemini") {
-    const model = process.env.AUDIT_BYOK_GEMINI_MODEL || "gemini-2.5-flash";
+    const model = process.env.AUDIT_BYOK_GEMINI_MODEL || "gemini-3-flash-preview";
     return {
       provider,
       key: process.env.AUDIT_BYOK_GEMINI_KEY || "",
       model,
-      endpointRegex: /^https:\/\/generativelanguage\.googleapis\.com\/v1\/models\/.+:generateContent\?key=/
+      endpointRegex: /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/.+:generateContent\?key=/
     };
   }
 

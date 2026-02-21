@@ -28,7 +28,7 @@ This repository provides the `Vibbit` panel for MakeCode micro:bit and supports 
   - Gemini keys are sent as the API key parameter expected by Google
 - Provider endpoints:
   - OpenAI: `https://api.openai.com/v1/chat/completions`
-  - Gemini: `https://generativelanguage.googleapis.com/v1/models/{model}:generateContent`
+  - Gemini: `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
   - OpenRouter: `https://openrouter.ai/api/v1/chat/completions`
 
 ## Files
@@ -148,6 +148,7 @@ This builds first, then creates:
    - select provider + model, enter key
    - confirm generation and paste both work
 7. If updating config values (`VIBBIT_BACKEND` or `VIBBIT_APP_TOKEN`), rebuild and reload the extension.
+8. After reloading the extension, refresh any open MakeCode tabs before testing again.
 
 ## Playwright audits
 

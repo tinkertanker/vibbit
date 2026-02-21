@@ -18,12 +18,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const MODEL_PRESETS = {
     openai: [
       { id: "gpt-5-mini", label: "GPT-5 Mini" },
-      { id: "gpt-5.2", label: "GPT-5.2" },
-      { id: "gpt-5.2-codex", label: "GPT-5.2 Codex", default: true }
+      { id: "gpt-5.2", label: "GPT-5.2", default: true }
     ],
     gemini: [
       { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", default: true },
-      { id: "gemini-3-pro-preview", label: "Gemini 3 Pro" }
+      { id: "gemini-3-pro-preview", label: "Gemini 3 Pro" },
+      { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (Preview)" }
     ],
     openrouter: [
       { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2", default: true },
@@ -1105,12 +1105,18 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const callOpenAI = (key, model, system, user) => {
+    const resolvedModel = model || "gpt-5.2";
     const body = {
-      model: model || "gpt-4o-mini",
-      temperature: BASE_TEMP,
-      max_tokens: MAXTOK,
+      model: resolvedModel,
       messages: [{ role: "system", content: system }, { role: "user", content: user }]
     };
+    if (/^gpt-5/i.test(resolvedModel)) {
+      // GPT-5 chat models require max_completion_tokens and reject non-default temperature.
+      body.max_completion_tokens = MAXTOK;
+    } else {
+      body.temperature = BASE_TEMP;
+      body.max_tokens = MAXTOK;
+    }
     return withTimeout(
       fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -1128,7 +1134,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const callGemini = (key, model, system, user) => {
-    const url = "https://generativelanguage.googleapis.com/v1/models/" + encodeURIComponent(model || "gemini-2.5-flash") + ":generateContent?key=" + encodeURIComponent(key);
+    const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model || "gemini-3-flash-preview") + ":generateContent?key=" + encodeURIComponent(key);
     const body = {
       contents: [{ role: "user", parts: [{ text: system + "\n\n" + user }] }],
       generationConfig: { temperature: BASE_TEMP, maxOutputTokens: MAXTOK }
