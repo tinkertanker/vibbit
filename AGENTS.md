@@ -69,6 +69,14 @@ VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" n
 5. Rebuild + extension reload before re-testing code changes.
 6. After reloading the extension, refresh any open MakeCode tabs before testing again.
 
+## Mandatory post-change browser validation
+
+After finishing any feature or fix that is worth human testing, always do all of the following:
+
+1. Build the extension (`npm run build`).
+2. Update/reload the extension in Chrome using DevTools MCP.
+3. Reload any open MakeCode page tabs before manual verification.
+
 ## Auto-reload dev loop (Chrome)
 
 When iterating on extension UI/runtime code, prefer this loop so Chrome reloads the unpacked extension after edits:
