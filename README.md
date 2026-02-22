@@ -47,7 +47,7 @@ This repository provides the `Vibbit` panel for MakeCode micro:bit and supports 
 ### Managed mode
 
 - Uses `BACKEND` + optional `APP_TOKEN`
-- Sends `target`, `request`, optional `currentCode`, and optional `pageErrors` to `/vibbit/generate`
+- Sends `target`, `request`, optional `currentCode`, optional `pageErrors`, and optional `conversionDialog` to `/vibbit/generate`
 - Best for centrally managed roll-outs
 
 ### BYOK mode
