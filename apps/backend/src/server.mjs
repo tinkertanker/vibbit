@@ -381,6 +381,7 @@ function systemPromptFor(target) {
     "- Then output ONLY MakeCode Static TypeScript, no markdown fences or extra prose",
     "- Straight quotes, ASCII only, real newlines, function () { } handlers",
     "- If PAGE_ERRORS are provided, treat them as failing diagnostics and prioritise resolving all of them",
+    "- If CONVERSION_DIALOG is provided, ensure the output converts from JavaScript back to Blocks in MakeCode",
     "",
     `TARGET SCOPE: Use ONLY ${config.name} APIs listed above. Never mix APIs from other targets.`,
     "",
@@ -391,7 +392,7 @@ function systemPromptFor(target) {
   ].join("\n");
 }
 
-function userPromptFor(request, currentCode, pageErrors) {
+function userPromptFor(request, currentCode, pageErrors, conversionDialog) {
   const header = "USER_REQUEST:\n" + request.trim();
   const blocks = [header];
   const errors = Array.isArray(pageErrors)
@@ -399,6 +400,14 @@ function userPromptFor(request, currentCode, pageErrors) {
     : [];
   if (errors.length) {
     blocks.push("<<<PAGE_ERRORS>>>\n- " + errors.join("\n- ") + "\n<<<END_PAGE_ERRORS>>>");
+  }
+  const dialogTitle = conversionDialog && conversionDialog.title ? String(conversionDialog.title).trim() : "";
+  const dialogDescription = conversionDialog && conversionDialog.description ? String(conversionDialog.description).trim() : "";
+  if (dialogTitle || dialogDescription) {
+    const lines = [];
+    if (dialogTitle) lines.push("Title: " + dialogTitle);
+    if (dialogDescription) lines.push("Message: " + dialogDescription);
+    blocks.push("<<<CONVERSION_DIALOG>>>\n" + lines.join("\n") + "\n<<<END_CONVERSION_DIALOG>>>");
   }
   if (currentCode && String(currentCode).trim()) {
     blocks.push("<<<CURRENT_CODE>>>\n" + currentCode + "\n<<<END_CURRENT_CODE>>>");
@@ -483,7 +492,7 @@ async function callGemini(key, model, system, user, signal) {
   return extractGeminiText(data);
 }
 
-async function generateManaged({ target, request, currentCode, pageErrors }) {
+async function generateManaged({ target, request, currentCode, pageErrors, conversionDialog }) {
   const provider = PROVIDER;
   const key = apiKeyFor(provider);
   const model = modelFor(provider);
@@ -493,7 +502,7 @@ async function generateManaged({ target, request, currentCode, pageErrors }) {
   }
 
   const system = systemPromptFor(target);
-  const user = userPromptFor(request, currentCode || "", pageErrors || []);
+  const user = userPromptFor(request, currentCode || "", pageErrors || [], conversionDialog || null);
   const callProvider = async (systemPrompt) => withTimeout(async (signal) => {
     if (provider === "openai") return callOpenAI(key, model, systemPrompt, user, signal);
     if (provider === "gemini") return callGemini(key, model, systemPrompt, user, signal);
@@ -559,6 +568,15 @@ function validatePayload(payload) {
     .map((item) => String(item || "").replace(/\s+/g, " ").trim())
     .filter(Boolean)
     .slice(0, 8);
+  const rawConversionDialog = payload && payload.conversionDialog && typeof payload.conversionDialog === "object"
+    ? payload.conversionDialog
+    : null;
+  const conversionDialog = rawConversionDialog
+    ? {
+      title: String(rawConversionDialog.title || "").replace(/\s+/g, " ").trim().slice(0, 220),
+      description: String(rawConversionDialog.description || "").replace(/\s+/g, " ").trim().slice(0, 320)
+    }
+    : null;
 
   if (!request) {
     return { ok: false, error: "'request' is required" };
@@ -572,7 +590,8 @@ function validatePayload(payload) {
       target: safeTarget,
       request,
       currentCode,
-      pageErrors
+      pageErrors,
+      conversionDialog
     }
   };
 }

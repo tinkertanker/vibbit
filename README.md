@@ -17,6 +17,7 @@ This repository provides the `Vibbit` panel for MakeCode micro:bit and supports 
   - `request`: natural-language prompt
   - `currentCode`: optional current editor code
   - `pageErrors`: optional array of visible/editor error diagnostics detected on page
+  - `conversionDialog`: optional conversion-modal snapshot (`title`, `description`) when MakeCode reports JS -> Blocks failure
 
 ### BYOK mode
 
@@ -55,6 +56,7 @@ This repository provides the `Vibbit` panel for MakeCode micro:bit and supports 
 - School supplies model + API key in the panel
 - Key is stored in browser local storage for convenience
 - Automatically includes detected editor/page errors in the model prompt to help targeted fixes
+- When MakeCode shows the conversion-failure modal, Vibbit auto-retries once and then offers `Fix convert error`
 - Useful when teams prefer to use their own billing and policy setup
 
 ## Configure defaults
@@ -146,6 +148,7 @@ This builds first, then creates:
    - enter a simple prompt
    - confirm code is generated and pasted, then test `Revert`
    - introduce a compile error, then run generation with an empty prompt and confirm Vibbit attempts an error-fix request
+   - trigger the `problem converting your code` modal and confirm Vibbit retries once, then shows `Fix convert error` if needed
 6. BYOK smoke test:
    - switch to `Bring your own key`
    - select provider + model, enter key

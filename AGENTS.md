@@ -37,7 +37,7 @@ Use this exact flow when asked to prepare a testable build:
 - Endpoint:
   - `POST {BACKEND}/vibbit/generate`
 - Payload supports:
-  - `target`, `request`, `currentCode`, `pageErrors` (detected editor/page diagnostics)
+  - `target`, `request`, `currentCode`, `pageErrors`, `conversionDialog` (detected editor/page diagnostics + conversion modal details)
 
 ### BYOK mode
 
@@ -68,9 +68,10 @@ VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" n
 2. Open a MakeCode project page.
 3. Test `Managed` generation and `Revert`.
 4. Introduce a compile error and confirm generation includes/fixes detected page errors (including empty-prompt auto-fix flow).
-5. Test `BYOK` generation with at least one provider.
-6. Rebuild + extension reload before re-testing code changes.
-7. After reloading the extension, refresh any open MakeCode tabs before testing again.
+5. Trigger MakeCode's `problem converting your code` modal and confirm auto-retry + `Fix convert error` fallback.
+6. Test `BYOK` generation with at least one provider.
+7. Rebuild + extension reload before re-testing code changes.
+8. After reloading the extension, refresh any open MakeCode tabs before testing again.
 
 ## Mandatory post-change browser validation
 
