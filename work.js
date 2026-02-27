@@ -321,6 +321,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     ".vibbit-btn-preview{border:none;background:#3454D1;color:#fff}",
     ".vibbit-btn-undo{border:1px solid #29324e;background:transparent;color:#8899bb}",
     ".vibbit-btn-fix{border:1px solid #d97706;background:rgba(217,119,6,0.15);color:#fbbf24}",
+    ".vibbit-btn-cancel{border:1px solid #dc2626;background:rgba(220,38,38,0.18);color:#fecaca}",
     ".vibbit-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:14px;color:#4a5f82;padding:40px 20px;text-align:center;user-select:none}"
   ].join("\n");
   document.head.appendChild(runtimeStyle);
@@ -709,6 +710,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const actionsHidden = !!msg.actionsHidden;
     if (msg.status === "generating") {
       html += '<div class="vibbit-msg-status" role="status" aria-live="polite" aria-atomic="true">' + SPINNER_SMALL + ' ' + (msg.content || "Generating...") + '</div>';
+      html += '<div class="vibbit-msg-actions"><button class="vibbit-btn-cancel" data-action="cancel">Cancel</button></div>';
     } else if (msg.status === "done") {
       if (msg.feedback && msg.feedback.length) {
         msg.feedback.forEach(function (line) {
@@ -785,6 +787,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         const btn = e.target.closest("[data-action]");
         if (!btn) return;
         const action = btn.dataset.action;
+        if (action === "cancel") handleCancelGeneration();
         if (action === "preview") enterPreview();
         if (action === "undo") handleRevert();
         if (action === "fix") handleFixConvert();
@@ -2043,11 +2046,28 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const requestBackendGenerate = (payload, signal) => {
     const backendUrl = getBackendUrl();
+    const managedController = new AbortController();
+    let timedOut = false;
+
+    const abortFromCaller = () => {
+      managedController.abort();
+    };
+
+    if (signal) {
+      if (signal.aborted) abortFromCaller();
+      else signal.addEventListener("abort", abortFromCaller, { once: true });
+    }
+
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      managedController.abort();
+    }, REQ_TIMEOUT_MS);
+
     return fetch(backendUrl + "/vibbit/generate", {
       method: "POST",
       headers: buildBackendHeaders(),
       body: JSON.stringify(payload),
-      signal
+      signal: managedController.signal
     }).then(async (response) => {
       if (response.ok) return response.json();
       let message = "HTTP " + response.status;
@@ -2057,6 +2077,14 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       } catch (error) {
       }
       throw new Error(message);
+    }).catch((error) => {
+      if (timedOut) {
+        throw new Error("Managed backend timeout");
+      }
+      throw error;
+    }).finally(() => {
+      clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener("abort", abortFromCaller);
     });
   };
 
@@ -2128,7 +2156,6 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const forcedDialog = forcedDialogOverride || null;
     const recentChatContext = buildRecentChatContext();
     let includeCurrentForThisSend = true;
-    retirePreviousAssistantActions();
 
     /* add user message to chat */
     if (!forcedRequestOverride) {
@@ -2145,6 +2172,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       promptEl.value = "";
       promptEl.style.height = "auto";
     }
+
+    retirePreviousAssistantActions();
 
     /* add assistant placeholder */
     const assistantIdx = addChatMessage({ role: "assistant", content: "Generating...", status: "generating" });
@@ -2352,6 +2381,18 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   go.onclick = () => sendMessage();
+
+  const handleCancelGeneration = () => {
+    if (!busy || !generationController) return;
+    const currentAssistantIdx = loadingAssistantIdx;
+    stopLoadingTicker();
+    if (currentAssistantIdx >= 0) {
+      updateAssistantMessage(currentAssistantIdx, { status: "generating", content: "Cancelling..." }, { persist: false });
+    }
+    setStatus("Cancelling");
+    logLine("Cancelling generation...");
+    generationController.abort();
+  };
 
   /* ── handle revert from chat action button ───────────── */
   const handleRevert = () => {
