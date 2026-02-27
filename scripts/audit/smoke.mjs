@@ -17,7 +17,8 @@ const screenshots = {
   panel: path.join(runDir, "02-panel-visible.png"),
   managed: path.join(runDir, "03-managed-mode.png"),
   byok: path.join(runDir, "04-byok-mode.png"),
-  status: path.join(runDir, "05-log-or-status.png"),
+  managedFeedback: path.join(runDir, "05-managed-feedback.png"),
+  byokFeedback: path.join(runDir, "06-byok-feedback.png"),
   error: path.join(runDir, "99-error.png")
 };
 
@@ -58,6 +59,11 @@ async function runSmokeUi() {
     pushCheck("01 MakeCode loads", true, `Screenshot saved at \`${screenshots.makecode}\`.`);
 
     const runtime = await readFile(path.join(repoRoot, "work.js"), "utf8");
+    pushCheck(
+      "02 Prompt format guard",
+      !runtime.includes("FEEDBACK:"),
+      "Runtime prompt no longer uses legacy FEEDBACK: prefix instructions."
+    );
     await page.addScriptTag({ content: runtime });
     await page.waitForSelector("#vibbit-fab", { timeout: 20000 });
     await page.click("#vibbit-fab");
@@ -73,7 +79,7 @@ async function runSmokeUi() {
       return panelRect.width > 0 && panelRect.height > 0 && setupStyle.display !== "none";
     });
     pushCheck(
-      "02 Panel visible",
+      "03 Panel visible",
       panelVisible,
       panelVisible
         ? `Panel rendered and screenshot saved at \`${screenshots.panel}\`.`
@@ -95,7 +101,7 @@ async function runSmokeUi() {
       };
     });
     pushCheck(
-      "03 Setup defaults",
+      "04 Setup defaults",
       setupDefault.modeValue === "byok"
         && setupDefault.byokProviderVisible
         && setupDefault.byokModelVisible
@@ -122,7 +128,7 @@ async function runSmokeUi() {
     });
     await page.screenshot({ path: screenshots.managed, fullPage: false });
     pushCheck(
-      "04 Setup mode toggle (managed)",
+      "05 Setup mode toggle (managed)",
       managedState.modeValue === "managed"
         && managedState.byokProviderHidden
         && managedState.byokModelHidden
@@ -149,7 +155,7 @@ async function runSmokeUi() {
     });
     await page.screenshot({ path: screenshots.byok, fullPage: false });
     pushCheck(
-      "05 Setup mode toggle (BYOK)",
+      "06 Setup mode toggle (BYOK)",
       byokState.modeValue === "byok"
         && byokState.byokProviderVisible
         && byokState.byokModelVisible
@@ -196,12 +202,31 @@ async function runSmokeUi() {
 
       if (!window.__smokeFetchMock) {
         const nativeFetch = window.fetch.bind(window);
+        window.__smokeManagedCalls = 0;
+        window.__smokeByokCalls = 0;
         window.fetch = (input, init) => {
           const url = typeof input === "string" ? input : (input && input.url ? input.url : "");
           if (url.includes("/vibbit/generate")) {
+            window.__smokeManagedCalls += 1;
             return Promise.resolve(new Response(JSON.stringify({
-              code: "basic.showString(\"Hi\")",
-              feedback: ["smoke-managed"]
+              code: "basic.showString(\"Managed\")",
+              feedback: []
+            }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" }
+            }));
+          }
+          if (url.includes("api.openai.com/v1/chat/completions")) {
+            window.__smokeByokCalls += 1;
+            return Promise.resolve(new Response(JSON.stringify({
+              choices: [{
+                message: {
+                  content: [
+                    "{\"meta\":\"ignored\"}",
+                    "{\"feedback\":[],\"code\":\"basic.showString(\\\"BYOK\\\")\"}"
+                  ].join("\n")
+                }
+              }]
             }), {
               status: 200,
               headers: { "Content-Type": "application/json" }
@@ -225,7 +250,7 @@ async function runSmokeUi() {
 
     await page.screenshot({ path: screenshots.status, fullPage: false });
     pushCheck(
-      "06 Empty prompt feedback",
+      "07 Empty prompt feedback",
       statusState.status === "Idle" && statusState.logText.includes("Please enter a request."),
       `status='${statusState.status}', logHasPromptValidation=${statusState.logText.includes("Please enter a request.")}.`
     );
@@ -237,24 +262,70 @@ async function runSmokeUi() {
       return status === "Done" || status === "Error";
     }, { timeout: 30000 });
 
-    const generationState = await page.evaluate(() => {
+    const managedGenerationState = await page.evaluate(() => {
       const status = document.querySelector("#status")?.textContent?.trim() || "";
       const logText = document.querySelector("#log")?.textContent || "";
       const pastedCode = window.__smokeMonacoValue || "";
-      return { status, logText, pastedCode };
+      const feedbackBox = document.querySelector("#fb");
+      const feedbackVisible = Boolean(feedbackBox && getComputedStyle(feedbackBox).display !== "none");
+      const feedbackLines = Array.from(document.querySelectorAll("#fbLines > div"))
+        .map((node) => (node.textContent || "").trim())
+        .filter(Boolean);
+      return { status, logText, pastedCode, feedbackVisible, feedbackLines };
     });
+    await page.screenshot({ path: screenshots.managedFeedback, fullPage: false });
 
     pushCheck(
-      "07 Managed mocked generation",
-      generationState.status === "Done"
-        && generationState.logText.includes("Pasted and switched back to Blocks.")
-        && generationState.pastedCode.includes("basic.showString(\"Hi\")"),
-      `status='${generationState.status}', pastedCodeIncludesExpected=${generationState.pastedCode.includes("basic.showString(\"Hi\")")}, logHasPasteSuccess=${generationState.logText.includes("Pasted and switched back to Blocks.")}.`
+      "08 Managed mocked generation + feedback fallback",
+      managedGenerationState.status === "Done"
+        && managedGenerationState.logText.includes("Pasted and switched back to Blocks.")
+        && managedGenerationState.pastedCode.includes("basic.showString(\"Managed\")")
+        && managedGenerationState.feedbackVisible
+        && managedGenerationState.feedbackLines.includes("Model completed generation without explicit feedback notes."),
+      `status='${managedGenerationState.status}', pastedCodeIncludesExpected=${managedGenerationState.pastedCode.includes("basic.showString(\"Managed\")")}, feedbackVisible=${managedGenerationState.feedbackVisible}, feedbackLines=${managedGenerationState.feedbackLines.join(" || ")}.`
     );
 
-    const hasProbeLog = /Live decompile check (passed|unavailable|failed)/i.test(generationState.logText);
+    await page.evaluate(() => {
+      localStorage.setItem("__vibbit_mode", "byok");
+      localStorage.setItem("__vibbit_provider", "openai");
+      localStorage.setItem("__vibbit_model", "gpt-5.2");
+      localStorage.setItem("__vibbit_key_openai", "smoke-dummy-key");
+    });
+    await page.fill("#p", "Create a tiny byok program");
+    await page.click("#go");
+    await page.waitForFunction(() => {
+      const status = document.querySelector("#status")?.textContent?.trim() || "";
+      return status === "Done" || status === "Error";
+    }, { timeout: 30000 });
+
+    const byokGenerationState = await page.evaluate(() => {
+      const status = document.querySelector("#status")?.textContent?.trim() || "";
+      const logText = document.querySelector("#log")?.textContent || "";
+      const pastedCode = window.__smokeMonacoValue || "";
+      const feedbackBox = document.querySelector("#fb");
+      const feedbackVisible = Boolean(feedbackBox && getComputedStyle(feedbackBox).display !== "none");
+      const feedbackLines = Array.from(document.querySelectorAll("#fbLines > div"))
+        .map((node) => (node.textContent || "").trim())
+        .filter(Boolean);
+      const byokCalls = Number(window.__smokeByokCalls || 0);
+      const managedCalls = Number(window.__smokeManagedCalls || 0);
+      return { status, logText, pastedCode, feedbackVisible, feedbackLines, byokCalls, managedCalls };
+    });
+    await page.screenshot({ path: screenshots.byokFeedback, fullPage: false });
+
     pushCheck(
-      "08 Decompile probe log",
+      "09 BYOK mocked generation + parser guard + feedback fallback",
+      byokGenerationState.status === "Done"
+        && byokGenerationState.pastedCode.includes("basic.showString(\"BYOK\")")
+        && byokGenerationState.feedbackVisible
+        && byokGenerationState.feedbackLines.includes("Model completed generation without explicit feedback notes.")
+        && byokGenerationState.byokCalls >= 1,
+      `status='${byokGenerationState.status}', pastedCodeIncludesExpected=${byokGenerationState.pastedCode.includes("basic.showString(\"BYOK\")")}, feedbackVisible=${byokGenerationState.feedbackVisible}, feedbackLines=${byokGenerationState.feedbackLines.join(" || ")}, byokCalls=${byokGenerationState.byokCalls}, managedCalls=${byokGenerationState.managedCalls}.`
+    );
+
+    const hasProbeLog = /Live decompile check (passed|unavailable|failed)/i.test(byokGenerationState.logText);
+    pushCheck(
+      "10 Decompile probe log",
       hasProbeLog,
       `logHasProbeMessage=${hasProbeLog}.`
     );
@@ -279,7 +350,8 @@ const screenshotList = [
   screenshots.panel,
   screenshots.managed,
   screenshots.byok,
-  screenshots.status
+  screenshots.managedFeedback,
+  screenshots.byokFeedback
 ].map((filePath) => `- \`${filePath}\``);
 
 const report = [
@@ -310,7 +382,7 @@ await writeText(reportPath, report + "\n");
 console.log(`SUMMARY: ${overallPass ? "PASS" : "FAIL"}`);
 console.log(`ARTEFACT_DIR: ${runDir}`);
 console.log(`REPORT: ${reportPath}`);
-console.log(`SCREENSHOTS: ${Object.values(screenshots).slice(0, 5).join(",")}`);
+console.log(`SCREENSHOTS: ${Object.values(screenshots).slice(0, 6).join(",")}`);
 
 if (!overallPass) {
   process.exitCode = 1;

@@ -1,0 +1,1256 @@
+const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
+const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter"];
+const DEFAULT_CORS_HEADERS = "Content-Type, Authorization, X-Vibbit-Class-Code, X-Vibbit-Session";
+const MAX_JSON_BYTES = 1024 * 1024;
+const CLASS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const CLASS_CODE_LENGTH = 5;
+
+function parseInteger(value, fallback, { min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
+function parseBoolean(value, fallback) {
+  if (typeof value === "boolean") return value;
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function parseCsv(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normaliseProvider(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normaliseClassCode(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "")
+    .slice(0, CLASS_CODE_LENGTH);
+}
+
+function randomBytes(length) {
+  const size = Math.max(1, Number(length) || 1);
+  const bytes = new Uint8Array(size);
+  if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(bytes);
+    return bytes;
+  }
+  for (let i = 0; i < size; i += 1) {
+    bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return bytes;
+}
+
+function bytesToBase64Url(bytes) {
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(bytes)
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/g, "");
+  }
+  let binary = "";
+  for (const value of bytes) binary += String.fromCharCode(value);
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function createSessionToken() {
+  return "vbt_" + bytesToBase64Url(randomBytes(24));
+}
+
+function generateClassCode(length) {
+  const size = parseInteger(length, CLASS_CODE_LENGTH, { min: CLASS_CODE_LENGTH, max: CLASS_CODE_LENGTH });
+  const bytes = randomBytes(size);
+  let code = "";
+  for (let i = 0; i < size; i += 1) {
+    code += CLASS_CODE_ALPHABET[bytes[i] % CLASS_CODE_ALPHABET.length];
+  }
+  return code;
+}
+
+function generateClassCodeFromSeed(seed, length) {
+  const source = String(seed || "");
+  if (!source) return generateClassCode(length);
+  const size = parseInteger(length, CLASS_CODE_LENGTH, { min: CLASS_CODE_LENGTH, max: CLASS_CODE_LENGTH });
+
+  let state = 2166136261;
+  for (let i = 0; i < source.length; i += 1) {
+    state ^= source.charCodeAt(i);
+    state = Math.imul(state, 16777619) >>> 0;
+  }
+
+  let code = "";
+  for (let i = 0; i < size; i += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    const index = (state >>> 0) % CLASS_CODE_ALPHABET.length;
+    code += CLASS_CODE_ALPHABET[index];
+  }
+  return code;
+}
+
+function resolveModelForProvider(env, provider) {
+  if (provider === "openai") return env.VIBBIT_OPENAI_MODEL || env.VIBBIT_MODEL || "gpt-4o-mini";
+  if (provider === "gemini") return env.VIBBIT_GEMINI_MODEL || env.VIBBIT_MODEL || "gemini-2.5-flash";
+  if (provider === "openrouter") return env.VIBBIT_OPENROUTER_MODEL || env.VIBBIT_MODEL || "openrouter/auto";
+  return env.VIBBIT_MODEL || "gpt-4o-mini";
+}
+
+function resolveKeyForProvider(env, provider) {
+  if (provider === "openai") return env.VIBBIT_OPENAI_API_KEY || env.VIBBIT_API_KEY || "";
+  if (provider === "gemini") return env.VIBBIT_GEMINI_API_KEY || env.VIBBIT_API_KEY || "";
+  if (provider === "openrouter") return env.VIBBIT_OPENROUTER_API_KEY || env.VIBBIT_API_KEY || "";
+  return env.VIBBIT_API_KEY || "";
+}
+
+function createProviderConfig(env) {
+  const requestedProviders = parseCsv(env.VIBBIT_ENABLED_PROVIDERS).map(normaliseProvider);
+  const enabledProviders = (requestedProviders.length ? requestedProviders : SUPPORTED_PROVIDERS)
+    .filter((provider, index, list) => SUPPORTED_PROVIDERS.includes(provider) && list.indexOf(provider) === index);
+  if (!enabledProviders.length) {
+    throw new Error("No supported providers enabled. Configure VIBBIT_ENABLED_PROVIDERS.");
+  }
+
+  const requestedDefault = normaliseProvider(env.VIBBIT_PROVIDER || "openai");
+  const defaultProvider = enabledProviders.includes(requestedDefault) ? requestedDefault : enabledProviders[0];
+  const allowedModels = {};
+  for (const provider of enabledProviders) {
+    const envKey = `VIBBIT_${provider.toUpperCase()}_ALLOWED_MODELS`;
+    allowedModels[provider] = parseCsv(env[envKey]);
+  }
+
+  return {
+    enabledProviders,
+    defaultProvider,
+    defaultModelFor: (provider) => resolveModelForProvider(env, provider),
+    apiKeyFor: (provider) => resolveKeyForProvider(env, provider),
+    allowedModels
+  };
+}
+
+function resolveProviderSelection(providerConfig, payloadProvider, payloadModel) {
+  const requestedProvider = normaliseProvider(payloadProvider || providerConfig.defaultProvider);
+  if (!providerConfig.enabledProviders.includes(requestedProvider)) {
+    throw new Error(`Provider '${requestedProvider || payloadProvider}' is not enabled on this server.`);
+  }
+
+  const model = String(payloadModel || providerConfig.defaultModelFor(requestedProvider)).trim();
+  const allowList = providerConfig.allowedModels[requestedProvider] || [];
+  if (allowList.length && model && !allowList.includes(model)) {
+    throw new Error(`Model '${model}' is not allowed for provider '${requestedProvider}'.`);
+  }
+
+  const key = providerConfig.apiKeyFor(requestedProvider);
+  if (!key) {
+    throw new Error(`Missing API key for provider '${requestedProvider}'. Configure provider key env vars.`);
+  }
+
+  return { provider: requestedProvider, model, key };
+}
+
+function createSessionStore(ttlMs) {
+  const sessions = new Map();
+
+  const pruneExpired = () => {
+    const now = Date.now();
+    for (const [token, entry] of sessions.entries()) {
+      if (!entry || entry.expiresAt <= now) sessions.delete(token);
+    }
+  };
+
+  const createSession = (meta = {}) => {
+    pruneExpired();
+    const token = createSessionToken();
+    const expiresAt = Date.now() + ttlMs;
+    sessions.set(token, {
+      createdAt: Date.now(),
+      expiresAt,
+      meta
+    });
+    return { token, expiresAt };
+  };
+
+  const isValidSession = (token) => {
+    if (!token) return false;
+    pruneExpired();
+    const entry = sessions.get(token);
+    if (!entry) return false;
+    return entry.expiresAt > Date.now();
+  };
+
+  return {
+    createSession,
+    isValidSession,
+    pruneExpired,
+    size: () => sessions.size
+  };
+}
+
+function createRuntimeConfig(envInput = {}) {
+  const env = envInput || {};
+  const allowOrigin = env.VIBBIT_ALLOW_ORIGIN || "*";
+  const requestTimeoutMs = parseInteger(env.VIBBIT_REQUEST_TIMEOUT_MS, 60000, { min: 5000, max: 180000 });
+  const emptyRetries = parseInteger(env.VIBBIT_EMPTY_RETRIES, 2, { min: 0, max: 5 });
+  const validationRetries = parseInteger(env.VIBBIT_VALIDATION_RETRIES, 2, { min: 0, max: 5 });
+  const providerConfig = createProviderConfig(env);
+  const appToken = String(env.SERVER_APP_TOKEN || "").trim();
+
+  const classroomEnabled = appToken
+    ? false
+    : parseBoolean(env.VIBBIT_CLASSROOM_ENABLED, true);
+  const classCodeLength = parseInteger(env.VIBBIT_CLASSROOM_CODE_LENGTH, CLASS_CODE_LENGTH, {
+    min: CLASS_CODE_LENGTH,
+    max: CLASS_CODE_LENGTH
+  });
+  const configuredCode = normaliseClassCode(env.VIBBIT_CLASSROOM_CODE || "");
+  const autoGenerateCode = parseBoolean(env.VIBBIT_CLASSROOM_CODE_AUTO, true);
+  const classCodeSeed = String(
+    env.VIBBIT_CLASSROOM_SEED
+    || env.VIBBIT_API_KEY
+    || env.VIBBIT_OPENAI_API_KEY
+    || env.VIBBIT_GEMINI_API_KEY
+    || env.VIBBIT_OPENROUTER_API_KEY
+    || ""
+  );
+  const classroomCode = classroomEnabled
+    ? (configuredCode || (autoGenerateCode ? generateClassCodeFromSeed(classCodeSeed, classCodeLength) : ""))
+    : "";
+  if (classroomEnabled && !classroomCode) {
+    throw new Error("Classroom auth is enabled but no class code is available.");
+  }
+
+  const sessionTtlMs = parseInteger(env.VIBBIT_SESSION_TTL_MS, 8 * 60 * 60 * 1000, {
+    min: 5 * 60 * 1000,
+    max: 7 * 24 * 60 * 60 * 1000
+  });
+
+  let authMode = "none";
+  if (appToken) authMode = "app-token";
+  else if (classroomEnabled) authMode = "classroom";
+
+  return {
+    allowOrigin,
+    requestTimeoutMs,
+    emptyRetries,
+    validationRetries,
+    providerConfig,
+    appToken,
+    authMode,
+    classroomCode,
+    classCodeLength,
+    sessionTtlMs
+  };
+}
+
+function buildCorsHeaders(origin, config) {
+  const requestOrigin = String(origin || "").trim().replace(/\/+$/, "");
+  const configuredOrigins = parseCsv(config.allowOrigin)
+    .map((item) => item.replace(/\/+$/, ""))
+    .filter(Boolean);
+
+  let allowOrigin = "*";
+  if (configuredOrigins.length && !configuredOrigins.includes("*")) {
+    if (requestOrigin && configuredOrigins.includes(requestOrigin)) allowOrigin = requestOrigin;
+    else allowOrigin = configuredOrigins[0];
+  }
+
+  return {
+    "Access-Control-Allow-Origin": allowOrigin,
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": DEFAULT_CORS_HEADERS,
+    // Required by Chromium private-network access preflights when the
+    // extension/page calls a localhost backend from a secure origin.
+    "Access-Control-Allow-Private-Network": "true",
+    "Access-Control-Max-Age": "86400"
+  };
+}
+
+function respondJson(status, body, origin, config) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...buildCorsHeaders(origin, config)
+    }
+  });
+}
+
+function respondHtml(status, html, origin, config) {
+  return new Response(html, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      ...buildCorsHeaders(origin, config)
+    }
+  });
+}
+
+function handleOptions(origin, config) {
+  return new Response(null, {
+    status: 204,
+    headers: buildCorsHeaders(origin, config)
+  });
+}
+
+async function readJson(request, maxBytes = MAX_JSON_BYTES) {
+  const text = await request.text();
+  const size = new TextEncoder().encode(text).length;
+  if (size > maxBytes) {
+    throw new Error("Payload too large");
+  }
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error("Invalid JSON");
+  }
+}
+
+function withTimeout(promise, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  const wrapped = promise(controller.signal)
+    .finally(() => clearTimeout(timeoutId));
+
+  return wrapped;
+}
+
+function sanitizeMakeCode(input) {
+  if (!input) return "";
+  let text = String(input);
+  if (/^```/.test(text)) text = text.replace(/^```[\s\S]*?\n/, "").replace(/```\s*$/, "");
+  text = text.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\t/g, "\t");
+  text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  text = text.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
+  text = text.replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\u00A0/g, " ");
+  text = text.replace(/^`+|`+$/g, "");
+  return text.trim();
+}
+
+function normaliseFeedback(items, fallback = "") {
+  const seen = new Set();
+  const list = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const text = String(item || "").trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push(text);
+  }
+  if (!list.length && fallback) list.push(fallback);
+  return list;
+}
+
+function extractJsonObjectCandidates(text) {
+  const matches = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === "\"") inString = false;
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (char === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+
+    if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start !== -1) {
+        matches.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return matches;
+}
+
+function parseJsonObjectsFromText(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return [];
+
+  const candidates = [text];
+  const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch && fencedMatch[1]) candidates.push(fencedMatch[1].trim());
+  candidates.push(...extractJsonObjectCandidates(text));
+
+  const parsedObjects = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const source = String(candidate || "").trim();
+    if (!source || seen.has(source)) continue;
+    seen.add(source);
+    try {
+      const parsed = JSON.parse(source);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        parsedObjects.push(parsed);
+      }
+    } catch (error) {
+    }
+  }
+  return parsedObjects;
+}
+
+function isModelOutputObject(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  return Object.prototype.hasOwnProperty.call(parsed, "code");
+}
+
+function extractCode(raw) {
+  if (!raw) return "";
+  const match = String(raw).match(/```[a-z]*\n([\s\S]*?)```/i);
+  const code = match ? match[1] : raw;
+  return sanitizeMakeCode(code);
+}
+
+function parseModelOutput(raw) {
+  const parsedObjects = parseJsonObjectsFromText(raw);
+  for (const parsed of parsedObjects) {
+    if (!isModelOutputObject(parsed)) continue;
+    const rawFeedback = Array.isArray(parsed.feedback)
+      ? parsed.feedback
+      : (parsed.feedback == null ? [] : [parsed.feedback]);
+    return {
+      feedback: normaliseFeedback(rawFeedback),
+      code: extractCode(parsed.code == null ? "" : String(parsed.code))
+    };
+  }
+  return { feedback: [], code: extractCode(raw) };
+}
+
+function validateBlocksCompatibility(code, target) {
+  const rules = [
+    { re: /=>/g, why: "arrow functions" },
+    { re: /\bclass\s+/g, why: "classes" },
+    { re: /\bnew\s+[A-Z_a-z]/g, why: "new constructor" },
+    { re: /\bPromise\b|\basync\b|\bawait\b/g, why: "promises/async" },
+    { re: /\bimport\s|\bexport\s/g, why: "import/export" },
+    { re: /\$\{[^}]+\}/g, why: "template string interpolation" },
+    { re: /\.\s*(map|forEach|filter|reduce|find|some|every)\s*\(/g, why: "higher-order array methods" },
+    { re: /\bnamespace\b|\bmodule\b/g, why: "namespaces/modules" },
+    { re: /\benum\b|\binterface\b|\btype\s+[A-Z_a-z]/g, why: "TS types/enums" },
+    { re: /<\s*[A-Z_a-z0-9_,\s]+>/g, why: "generics syntax" },
+    { re: /setTimeout\s*\(|setInterval\s*\(/g, why: "timers" },
+    { re: /console\./g, why: "console calls" },
+    { re: /^\s*\/\//m, why: "line comments" },
+    { re: /\/\*[\s\S]*?\*\//g, why: "block comments" },
+    { re: /\brandint\s*\(/g, why: "randint()" },
+    { re: /(\*=|\/=|%=|\|=|&=|\^=|<<=|>>=|>>>=)/g, why: "unsupported assignment operators" }
+  ];
+  const bitwiseRules = [
+    /<<|>>>|>>/,
+    /\^/,
+    /(^|[^|])\|([^|=]|$)/m,
+    /(^|[^&])&([^&=]|$)/m
+  ];
+  const eventRegistrationRe = /\b(?:basic\.forever|loops\.forever|input\.on[A-Z_a-z0-9_]*|radio\.on[A-Z_a-z0-9_]*|pins\.on[A-Z_a-z0-9_]*|controller\.[A-Z_a-z0-9_]*\.onEvent|controller\.on[A-Z_a-z0-9_]*|sprites\.on[A-Z_a-z0-9_]*|scene\.on[A-Z_a-z0-9_]*|game\.on[A-Z_a-z0-9_]*|info\.on[A-Z_a-z0-9_]*|control\.inBackground)\s*\(/;
+
+  if ((target === "microbit" || target === "maker") && /sprites\.|controller\.|scene\.|game\.onUpdate/i.test(code)) {
+    return { ok: false, violations: ["Arcade APIs in micro:bit/Maker"] };
+  }
+  if (target === "arcade" && (/led\./i.test(code) || /radio\./i.test(code))) {
+    return { ok: false, violations: ["micro:bit APIs in Arcade"] };
+  }
+
+  const violations = [];
+  const stringStrippedCode = code.replace(
+    /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
+    (match) => " ".repeat(match.length)
+  );
+  for (const rule of rules) {
+    if (rule.re.test(code)) violations.push(rule.why);
+  }
+  if (/\bnull\b/.test(stringStrippedCode)) violations.push("null");
+  if (/\bundefined\b/.test(stringStrippedCode)) violations.push("undefined");
+  if (/\bas\s+[A-Z_a-z][A-Z_a-z0-9_.]*/.test(stringStrippedCode)) violations.push("casts");
+  if (bitwiseRules.some((rule) => rule.test(code))) violations.push("bitwise operators");
+  if (/\bfor\s*\([^)]*\bin\b[^)]*\)/.test(code)) violations.push("for...in loops");
+
+  const forHeaderRe = /for\s*\(([^)]*)\)/g;
+  let forMatch;
+  while ((forMatch = forHeaderRe.exec(code))) {
+    const header = forMatch[1].trim();
+    if (/\bof\b/.test(header)) continue;
+    const parts = header.split(";").map((part) => part.trim());
+    if (parts.length !== 3) {
+      violations.push("invalid for-loop shape");
+      continue;
+    }
+    const initMatch = parts[0].match(/^let\s+([A-Z_a-z][A-Z_a-z0-9_]*)\s*=\s*0$/);
+    if (!initMatch) {
+      violations.push("for-loop initializer must be let i = 0");
+      continue;
+    }
+    const indexVar = initMatch[1];
+    if (!new RegExp("^" + indexVar + "\\s*(<|<=)\\s*.+$").test(parts[1])) {
+      violations.push("for-loop condition must be i < limit or i <= limit");
+    }
+    if (!new RegExp("^(?:" + indexVar + "\\+\\+|\\+\\+" + indexVar + ")$").test(parts[2])) {
+      violations.push("for-loop increment must be i++");
+    }
+  }
+
+  const lines = code.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  let depth = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const lineDepth = depth;
+    if (trimmed) {
+      if (lineDepth > 0 && eventRegistrationRe.test(trimmed)) violations.push("nested event registration");
+      const fnDecl = trimmed.match(/^function\s+([A-Z_a-z][A-Z_a-z0-9_]*)\s*\(([^)]*)\)/);
+      if (fnDecl) {
+        if (lineDepth > 0) violations.push("non-top-level function declaration");
+        const params = fnDecl[2].trim();
+        if (params && (params.includes("?") || params.includes("="))) {
+          violations.push("optional/default parameters in function declaration");
+        }
+      }
+      if (/^let\s+[A-Z_a-z][A-Z_a-z0-9_]*(\s*:\s*[^=;]+)?\s*;?$/.test(trimmed)) {
+        violations.push("variable declaration without initializer");
+      }
+    }
+    const opens = (line.match(/\{/g) || []).length;
+    const closes = (line.match(/\}/g) || []).length;
+    depth = Math.max(0, depth + opens - closes);
+  }
+
+  if (/[^\x09\x0A\x0D\x20-\x7E]/.test(code)) violations.push("non-ASCII characters");
+  return { ok: violations.length === 0, violations: [...new Set(violations)] };
+}
+
+function stubForTarget(target) {
+  if (target === "arcade") {
+    return [
+      "controller.A.onEvent(ControllerButtonEvent.Pressed, function () {",
+      "    game.splash(\"Start!\")",
+      "})",
+      "game.onUpdate(function () {",
+      "})"
+    ].join("\n");
+  }
+  if (target === "maker") {
+    return ["loops.forever(function () {", "})"].join("\n");
+  }
+  return [
+    "basic.onStart(function () {",
+    "    basic.showString(\"Hi\")",
+    "})"
+  ].join("\n");
+}
+
+function extractGeminiText(response) {
+  try {
+    if (!response) return "";
+    if (response.candidates && response.candidates.length > 0) {
+      const candidate = response.candidates[0];
+      if (candidate.finishReason && String(candidate.finishReason).toUpperCase().includes("BLOCK")) return "";
+      const parts = (candidate.content && candidate.content.parts) || [];
+      let text = "";
+      for (const part of parts) {
+        if (part.text) text += part.text;
+      }
+      return (text || "").trim();
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+const TARGET_CONFIGS = {
+  microbit: {
+    name: "micro:bit",
+    apis: [
+      "basic: showNumber(n), showString(s), showIcon(IconNames), showLeds(`...`), showArrow(ArrowNames), clearScreen(), forever(handler), pause(ms)",
+      "input: onButtonPressed(Button.A/B/AB, handler), onGesture(Gesture.Shake/Tilt/..., handler), onPinPressed(TouchPin.P0/P1/P2, handler), buttonIsPressed(Button), temperature(), lightLevel(), acceleration(Dimension.X/Y/Z), compassHeading(), rotation(Rotation), magneticForce(Dimension), runningTime()",
+      "music: playTone(Note, BeatFraction), ringTone(freq), rest(BeatFraction), beat(BeatFraction), tempo(), setTempo(bpm), changeTempoBy(delta)",
+      "led: plot(x,y), unplot(x,y), toggle(x,y), point(x,y), brightness(), setBrightness(n), plotBarGraph(value, high), enable(on)",
+      "radio: sendNumber(n), sendString(s), sendValue(name, n), onReceivedNumber(handler), onReceivedString(handler), setGroup(id), setTransmitPower(n), setTransmitSerialNumber(on)",
+      "game: createSprite(x,y), .move(n), .turn(Direction,degrees), .ifOnEdgeBounce(), .isTouching(other), .isTouchingEdge(), addScore(n), score(), setScore(n), setLife(n), addLife(n), removeLife(n), gameOver(), startCountdown(ms)",
+      "pins: digitalReadPin(DigitalPin), digitalWritePin(DigitalPin,value), analogReadPin(AnalogPin), analogWritePin(AnalogPin,value), servoWritePin(AnalogPin,value), map(value,fromLow,fromHigh,toLow,toHigh), onPulsed(DigitalPin,PulseValue,handler), analogSetPitchPin(AnalogPin), analogPitch(freq,ms)",
+      "images: createImage(`...`), createBigImage(`...`), arrowImage(ArrowNames), iconImage(IconNames)",
+      "serial: writeLine(s), writeNumber(n), writeValue(name,value), readLine(), onDataReceived(delimiter,handler), redirect(tx,rx,rate)",
+      "control: inBackground(handler), reset(), waitMicros(us)",
+      "loops, logic, variables, math, functions, arrays, text (standard language built-ins)"
+    ].join("\n"),
+    example: [
+      "input.onButtonPressed(Button.A, function () {",
+      "    basic.showString(\"Hello\")",
+      "})",
+      "let count = 0",
+      "basic.forever(function () {",
+      "    count += 1",
+      "    basic.showNumber(count)",
+      "    basic.pause(1000)",
+      "})"
+    ].join("\n")
+  },
+  arcade: {
+    name: "Arcade",
+    apis: [
+      "sprites: create(img, SpriteKind), createProjectileFromSprite(img, sprite, vx, vy), onCreated(SpriteKind, handler), onDestroyed(SpriteKind, handler), onOverlap(SpriteKind, SpriteKind, handler), allOfKind(SpriteKind)",
+      "controller: moveSprite(sprite, vx, vy), controller.A.onEvent(ControllerButtonEvent, handler), controller.B.onEvent(ControllerButtonEvent, handler), dx(), dy()",
+      "scene: setBackgroundColor(color), setBackgroundImage(img), cameraFollowSprite(sprite), setTileMapLevel(tilemap), onHitWall(SpriteKind, handler), onOverlapTile(SpriteKind, tile, handler)",
+      "game: onUpdate(handler), onUpdateInterval(ms, handler), splash(title, subtitle?), over(win), reset()",
+      "info: score(), setScore(n), changeScoreBy(n), life(), setLife(n), changeLifeBy(n), startCountdown(s), onCountdownEnd(handler), onLifeZero(handler)",
+      "music: playTone(freq, ms), playMelody(melody, tempo), setVolume(vol)",
+      "effects: spray, fire, warm radial, cool radial, halo, fountain (applied via sprite.startEffect())",
+      "animation: runImageAnimation(sprite, frames, interval, loop), runMovementAnimation(sprite, path, interval, loop)"
+    ].join("\n"),
+    example: [
+      "let mySprite = sprites.create(img`",
+      "    . . . . . . . . . . . . . . . .",
+      "    . . . . . . . . . . . . . . . .",
+      "    . . . . . 7 7 7 7 7 . . . . . .",
+      "    . . . . 7 7 7 7 7 7 7 . . . . .",
+      "    . . . 7 7 7 7 7 7 7 7 7 . . . .",
+      "    . . . . 7 7 7 7 7 7 7 . . . . .",
+      "    . . . . . 7 7 7 7 7 . . . . . .",
+      "    . . . . . . . . . . . . . . . .",
+      "`, SpriteKind.Player)",
+      "controller.moveSprite(mySprite)",
+      "mySprite.setStayInScreen(true)"
+    ].join("\n")
+  },
+  maker: {
+    name: "Maker",
+    apis: [
+      "pins: digitalReadPin(DigitalPin), digitalWritePin(DigitalPin, value), analogReadPin(AnalogPin), analogWritePin(AnalogPin, value), servoWritePin(AnalogPin, value), map(value, fromLow, fromHigh, toLow, toHigh)",
+      "input: onButtonPressed(handler), buttonIsPressed(), temperature(), lightLevel()",
+      "loops: forever(handler), pause(ms)",
+      "music: playTone(freq, ms), ringTone(freq), rest(ms), setTempo(bpm)"
+    ].join("\n"),
+    example: [
+      "let on = false",
+      "loops.forever(function () {",
+      "    on = !(on)",
+      "    if (on) {",
+      "        pins.digitalWritePin(DigitalPin.P0, 1)",
+      "    } else {",
+      "        pins.digitalWritePin(DigitalPin.P0, 0)",
+      "    }",
+      "    loops.pause(500)",
+      "})"
+    ].join("\n")
+  }
+};
+
+function systemPromptFor(target) {
+  const config = TARGET_CONFIGS[target] || TARGET_CONFIGS.microbit;
+
+  return [
+    `You are a Microsoft MakeCode assistant for ${config.name}.`,
+    `Your ONLY job is to produce MakeCode Static TypeScript that the MakeCode editor can decompile into visual BLOCKS for ${config.name}. Every line you output must be representable as a block. If a language feature has no block equivalent, do not use it.`,
+    "",
+    "AVAILABLE APIs:",
+    config.apis,
+    "",
+    "BLOCK-COMPATIBLE PATTERNS (use these):",
+    "- Event handlers: input.onButtonPressed(Button.A, function () { })",
+    "- Forever loops: basic.forever(function () { })",
+    "- Variables with let: let x = 0",
+    "- Control flow: if/else, while, for (let i = 0; i < n; i++), for (let v of list)",
+    "- Random choice from a list: options._pickRandom()",
+    "- Named functions: function doSomething() { }",
+    "",
+    "BLOCK-SAFE REQUIREMENTS (hard):",
+    "- No grey JavaScript blocks: every line must map to editable blocks",
+    "- Every variable declaration must have an initializer (let x = ...)",
+    "- For loops must be exactly: for (let i = 0; i < limit; i++) or for (let i = 0; i <= limit; i++)",
+    "- Event registrations and function declarations must be top-level",
+    "- Do not use optional/default parameters in user-defined functions",
+    "- Do not return a value inside callbacks/event handlers",
+    "- Do not pass more arguments than a block signature supports",
+    "- In statements, assignment operators are limited to =, +=, -=",
+    "",
+    "AVOID (these won't decompile to blocks):",
+    "- Arrow functions (=>), ternary (? :), destructuring, spread/rest (...)",
+    "- const, var (use let for all variables)",
+    "- Template literals for strings (use \"string\" + variable, not `${}`). Exception: backtick image literals like img`...` and showLeds(`...`) ARE allowed — these are a special MakeCode compiler feature, not string templates.",
+    "- Optional chaining (?.), nullish coalescing (??)",
+    "- for...in loops",
+    "- import/export, async/await, yield, eval",
+    "- Classes, interfaces, type aliases, enums, generics in user code",
+    "- Higher-order array methods (map/filter/reduce/forEach)",
+    "- randint(...) (use list._pickRandom() for random selections)",
+    "- null, undefined, casts (as), bitwise operators (| & ^ << >> >>>), bitwise compound assignments",
+    "- setTimeout, setInterval, console, Promise",
+    "- Comments, markdown fences, prose after code",
+    "",
+    "RESPONSE FORMAT:",
+    "- Return ONLY a JSON object with this exact shape:",
+    "- {\"feedback\":[\"short note\"],\"code\":\"MakeCode Static TypeScript with \\\\n escapes\"}",
+    "- feedback must be an array of one or more short strings",
+    "- code must be MakeCode Static TypeScript encoded as a JSON string (use escaped \\n for new lines, no markdown fences)",
+    "- Straight quotes, ASCII only, function () { } handlers",
+    "- If PAGE_ERRORS are provided, treat them as failing diagnostics and prioritise resolving all of them",
+    "- If CONVERSION_DIALOG is provided, ensure the output converts from JavaScript back to Blocks in MakeCode",
+    "",
+    `TARGET SCOPE: Use ONLY ${config.name} APIs listed above. Never mix APIs from other targets.`,
+    "",
+    "EXAMPLE:",
+    config.example,
+    "",
+    `If unsure about an API, return a minimal working program for ${config.name}.`
+  ].join("\n");
+}
+
+function userPromptFor(request, currentCode, pageErrors, conversionDialog) {
+  const header = "USER_REQUEST:\n" + request.trim();
+  const blocks = [header];
+  const errors = Array.isArray(pageErrors)
+    ? pageErrors.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (errors.length) {
+    blocks.push("<<<PAGE_ERRORS>>>\n- " + errors.join("\n- ") + "\n<<<END_PAGE_ERRORS>>>");
+  }
+  const dialogTitle = conversionDialog && conversionDialog.title ? String(conversionDialog.title).trim() : "";
+  const dialogDescription = conversionDialog && conversionDialog.description ? String(conversionDialog.description).trim() : "";
+  if (dialogTitle || dialogDescription) {
+    const lines = [];
+    if (dialogTitle) lines.push("Title: " + dialogTitle);
+    if (dialogDescription) lines.push("Message: " + dialogDescription);
+    blocks.push("<<<CONVERSION_DIALOG>>>\n" + lines.join("\n") + "\n<<<END_CONVERSION_DIALOG>>>");
+  }
+  if (currentCode && String(currentCode).trim()) {
+    blocks.push("<<<CURRENT_CODE>>>\n" + currentCode + "\n<<<END_CURRENT_CODE>>>");
+  }
+  return blocks.join("\n\n");
+}
+
+async function callOpenAI(key, model, system, user, signal) {
+  const body = {
+    model,
+    temperature: 0.1,
+    max_tokens: 3072,
+    messages: [{ role: "system", content: system }, { role: "user", content: user }]
+  };
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + key
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI error (${response.status})`);
+  }
+
+  const data = await response.json();
+  return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
+}
+
+async function callOpenRouter(key, model, system, user, signal) {
+  const body = {
+    model,
+    temperature: 0.1,
+    max_tokens: 3072,
+    messages: [{ role: "system", content: system }, { role: "user", content: user }]
+  };
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + key
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenRouter error (${response.status})`);
+  }
+
+  const data = await response.json();
+  return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "";
+}
+
+async function callGemini(key, model, system, user, signal) {
+  const url = "https://generativelanguage.googleapis.com/v1/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(key);
+  const body = {
+    contents: [{ role: "user", parts: [{ text: system + "\n\n" + user }] }],
+    generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 3072
+    }
+  };
+
+  const response = await fetch(url, {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Gemini error (${response.status})`);
+  }
+
+  const data = await response.json();
+  return extractGeminiText(data);
+}
+
+async function generateManaged({ target, request, currentCode, pageErrors, conversionDialog, provider, model }, runtimeConfig) {
+  const selected = resolveProviderSelection(runtimeConfig.providerConfig, provider, model);
+
+  const system = systemPromptFor(target);
+  const user = userPromptFor(request, currentCode || "", pageErrors || [], conversionDialog || null);
+  const callProvider = async (systemPrompt) => withTimeout(async (signal) => {
+    if (selected.provider === "openai") return callOpenAI(selected.key, selected.model, systemPrompt, user, signal);
+    if (selected.provider === "gemini") return callGemini(selected.key, selected.model, systemPrompt, user, signal);
+    if (selected.provider === "openrouter") return callOpenRouter(selected.key, selected.model, systemPrompt, user, signal);
+    throw new Error(`Unsupported provider '${selected.provider}'`);
+  }, runtimeConfig.requestTimeoutMs);
+
+  const oneAttempt = async (extraSystem, insistOnlyCode) => {
+    const prompt = system
+      + (extraSystem ? ("\n" + extraSystem) : "")
+      + (insistOnlyCode ? "\nMANDATE: Output only compact JSON with keys feedback (array) and code (string). No prose." : "");
+    const raw = await callProvider(prompt);
+    const parsed = parseModelOutput(raw);
+    const code = parsed.code;
+    const validation = code ? validateBlocksCompatibility(code, target) : { ok: false, violations: ["empty output"] };
+    return { code, feedback: parsed.feedback, validation };
+  };
+
+  let result = await oneAttempt("", false);
+
+  for (let i = 0; i < runtimeConfig.emptyRetries && (!result.code || !result.code.trim()); i++) {
+    result = await oneAttempt("Your last message had empty code. Return valid JSON only with feedback[] and code string.", true);
+  }
+
+  for (let i = 0; i < runtimeConfig.validationRetries && result.code && result.code.trim() && result.validation && !result.validation.ok; i++) {
+    const violations = result.validation.violations || [];
+    const extra = i === 0
+      ? ("Previous code used: " + violations.join(", ") + ". Remove ALL forbidden constructs and return fully Blocks-compatible code.")
+      : ("STRICT MODE: Output a smaller program that fully decompiles to Blocks. Absolutely no: " + violations.join(", ") + ".");
+    result = await oneAttempt(extra, true);
+  }
+
+  if (!result.code || !result.code.trim()) {
+    return {
+      code: stubForTarget(target),
+      feedback: normaliseFeedback(
+        [...(result.feedback || []), "Model returned no code; provided fallback stub."],
+        DEFAULT_FEEDBACK
+      )
+    };
+  }
+
+  if (!result.validation || !result.validation.ok) {
+    const violations = (result.validation && result.validation.violations) || [];
+    return {
+      code: stubForTarget(target),
+      feedback: normaliseFeedback(
+        [...(result.feedback || []), "Validation fallback: " + (violations.join(", ") || "unknown compatibility issue")],
+        DEFAULT_FEEDBACK
+      )
+    };
+  }
+
+  return {
+    code: result.code,
+    feedback: normaliseFeedback(result.feedback, DEFAULT_FEEDBACK)
+  };
+}
+
+function extractBearerToken(headerValue) {
+  if (!headerValue) return "";
+  const match = String(headerValue).match(/^Bearer\s+(.+)$/i);
+  return match ? match[1] : "";
+}
+
+function validatePayload(payload) {
+  const target = payload && typeof payload.target === "string" ? payload.target.trim() : "";
+  const request = payload && typeof payload.request === "string" ? payload.request.trim() : "";
+  const currentCode = payload && typeof payload.currentCode === "string" ? payload.currentCode : "";
+  const provider = payload && typeof payload.provider === "string" ? payload.provider.trim().toLowerCase() : "";
+  const model = payload && typeof payload.model === "string" ? payload.model.trim() : "";
+  const rawPageErrors = payload && Array.isArray(payload.pageErrors) ? payload.pageErrors : [];
+  const pageErrors = rawPageErrors
+    .map((item) => String(item || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const rawConversionDialog = payload && payload.conversionDialog && typeof payload.conversionDialog === "object"
+    ? payload.conversionDialog
+    : null;
+  const conversionDialog = rawConversionDialog
+    ? {
+      title: String(rawConversionDialog.title || "").replace(/\s+/g, " ").trim().slice(0, 220),
+      description: String(rawConversionDialog.description || "").replace(/\s+/g, " ").trim().slice(0, 320)
+    }
+    : null;
+
+  if (!request) {
+    return { ok: false, error: "'request' is required" };
+  }
+
+  const safeTarget = ["microbit", "arcade", "maker"].includes(target) ? target : "microbit";
+
+  return {
+    ok: true,
+    value: {
+      target: safeTarget,
+      request,
+      currentCode,
+      pageErrors,
+      conversionDialog,
+      provider,
+      model
+    }
+  };
+}
+
+function getAuthMode(runtimeConfig) {
+  return runtimeConfig.authMode || "none";
+}
+
+function getPublicServerConfig(runtimeConfig) {
+  const defaultProvider = runtimeConfig.providerConfig.defaultProvider;
+  return {
+    authMode: getAuthMode(runtimeConfig),
+    classCodeRequired: getAuthMode(runtimeConfig) === "classroom",
+    classCodeLength: runtimeConfig.classCodeLength,
+    enabledProviders: runtimeConfig.providerConfig.enabledProviders,
+    defaultProvider,
+    defaultModel: runtimeConfig.providerConfig.defaultModelFor(defaultProvider)
+  };
+}
+
+function buildAdminStatus(runtimeConfig, sessionStore) {
+  const status = {
+    ok: true,
+    timestamp: new Date().toISOString(),
+    ...getPublicServerConfig(runtimeConfig),
+    allowOrigin: runtimeConfig.allowOrigin,
+    activeSessions: sessionStore.size()
+  };
+
+  if (getAuthMode(runtimeConfig) === "classroom") {
+    status.classCode = runtimeConfig.classroomCode;
+  }
+
+  return status;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderAdminPanel(runtimeConfig, sessionStore, requestUrl) {
+  const status = buildAdminStatus(runtimeConfig, sessionStore);
+  const authMode = getAuthMode(runtimeConfig);
+  const authHint = authMode === "classroom"
+    ? `Classroom mode is enabled. Open this page with <code>?code=${escapeHtml(runtimeConfig.classroomCode)}</code> or send <code>X-Vibbit-Class-Code</code>.`
+    : (authMode === "app-token"
+      ? "App-token mode is enabled. Open this page with <code>?token=...</code> or send <code>Authorization: Bearer ...</code>."
+      : "No admin auth is configured.");
+
+  const baseUrl = `${requestUrl.origin}`;
+  const healthzUrl = `${baseUrl}/healthz`;
+  const configUrl = `${baseUrl}/vibbit/config`;
+  const statusUrl = `${baseUrl}/admin/status`;
+
+  return [
+    "<!doctype html>",
+    "<html lang=\"en\">",
+    "<head>",
+    "<meta charset=\"utf-8\">",
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+    "<title>Vibbit Backend Admin</title>",
+    "<style>",
+    "body{margin:0;background:#0b1324;color:#e6edf8;font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}",
+    ".wrap{max-width:980px;margin:32px auto;padding:0 16px}",
+    ".card{background:#111b33;border:1px solid #243152;border-radius:12px;padding:16px;margin-bottom:14px}",
+    "h1{margin:0 0 4px;font-size:22px}",
+    "h2{margin:0 0 10px;font-size:16px}",
+    "p{margin:6px 0;color:#c0cee8}",
+    "code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}",
+    "pre{margin:0;padding:14px;background:#0a1222;border:1px solid #1d2a47;border-radius:10px;overflow:auto;color:#d7e3ff}",
+    "a{color:#9ec3ff;text-decoration:none}",
+    "a:hover{text-decoration:underline}",
+    ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}",
+    ".metric{background:#0b162b;border:1px solid #1d2b49;border-radius:10px;padding:10px}",
+    ".label{font-size:12px;color:#9eb1d6;margin-bottom:2px}",
+    ".value{font-size:15px;font-weight:600;color:#f4f8ff}",
+    "</style>",
+    "</head>",
+    "<body>",
+    "<main class=\"wrap\">",
+    "<div class=\"card\">",
+    "<h1>Vibbit Backend Admin</h1>",
+    `<p>${authHint}</p>`,
+    "</div>",
+    "<div class=\"card\">",
+    "<h2>Server Status</h2>",
+    "<div class=\"grid\">",
+    `<div class=\"metric\"><div class=\"label\">Auth mode</div><div class=\"value\">${escapeHtml(status.authMode)}</div></div>`,
+    `<div class=\"metric\"><div class=\"label\">Default provider</div><div class=\"value\">${escapeHtml(status.defaultProvider)}</div></div>`,
+    `<div class=\"metric\"><div class=\"label\">Default model</div><div class=\"value\">${escapeHtml(status.defaultModel)}</div></div>`,
+    `<div class=\"metric\"><div class=\"label\">Active sessions</div><div class=\"value\">${escapeHtml(status.activeSessions)}</div></div>`,
+    "</div>",
+    "</div>",
+    "<div class=\"card\">",
+    "<h2>Quick Links</h2>",
+    `<p><a href="${escapeHtml(healthzUrl)}" target="_blank" rel="noreferrer">/healthz</a></p>`,
+    `<p><a href="${escapeHtml(configUrl)}" target="_blank" rel="noreferrer">/vibbit/config</a></p>`,
+    `<p><a href="${escapeHtml(statusUrl)}" target="_blank" rel="noreferrer">/admin/status</a></p>`,
+    "</div>",
+    "<div class=\"card\">",
+    "<h2>Admin JSON</h2>",
+    `<pre>${escapeHtml(JSON.stringify(status, null, 2))}</pre>`,
+    "</div>",
+    "</main>",
+    "</body>",
+    "</html>"
+  ].join("");
+}
+
+function isAdminRequestAuthorised(request, runtimeConfig, requestUrl) {
+  const authMode = getAuthMode(runtimeConfig);
+  if (authMode === "none") return true;
+
+  const bearer = extractBearerToken(request.headers.get("authorization"));
+
+  if (authMode === "app-token") {
+    const queryToken = String(requestUrl.searchParams.get("token") || "").trim();
+    const candidate = bearer || queryToken;
+    return Boolean(candidate && candidate === runtimeConfig.appToken);
+  }
+
+  if (authMode === "classroom") {
+    const classHeader = String(request.headers.get("x-vibbit-class-code") || "").trim();
+    const queryCode = String(requestUrl.searchParams.get("code") || "").trim();
+    const candidate = classHeader || queryCode || bearer;
+    return isClassroomCodeValid(candidate, runtimeConfig);
+  }
+
+  return false;
+}
+
+function isClassroomCodeValid(candidate, runtimeConfig) {
+  if (!runtimeConfig.classroomCode) return false;
+  return normaliseClassCode(candidate) === runtimeConfig.classroomCode;
+}
+
+function isGenerateRequestAuthorised(request, runtimeConfig, sessionStore) {
+  const authMode = getAuthMode(runtimeConfig);
+  if (authMode === "none") return true;
+
+  const authHeader = request.headers.get("authorization");
+  const bearer = extractBearerToken(authHeader);
+
+  if (authMode === "app-token") {
+    return Boolean(bearer && bearer === runtimeConfig.appToken);
+  }
+
+  if (authMode === "classroom") {
+    const sessionHeader = String(request.headers.get("x-vibbit-session") || "").trim();
+    if (sessionStore.isValidSession(sessionHeader) || sessionStore.isValidSession(bearer)) {
+      return true;
+    }
+    return false;
+  }
+
+  return false;
+}
+
+function buildStartupInfo(runtimeConfig, { listenUrl } = {}) {
+  const info = [
+    `[Vibbit backend] Provider=${runtimeConfig.providerConfig.defaultProvider} model=${runtimeConfig.providerConfig.defaultModelFor(runtimeConfig.providerConfig.defaultProvider)}`,
+    `[Vibbit backend] Enabled providers=${runtimeConfig.providerConfig.enabledProviders.join(", ")}`,
+    `[Vibbit backend] Auth mode=${getAuthMode(runtimeConfig)}`
+  ];
+  if (listenUrl) info.unshift(`[Vibbit backend] Listening on ${listenUrl}`);
+  if (getAuthMode(runtimeConfig) === "classroom") {
+    info.push(`[Vibbit backend] Share with students -> URL: ${listenUrl || "<your-server-url>"} | class code: ${runtimeConfig.classroomCode}`);
+  }
+  if (getAuthMode(runtimeConfig) === "app-token") {
+    info.push("[Vibbit backend] SERVER_APP_TOKEN auth enabled");
+  }
+  return info;
+}
+
+function classifyRequestError(error, runtimeConfig) {
+  const isTimeout = error && error.name === "AbortError";
+  if (isTimeout) {
+    return {
+      status: 504,
+      message: `Generation timed out after ${runtimeConfig.requestTimeoutMs}ms`
+    };
+  }
+
+  const message = error && error.message ? error.message : "Internal server error";
+  if (message === "Invalid JSON" || message === "Payload too large" || message === "'request' is required") {
+    return { status: 400, message };
+  }
+  if (message.includes("is not enabled on this server") || message.includes("is not allowed for provider")) {
+    return { status: 400, message };
+  }
+  return { status: 500, message };
+}
+
+export function createBackendRuntime(options = {}) {
+  const env = options.env || (typeof process !== "undefined" ? process.env : {});
+  const runtimeConfig = createRuntimeConfig(env);
+  const sessionStore = createSessionStore(runtimeConfig.sessionTtlMs);
+
+  const handleConnect = async (request, origin) => {
+    const authMode = getAuthMode(runtimeConfig);
+    const body = await readJson(request, 16 * 1024);
+    const providedCode = body && (body.classCode || body.code);
+
+    if (authMode === "app-token") {
+      const token = extractBearerToken(request.headers.get("authorization"));
+      if (!token || token !== runtimeConfig.appToken) {
+        return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
+      }
+    } else if (authMode === "classroom") {
+      const classHeader = request.headers.get("x-vibbit-class-code");
+      if (!isClassroomCodeValid(providedCode || classHeader, runtimeConfig)) {
+        return respondJson(401, { error: "Invalid class code" }, origin, runtimeConfig);
+      }
+    }
+
+    const session = sessionStore.createSession({
+      student: String((body && body.student) || "").trim().slice(0, 120)
+    });
+
+    return respondJson(200, {
+      ok: true,
+      ...getPublicServerConfig(runtimeConfig),
+      sessionToken: session.token,
+      expiresAt: new Date(session.expiresAt).toISOString()
+    }, origin, runtimeConfig);
+  };
+
+  const fetchHandler = async (request) => {
+    const origin = request.headers.get("origin") || "";
+    const requestUrl = new URL(request.url);
+    const rawPathname = requestUrl.pathname;
+    const pathname = rawPathname === "/api"
+      ? "/"
+      : (rawPathname.startsWith("/api/") ? rawPathname.slice(4) : rawPathname);
+
+    if (request.method === "OPTIONS") {
+      return handleOptions(origin, runtimeConfig);
+    }
+
+    if (pathname === "/healthz" && request.method === "GET") {
+      return respondJson(200, {
+        ok: true,
+        ...getPublicServerConfig(runtimeConfig),
+        tokenRequired: getAuthMode(runtimeConfig) !== "none",
+        activeSessions: sessionStore.size()
+      }, origin, runtimeConfig);
+    }
+
+    if (pathname === "/vibbit/config" && request.method === "GET") {
+      return respondJson(200, {
+        ok: true,
+        ...getPublicServerConfig(runtimeConfig)
+      }, origin, runtimeConfig);
+    }
+
+    if (pathname === "/vibbit/connect" && request.method === "POST") {
+      try {
+        return await handleConnect(request, origin);
+      } catch (error) {
+        const { status, message } = classifyRequestError(error, runtimeConfig);
+        return respondJson(status, { error: message }, origin, runtimeConfig);
+      }
+    }
+
+    if (pathname === "/admin" && request.method === "GET") {
+      if (!isAdminRequestAuthorised(request, runtimeConfig, requestUrl)) {
+        return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
+      }
+      const html = renderAdminPanel(runtimeConfig, sessionStore, requestUrl);
+      return respondHtml(200, html, origin, runtimeConfig);
+    }
+
+    if (pathname === "/admin/status" && request.method === "GET") {
+      if (!isAdminRequestAuthorised(request, runtimeConfig, requestUrl)) {
+        return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
+      }
+      return respondJson(200, buildAdminStatus(runtimeConfig, sessionStore), origin, runtimeConfig);
+    }
+
+    if (pathname === "/vibbit/generate" && request.method === "POST") {
+      try {
+        if (!isGenerateRequestAuthorised(request, runtimeConfig, sessionStore)) {
+          return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
+        }
+
+        const payload = await readJson(request);
+        const validated = validatePayload(payload);
+        if (!validated.ok) {
+          return respondJson(400, { error: validated.error }, origin, runtimeConfig);
+        }
+
+        const result = await generateManaged(validated.value, runtimeConfig);
+        return respondJson(200, result, origin, runtimeConfig);
+      } catch (error) {
+        const { status, message } = classifyRequestError(error, runtimeConfig);
+        return respondJson(status, { error: message }, origin, runtimeConfig);
+      }
+    }
+
+    return respondJson(404, { error: "Not found" }, origin, runtimeConfig);
+  };
+
+  return {
+    config: runtimeConfig,
+    fetch: fetchHandler,
+    getStartupInfo: (options) => buildStartupInfo(runtimeConfig, options)
+  };
+}

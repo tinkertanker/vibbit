@@ -37,6 +37,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const STORAGE_SERVER = "__vibbit_server";
   const STORAGE_TARGET = "__vibbit_target";
   const STORAGE_CHAT_HISTORY = "__vibbit_chat_history_v1";
+  const STORAGE_CLASS_CODE = "__vibbit_class_code";
+  const STORAGE_MANAGED_SESSION = "__vibbit_managed_session";
+  const STORAGE_MANAGED_SESSION_EXPIRES = "__vibbit_managed_session_expires";
 
   const MODEL_PRESETS = {
     openai: [
@@ -161,6 +164,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '      <div style="' + S_LABEL + '">Server URL</div>'
     + '      <input id="setup-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
+    + '    <div style="display:grid;gap:4px;margin-top:8px">'
+    + '      <div style="' + S_LABEL + '">Class Code</div>'
+    + '      <input id="setup-class-code" placeholder="From your teacher" style="' + S_INPUT + '">'
+    + '    </div>'
     + '  </div>'
 
     /* get started */
@@ -259,6 +266,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '    <div style="display:grid;gap:4px">'
     + '      <div style="' + S_LABEL + '">Server URL</div>'
     + '      <input id="set-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
+    + '    </div>'
+    + '    <div style="display:grid;gap:4px;margin-top:8px">'
+    + '      <div style="' + S_LABEL + '">Class Code</div>'
+    + '      <input id="set-class-code" placeholder="From your teacher" style="' + S_INPUT + '">'
     + '    </div>'
     + '  </div>'
 
@@ -392,6 +403,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setupModel = $("#setup-model");
   const setupKey = $("#setup-key");
   const setupServer = $("#setup-server");
+  const setupClassCode = $("#setup-class-code");
   const setupByokProvider = $("#setup-byok-provider");
   const setupByokModel = $("#setup-byok-model");
   const setupByokKey = $("#setup-byok-key");
@@ -427,6 +439,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setModel = $("#set-model");
   const setKey = $("#set-key");
   const setServer = $("#set-server");
+  const setClassCode = $("#set-class-code");
   const setTarget = $("#set-target");
   const setByokProvider = $("#set-byok-provider");
   const setByokModel = $("#set-byok-model");
@@ -497,6 +510,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   let undoStack = [];
   let busy = false;
   let logsCollapsed = true;
+  let feedbackCollapsed = false;
   let generationController = null;
   let queuedForcedRequest = "";
   let queuedForcedDialog = null;
@@ -938,16 +952,71 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     log.innerHTML = "";
   };
 
-  /* ── feedback compat (no-op, chat handles display) ──── */
-  const renderFeedback = () => {};
+  /* ── feedback panel ──────────────────────────────────────── */
+  const DEFAULT_FEEDBACK_MESSAGE = "Model completed generation without explicit feedback notes.";
+  const DEFAULT_FAILURE_FEEDBACK = "Generation failed before model feedback was available.";
 
+  const applyFeedbackCollapse = () => {
+    if (feedbackCollapsed) {
+      feedbackLines.style.display = "none";
+      feedbackToggle.textContent = "Show";
+      feedbackToggle.setAttribute("aria-expanded", "false");
+      feedbackBox.style.paddingBottom = "8px";
+    } else {
+      feedbackLines.style.display = "grid";
+      feedbackToggle.textContent = "Hide";
+      feedbackToggle.setAttribute("aria-expanded", "true");
+      feedbackBox.style.paddingBottom = "12px";
+    }
+  };
+
+  const renderFeedback = (items) => {
+    feedbackLines.innerHTML = "";
+    const list = normaliseFeedback(items);
+    if (!list.length) {
+      feedbackCollapsed = false;
+      feedbackBox.style.display = "none";
+      feedbackBox.setAttribute("aria-hidden", "true");
+      feedbackToggle.style.visibility = "hidden";
+      return;
+    }
+
+    list.forEach((item) => {
+      const bubble = document.createElement("div");
+      bubble.textContent = String(item).trim();
+      bubble.style.cssText = "padding:8px 10px;border-left:3px solid #3b82f6;border-radius:6px;background:rgba(59,130,246,0.14);color:#f1f5ff;";
+      feedbackLines.appendChild(bubble);
+    });
+
+    feedbackCollapsed = false;
+    feedbackToggle.style.visibility = "visible";
+    feedbackBox.style.display = "block";
+    feedbackBox.setAttribute("aria-hidden", "false");
+    applyFeedbackCollapse();
+  };
+
+  feedbackToggle.style.visibility = "hidden";
+  feedbackToggle.onclick = () => {
+    if (feedbackBox.style.display === "none") return;
+    feedbackCollapsed = !feedbackCollapsed;
+    applyFeedbackCollapse();
+  };
+  fixConvertBtn.onclick = () => {
+    if (busy) return;
+    queuedForcedDialog = lastConversionDialog || null;
+    queuedForcedRequest = buildConversionFixRequest(queuedForcedDialog);
+    setActivity("Fixing conversion error...", "neutral", true);
+    go.onclick();
+  };
   /* ── event wiring ─────────────────────────────────────── */
   logToggle.onclick = () => {
     logsCollapsed = !logsCollapsed;
     applyLogCollapse();
   };
   applyLogCollapse();
+  hideFixConvertButton();
   setBusyIndicator(false);
+  refreshRevertButton();
 
   /* preview bar buttons */
   previewReturnBtn.onclick = exitPreview;
@@ -994,15 +1063,97 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   restoreChatState();
 
   /* ── resolve effective backend URL ───────────────────────── */
-  const DEFAULT_SERVER = BACKEND.replace(/^https?:\/\//, "");
+  const DEFAULT_SERVER = BACKEND.replace(/\/+$/, "");
+  const MANAGED_SESSION_REFRESH_BUFFER_MS = 15000;
+
+  const normaliseClassCode = (value) => String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "")
+    .slice(0, 5);
+
+  const clearManagedSession = () => {
+    storageRemove(STORAGE_MANAGED_SESSION);
+    storageRemove(STORAGE_MANAGED_SESSION_EXPIRES);
+  };
+
+  const getStoredClassCode = () => normaliseClassCode(storageGet(STORAGE_CLASS_CODE) || "");
+
+  const storeClassCode = (value) => {
+    const normalized = normaliseClassCode(value);
+    if (normalized) storageSet(STORAGE_CLASS_CODE, normalized);
+    else storageRemove(STORAGE_CLASS_CODE);
+    clearManagedSession();
+    return normalized;
+  };
+
+  const saveManagedSession = (token, expiresAt) => {
+    const safeToken = String(token || "").trim();
+    if (!safeToken) {
+      clearManagedSession();
+      return;
+    }
+    storageSet(STORAGE_MANAGED_SESSION, safeToken);
+    const ts = expiresAt ? Date.parse(expiresAt) : NaN;
+    if (Number.isFinite(ts) && ts > 0) storageSet(STORAGE_MANAGED_SESSION_EXPIRES, String(ts));
+    else storageRemove(STORAGE_MANAGED_SESSION_EXPIRES);
+  };
+
+  const getStoredManagedSession = () => {
+    const token = String(storageGet(STORAGE_MANAGED_SESSION) || "").trim();
+    if (!token) return "";
+
+    const rawExpiry = storageGet(STORAGE_MANAGED_SESSION_EXPIRES);
+    const expiry = rawExpiry ? Number(rawExpiry) : 0;
+    if (expiry && (Date.now() + MANAGED_SESSION_REFRESH_BUFFER_MS) >= expiry) {
+      clearManagedSession();
+      return "";
+    }
+    return token;
+  };
+
+  const extractHostFromServerInput = (value) => {
+    const source = String(value || "").trim();
+    if (!source) return "";
+    if (/^https?:\/\//i.test(source)) {
+      try {
+        return new URL(source).hostname.toLowerCase();
+      } catch (error) {
+      }
+    }
+
+    const trimmed = source.replace(/^[^@]*@/, "").split(/[/?#]/)[0];
+    if (!trimmed) return "";
+    const ipv6 = trimmed.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (ipv6 && ipv6[1]) return ipv6[1].toLowerCase();
+    return trimmed.split(":")[0].toLowerCase();
+  };
+
+  const isLikelyLocalHost = (host) => {
+    const value = String(host || "").trim().toLowerCase();
+    if (!value) return false;
+    if (value === "localhost" || value === "0.0.0.0") return true;
+    if (value.endsWith(".localhost") || value.endsWith(".local")) return true;
+    if (/^127(?:\.\d{1,3}){3}$/.test(value)) return true;
+    if (/^10\./.test(value)) return true;
+    if (/^192\.168\./.test(value)) return true;
+    if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(value)) return true;
+    return false;
+  };
+
+  const normaliseServerUrl = (value) => {
+    const raw = String(value || "").trim().replace(/\/+$/, "");
+    if (!raw) return "";
+    if (/^https?:\/\//i.test(raw)) return raw;
+    const host = extractHostFromServerInput(raw);
+    const protocol = isLikelyLocalHost(host) ? "http://" : "https://";
+    return protocol + raw;
+  };
 
   const getBackendUrl = () => {
-    const server = storageGet(STORAGE_SERVER);
-    if (server && server.trim()) {
-      const host = server.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
-      return "https://" + host;
-    }
-    return BACKEND;
+    const configured = normaliseServerUrl(storageGet(STORAGE_SERVER));
+    if (configured) return configured;
+    return normaliseServerUrl(BACKEND) || BACKEND;
   };
 
   /* ── load saved state ────────────────────────────────────── */
@@ -1011,6 +1162,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const savedModel = storageGet(STORAGE_MODEL);
   const savedKey = getStoredProviderKey(savedProvider);
   const savedServer = storageGet(STORAGE_SERVER) || "";
+  const savedClassCode = getStoredClassCode();
   const savedTarget = storageGet(STORAGE_TARGET) || "microbit";
   const setupDone = storageGet(STORAGE_SETUP_DONE) === "1";
 
@@ -1020,6 +1172,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   populateModels(setupModel, savedProvider, savedModel);
   setupKey.value = savedKey;
   setupServer.value = savedServer || DEFAULT_SERVER;
+  setupClassCode.value = savedClassCode;
   applySetupMode();
 
   /* hydrate settings view */
@@ -1028,6 +1181,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   populateModels(setModel, savedProvider, savedModel);
   setKey.value = savedKey;
   setServer.value = savedServer || DEFAULT_SERVER;
+  setClassCode.value = savedClassCode;
   setTarget.value = savedTarget;
   applySettingsMode();
 
@@ -1043,6 +1197,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     populateModels(setupModel, setupProv.value, null);
     setupKey.value = getStoredProviderKey(setupProv.value);
   };
+
+  setupClassCode.onchange = () => {
+    setupClassCode.value = normaliseClassCode(setupClassCode.value);
+  };
+  setupClassCode.oninput = setupClassCode.onchange;
 
   setupGo.onclick = () => {
     const mode = setupMode.value;
@@ -1060,6 +1219,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     } else {
       const server = setupServer.value.trim() || DEFAULT_SERVER;
       storageSet(STORAGE_SERVER, server);
+      const classCode = storeClassCode(setupClassCode.value);
+      setupClassCode.value = classCode;
     }
     storageSet(STORAGE_MODE, mode);
     storageSet(STORAGE_SETUP_DONE, "1");
@@ -1070,6 +1231,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     populateModels(setModel, setupProv.value, setupModel.value);
     setKey.value = getStoredProviderKey(setupProv.value);
     setServer.value = setupServer.value;
+    setClassCode.value = setupClassCode.value;
     applySettingsMode();
 
     showView("main");
@@ -1104,7 +1266,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   setServer.onchange = () => {
     storageSet(STORAGE_SERVER, setServer.value.trim());
+    setupServer.value = setServer.value;
+    clearManagedSession();
   };
+  setServer.oninput = setServer.onchange;
+
+  setClassCode.onchange = () => {
+    const classCode = storeClassCode(setClassCode.value);
+    setClassCode.value = classCode;
+    setupClassCode.value = classCode;
+  };
+  setClassCode.oninput = setClassCode.onchange;
 
   setTarget.onchange = () => {
     storageSet(STORAGE_TARGET, setTarget.value);
@@ -1585,20 +1757,94 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return text.trim();
   };
 
-  const separateFeedback = (raw) => {
-    const feedback = [];
-    if (!raw) return { feedback, body: "" };
-    const lines = String(raw).replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-    const bodyLines = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (/^FEEDBACK:/i.test(trimmed)) {
-        feedback.push(trimmed.replace(/^FEEDBACK:\s*/i, "").trim());
-      } else {
-        bodyLines.push(line);
+  const normaliseFeedback = (items, fallback) => {
+    const seen = new Set();
+    const list = [];
+    (Array.isArray(items) ? items : []).forEach((item) => {
+      const text = String(item || "").trim();
+      if (!text) return;
+      const key = text.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      list.push(text);
+    });
+    if (!list.length && fallback) list.push(String(fallback).trim());
+    return list;
+  };
+
+  const extractJsonObjectCandidates = (text) => {
+    const matches = [];
+    let depth = 0;
+    let start = -1;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === "\\") {
+          escaped = true;
+          continue;
+        }
+        if (char === "\"") inString = false;
+        continue;
+      }
+
+      if (char === "\"") {
+        inString = true;
+        continue;
+      }
+
+      if (char === "{") {
+        if (depth === 0) start = i;
+        depth += 1;
+        continue;
+      }
+
+      if (char === "}" && depth > 0) {
+        depth -= 1;
+        if (depth === 0 && start !== -1) {
+          matches.push(text.slice(start, i + 1));
+          start = -1;
+        }
       }
     }
-    return { feedback, body: bodyLines.join("\n").trim() };
+
+    return matches;
+  };
+
+  const parseJsonObjectsFromText = (raw) => {
+    const text = String(raw || "").trim();
+    if (!text) return [];
+    const candidates = [text];
+    const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fencedMatch && fencedMatch[1]) candidates.push(fencedMatch[1].trim());
+    candidates.push(...extractJsonObjectCandidates(text));
+    const parsedObjects = [];
+    const seen = new Set();
+    for (const candidate of candidates) {
+      const source = String(candidate || "").trim();
+      if (!source || seen.has(source)) continue;
+      seen.add(source);
+      try {
+        const parsed = JSON.parse(source);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          parsedObjects.push(parsed);
+        }
+      } catch (error) {
+      }
+    }
+    return parsedObjects;
+  };
+
+  const isModelOutputObject = (parsed) => {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    return Object.prototype.hasOwnProperty.call(parsed, "code");
   };
 
   const extractCode = (raw) => {
@@ -1606,6 +1852,21 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const match = String(raw).match(/```[a-z]*\n([\s\S]*?)```/i);
     const code = match ? match[1] : raw;
     return sanitizeMakeCode(code);
+  };
+
+  const parseModelOutput = (raw) => {
+    const parsedObjects = parseJsonObjectsFromText(raw);
+    for (const parsed of parsedObjects) {
+      if (!isModelOutputObject(parsed)) continue;
+      const feedback = Array.isArray(parsed.feedback)
+        ? parsed.feedback
+        : (parsed.feedback == null ? [] : [parsed.feedback]);
+      return {
+        feedback: normaliseFeedback(feedback),
+        code: extractCode(parsed.code == null ? "" : String(parsed.code))
+      };
+    }
+    return { feedback: [], code: extractCode(raw) };
   };
 
   const validateBlocksCompatibility = (code, target) => {
@@ -1724,19 +1985,21 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return [
       "ROLE: You are a friendly Microsoft MakeCode assistant helping a student build a " + targetName + " project. You are having a conversation \u2013 be helpful, brief, and encouraging.",
       "HARD REQUIREMENT: Return ONLY Microsoft MakeCode Static JavaScript that the MakeCode decompiler can convert to BLOCKS for " + targetName + " with ZERO errors.",
-      "FEEDBACK: Before writing code, provide 2\u20133 short FEEDBACK: lines. Explain your approach briefly: what the code will do, which APIs you chose, and any trade-offs. Write as if you are explaining to a student. Keep each line under 120 characters.",
       "CONVERSATION CONTEXT: If RECENT_CHAT is provided, use only that recent context. Treat CURRENT_CODE as the source of truth for project state.",
       "CONTEXT LIMITS: CURRENT_CODE may include a truncation note if the project is large. When truncated, make conservative edits and preserve existing patterns.",
-      "RESPONSE FORMAT: After your FEEDBACK: lines, output ONLY MakeCode Static TypeScript with no markdown fences or extra prose.",
+      "RESPONSE FORMAT (required): Return ONLY compact JSON with keys feedback and code.",
+      "FORMAT DETAILS: {\"feedback\":[\"short note\"],\"code\":\"MakeCode Static TypeScript with \\\\n escapes\"}.",
+      "FEEDBACK RULE: feedback must be an array with at least one short string.",
+      "CODE RULE: code must be MakeCode Static TypeScript encoded as a JSON string (use escaped \\n for new lines, no markdown fences).",
       "NO COMMENTS inside the code.",
       "ERROR FIXING: If PAGE_ERRORS are provided, treat them as failing diagnostics and prioritise resolving all of them in your output.",
       "BLOCKS CONVERSION: If CONVERSION_DIALOG is provided, ensure the output can be converted from JavaScript back to Blocks in MakeCode.",
       "ALLOWED APIS: " + namespaceList + ". Prefer event handlers and forever/update loops.",
       "RANDOMNESS: For random choices, prefer list._pickRandom() from an array of options. Do NOT use randint(...).",
       "BLOCK-SAFE REQUIREMENTS (hard): no grey JavaScript blocks; every variable declaration must have an initializer; for loops must be exactly for (let i = 0; i < limit; i++) or for (let i = 0; i <= limit; i++); event registrations and function declarations must be top-level; no optional/default params in user-defined functions; callbacks/event handlers must not return a value; do not pass more arguments than block signatures support; statement assignment operators are limited to =, +=, -=.",
-      "FORBIDDEN IN OUTPUT: arrow functions (=>), classes, new constructors, async/await/Promise, import/export, template strings (`), higher-order array methods (map/filter/reduce/forEach/find/some/every), namespaces/modules, enums, interfaces, type aliases, generics, timers (setTimeout/setInterval), console calls, markdown, escaped newlines, onstart functions, null, undefined, as-casts, bitwise operators (| & ^ << >> >>>) and bitwise compound assignments.",
+      "FORBIDDEN IN OUTPUT: arrow functions (=>), classes, new constructors, async/await/Promise, import/export, template strings (`), higher-order array methods (map/filter/reduce/forEach/find/some/every), namespaces/modules, enums, interfaces, type aliases, generics, timers (setTimeout/setInterval), console calls, markdown, onstart functions, null, undefined, as-casts, bitwise operators (| & ^ << >> >>>) and bitwise compound assignments.",
       "TARGET-SCOPE: Use ONLY APIs valid for " + targetName + ". Never mix Arcade APIs into micro:bit/Maker or vice versa.",
-      "STYLE: Straight quotes, ASCII only, real newlines, use function () { } handlers.",
+      "STYLE: Straight quotes, ASCII only, use function () { } handlers.",
       "IF UNSURE: Return a minimal program that is guaranteed to decompile to BLOCKS for " + targetName + ". Code only."
     ].join("\n");
   };
@@ -1983,16 +2246,16 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const oneAttempt = (extraSystem, insistOnlyCode) => {
       const prompt = system
         + (extraSystem ? ("\n" + extraSystem) : "")
-        + (insistOnlyCode ? "\nMANDATE: You must output only Blocks-decompilable MakeCode Static TypeScript." : "");
+        + (insistOnlyCode ? "\nMANDATE: Output only compact JSON with keys feedback (array) and code (string). No prose." : "");
       const providerName = names[provider] || provider;
       logLine("Sending to " + providerName + " (" + (model || "default") + ").");
       throwIfAborted(signal);
       return callProvider(apiKey, model, prompt, user, signal).then((raw) => {
         throwIfAborted(signal);
-        const parts = separateFeedback(raw);
-        const code = sanitizeMakeCode(extractCode(parts.body));
+        const parsed = parseModelOutput(raw);
+        const code = sanitizeMakeCode(parsed.code);
         const validation = validateBlocksCompatibility(code, target);
-        return { code, validation, feedback: parts.feedback };
+        return { code, validation, feedback: parsed.feedback };
       });
     };
 
@@ -2001,7 +2264,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         if (result.code && result.code.trim()) return result;
         const retryEmpty = (index, previous) => {
           if (index >= EMPTY_RETRIES) return previous;
-          const extra = "Your last message returned no code. Return ONLY Blocks-decompilable MakeCode Static TypeScript. No prose.";
+          const extra = "Your last message had empty code. Return valid JSON only with feedback[] and code string.";
           return oneAttempt(extra, true).then((next) => {
             throwIfAborted(signal);
             if (next.code && next.code.trim()) return next;
@@ -2024,27 +2287,81 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         });
       })
       .then((finalResult) => {
-        const feedback = finalResult && Array.isArray(finalResult.feedback) ? finalResult.feedback : [];
+        const feedback = normaliseFeedback(finalResult && finalResult.feedback);
         if (!finalResult || !finalResult.code || !finalResult.code.trim()) {
           logLine("Model returned no code after retries. Using minimal stub.");
-          return { code: stubForTarget(target), feedback };
+          return { code: stubForTarget(target), feedback: normaliseFeedback(feedback.concat(["Model returned no code; provided fallback stub."])) };
         }
         if (!finalResult.validation || !finalResult.validation.ok) {
           const violations = (finalResult.validation && finalResult.validation.violations) || [];
           logLine("Model output still failed strict validation. Using minimal stub.");
-          return { code: stubForTarget(target), feedback: feedback.concat(["Validation fallback: " + violations.join(", ")]) };
+          return { code: stubForTarget(target), feedback: normaliseFeedback(feedback.concat(["Validation fallback: " + (violations.join(", ") || "unknown compatibility issue")])) };
         }
         return { code: finalResult.code, feedback };
       });
   };
 
-  const buildBackendHeaders = () => {
+  const parseJsonSafe = async (response) => {
+    try {
+      return await response.json();
+    } catch (error) {
+      return null;
+    }
+  };
+
+  const connectManagedSession = async (backendUrl, classCode, signal) => {
+    const normalizedCode = normaliseClassCode(classCode);
+    if (!normalizedCode || APP_TOKEN) return "";
+
+    const existingSession = getStoredManagedSession();
+    if (existingSession) return existingSession;
+
+    logLine("Connecting to classroom server...");
+    const response = await fetch(backendUrl + "/vibbit/connect", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vibbit-Class-Code": normalizedCode
+      },
+      body: JSON.stringify({ classCode: normalizedCode }),
+      signal
+    });
+
+    if (response.status === 404 || response.status === 405) {
+      return "";
+    }
+
+    const json = await parseJsonSafe(response);
+    if (!response.ok) {
+      const message = json && json.error
+        ? json.error
+        : (response.status === 401 ? "Invalid class code." : ("Classroom connect failed (HTTP " + response.status + ")."));
+      throw new Error(message);
+    }
+
+    const token = json && typeof json.sessionToken === "string" ? json.sessionToken.trim() : "";
+    if (!token) return "";
+    saveManagedSession(token, json.expiresAt);
+    logLine("Connected to classroom session.");
+    return token;
+  };
+
+  const buildBackendHeaders = async (backendUrl, signal) => {
     const headers = { "Content-Type": "application/json" };
-    if (APP_TOKEN) headers.Authorization = "Bearer " + APP_TOKEN;
+    if (APP_TOKEN) {
+      headers.Authorization = "Bearer " + APP_TOKEN;
+      return headers;
+    }
+
+    const classCode = getStoredClassCode();
+    if (classCode) headers["X-Vibbit-Class-Code"] = classCode;
+
+    const sessionToken = await connectManagedSession(backendUrl, classCode, signal);
+    if (sessionToken) headers.Authorization = "Bearer " + sessionToken;
     return headers;
   };
 
-  const requestBackendGenerate = (payload, signal) => {
+  const requestBackendGenerate = async (payload, signal) => {
     const backendUrl = getBackendUrl();
     const managedController = new AbortController();
     let timedOut = false;
@@ -2063,29 +2380,35 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       managedController.abort();
     }, REQ_TIMEOUT_MS);
 
-    return fetch(backendUrl + "/vibbit/generate", {
-      method: "POST",
-      headers: buildBackendHeaders(),
-      body: JSON.stringify(payload),
-      signal: managedController.signal
-    }).then(async (response) => {
+    const doRequest = async () => {
+      const headers = await buildBackendHeaders(backendUrl, managedController.signal);
+      return fetch(backendUrl + "/vibbit/generate", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: managedController.signal
+      });
+    };
+
+    try {
+      let response = await doRequest();
+      if (response.status === 401 && !APP_TOKEN && getStoredClassCode()) {
+        clearManagedSession();
+        response = await doRequest();
+      }
+
       if (response.ok) return response.json();
       let message = "HTTP " + response.status;
-      try {
-        const json = await response.json();
-        if (json && json.error) message = json.error;
-      } catch (error) {
-      }
+      const json = await parseJsonSafe(response);
+      if (json && json.error) message = json.error;
       throw new Error(message);
-    }).catch((error) => {
-      if (timedOut) {
-        throw new Error("Managed backend timeout");
-      }
+    } catch (error) {
+      if (timedOut) throw new Error("Managed backend timeout");
       throw error;
-    }).finally(() => {
+    } finally {
       clearTimeout(timeoutId);
       if (signal) signal.removeEventListener("abort", abortFromCaller);
-    });
+    }
   };
 
   const RECENT_CHAT_TOTAL_CHARS = 1200;
@@ -2186,6 +2509,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     logLine("Generating...");
     go.disabled = true;
     go.style.opacity = "0.7";
+    go.style.cursor = "not-allowed";
 
     const mode = storageGet(STORAGE_MODE) || "byok";
     const target = storageGet(STORAGE_TARGET) || "microbit";
@@ -2194,7 +2518,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const signal = generationController.signal;
     let conversionRetryCount = 0;
     let lastGeneratedCode = "";
-    let lastFeedback = [];
+    let finalFeedback = [];
 
     const runGenerationAttempt = (forcedRequest, forcedDlg, options) => {
       const shouldSnapshot = !options || options.snapshot !== false;
@@ -2291,15 +2615,19 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         })
         .then((result) => {
           throwIfAborted(signal);
-          const feedback = result && Array.isArray(result.feedback) ? result.feedback : [];
-          lastFeedback = feedback;
+          finalFeedback = normaliseFeedback(result && result.feedback);
 
           const code = extractCode(result && result.code ? result.code : "");
           lastGeneratedCode = code;
           if (!code) {
+            finalFeedback = normaliseFeedback(
+              finalFeedback.concat(["Model returned no code for this request."]),
+              DEFAULT_FEEDBACK_MESSAGE
+            );
+            renderFeedback(finalFeedback);
             setStatus("No code");
             logLine("No code returned.");
-            updateAssistantMessage(assistantIdx, { content: "No code was returned by the model.", status: "error", feedback });
+            updateAssistantMessage(assistantIdx, { content: "No code was returned by the model.", status: "error", feedback: finalFeedback });
             return;
           }
 
@@ -2313,13 +2641,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
               if (!/grey JavaScript block/i.test(message)) throw error;
               logLine("Live decompile check failed: " + message);
               logLine("Applying minimal fallback stub.");
+              finalFeedback = normaliseFeedback(finalFeedback.concat(["Live editor fallback: " + message]));
               return pasteToMakeCode(stubForTarget(target), { snapshot: false, signal });
             })
             .then(() => {
               throwIfAborted(signal);
+              finalFeedback = normaliseFeedback(finalFeedback, DEFAULT_FEEDBACK_MESSAGE);
+              renderFeedback(finalFeedback);
+              hideFixConvertButton();
               setStatus("Done");
               logLine("Pasted and switched back to Blocks.");
-              updateAssistantMessage(assistantIdx, { status: "done", feedback, code: lastGeneratedCode, content: "" });
+              updateAssistantMessage(assistantIdx, { status: "done", feedback: finalFeedback, code: lastGeneratedCode, content: "" });
             });
         });
     };
@@ -2358,12 +2690,15 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         }
         setStatus("Needs fix");
         logLine("Still unable to convert to Blocks after retry.");
-        updateAssistantMessage(assistantIdx, { status: "convert-error", feedback: lastFeedback, content: "", code: lastGeneratedCode });
+        updateAssistantMessage(assistantIdx, { status: "convert-error", feedback: finalFeedback, content: "", code: lastGeneratedCode });
         return;
       }
 
       const message = error && error.message ? error.message : String(error);
       setStatus("Error");
+      finalFeedback = normaliseFeedback(finalFeedback, DEFAULT_FAILURE_FEEDBACK);
+      renderFeedback(finalFeedback);
+      setActivity("Generation failed. Check logs.", "error", true);
       logLine("Request failed: " + message);
       updateAssistantMessage(assistantIdx, { status: "error", content: message });
     };
@@ -2377,6 +2712,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         setBusyIndicator(false);
         go.disabled = false;
         go.style.opacity = "";
+        go.style.cursor = "";
       });
   };
 
