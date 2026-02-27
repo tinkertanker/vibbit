@@ -97,6 +97,11 @@ Recommended teacher flow:
 3. Add required env vars from `apps/backend/.env.example`.
 4. Generate a public domain and share URL + class code.
 
+Cheapest hosted option:
+
+- Use one Railway backend service only, attach a volume, and set `VIBBIT_STATE_FILE=/data/vibbit-state.json`.
+- Set Railway hard usage limit to `$1`.
+
 ## Install extension in Chrome
 
 1. Open `chrome://extensions`

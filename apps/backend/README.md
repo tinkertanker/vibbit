@@ -172,6 +172,15 @@ Deploy button (placeholder until template is published):
 5. Generate a public domain for the service.
 6. Share that HTTPS URL plus the classroom code with students.
 
+### Cheapest setup (single-service, low-budget)
+
+To keep usage as low as possible (targeting Railway Free credit):
+
+1. Run only one backend service (no Postgres/Redis service).
+2. Attach a Railway volume and set `VIBBIT_STATE_FILE=/data/vibbit-state.json`.
+3. Keep one replica for this service.
+4. Set Railway hard usage limit to `$1` so spend cannot exceed budget.
+
 ### Deploy with CLI
 
 ```bash
