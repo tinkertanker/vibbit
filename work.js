@@ -111,11 +111,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   ui.id = "vibbit-panel";
   ui.setAttribute("role", "dialog");
   ui.setAttribute("aria-modal", "true");
-  ui.setAttribute("aria-label", "Vibbit");
+  ui.setAttribute("aria-labelledby", "vibbit-dialog-title");
   ui.style.cssText = "width:680px;max-width:calc(100vw - 48px);max-height:80vh;background:#0b1020;color:#e6e8ef;font-family:system-ui,Segoe UI,Arial,sans-serif;border:1px solid #21304f;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.5);display:flex;flex-direction:column;overflow:hidden";
 
   /* ── build HTML ──────────────────────────────────────────── */
   ui.innerHTML = ""
+    + '<h2 id="vibbit-dialog-title" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0">Vibbit</h2>'
     /* ═══ VIEW 1: SETUP ═══ */
     + '<div id="bv-setup" style="display:none;flex-direction:column">'
 
@@ -641,6 +642,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     apply: LOADING_PHRASES,
     convert: LOADING_PHRASES
   };
+  const ALLOWED_ASSISTANT_STATUSES = {
+    generating: true,
+    done: true,
+    error: true,
+    cancelled: true,
+    "convert-error": true
+  };
+  const normaliseAssistantStatus = (status) => {
+    const value = typeof status === "string" ? status : "";
+    return ALLOWED_ASSISTANT_STATUSES[value] ? value : "cancelled";
+  };
 
   const clampStoredText = (value, maxChars) => {
     const text = String(value || "");
@@ -660,17 +672,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       return { role: "user", content };
     }
 
-    const allowedStatuses = {
-      generating: true,
-      done: true,
-      error: true,
-      cancelled: true,
-      "convert-error": true
-    };
-
     const out = { role: "assistant" };
-    const status = typeof msg.status === "string" ? msg.status : "";
-    out.status = allowedStatuses[status] ? status : "cancelled";
+    out.status = normaliseAssistantStatus(msg.status);
     out.actionsHidden = !!msg.actionsHidden;
 
     const content = clampStoredText(msg.content, CHAT_HISTORY_MAX_CONTENT_CHARS).trim();
@@ -723,12 +726,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const buildAssistantHTML = (msg) => {
+    const status = normaliseAssistantStatus(msg && msg.status);
     let html = '';
     const actionsHidden = !!msg.actionsHidden;
-    if (msg.status === "generating") {
+    if (status === "generating") {
       html += '<div class="vibbit-msg-status" role="status" aria-live="polite" aria-atomic="true">' + SPINNER_SMALL + ' ' + (msg.content || "Generating...") + '</div>';
       html += '<div class="vibbit-msg-actions"><button class="vibbit-btn-cancel" data-action="cancel">Cancel</button></div>';
-    } else if (msg.status === "done") {
+    } else if (status === "done") {
       if (msg.feedback && msg.feedback.length) {
         msg.feedback.forEach(function (line) {
           html += '<div class="vibbit-feedback-line">' + escapeHTML(line) + '</div>';
@@ -743,11 +747,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         }
         html += '</div>';
       }
-    } else if (msg.status === "error") {
+    } else if (status === "error") {
       html += '<div class="vibbit-msg-error">' + escapeHTML(msg.content || "Something went wrong.") + '</div>';
-    } else if (msg.status === "cancelled") {
+    } else if (status === "cancelled") {
       html += '<div class="vibbit-msg-status">' + escapeHTML(msg.content || "Cancelled.") + '</div>';
-    } else if (msg.status === "convert-error") {
+    } else if (status === "convert-error") {
       if (msg.feedback && msg.feedback.length) {
         msg.feedback.forEach(function (line) {
           html += '<div class="vibbit-feedback-line">' + escapeHTML(line) + '</div>';
@@ -2437,25 +2441,43 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* Keep prompt context bounded: only last user message + last assistant notes. */
   const buildRecentChatContext = () => {
     let lastUser = "";
+    let lastUserIdx = -1;
     let lastAssistant = "";
+    let lastAssistantIdx = -1;
 
     for (let i = chatMessages.length - 1; i >= 0; i--) {
       const msg = chatMessages[i];
       if (!msg) continue;
 
-      if (!lastAssistant && msg.role === "assistant") {
+      if (lastAssistantIdx < 0 && msg.role === "assistant") {
         const notes = Array.isArray(msg.feedback) && msg.feedback.length
           ? msg.feedback.join(" | ")
           : (msg.content || "");
         lastAssistant = clampPromptText(notes, RECENT_CHAT_ASSISTANT_CHARS);
+        lastAssistantIdx = i;
         continue;
       }
 
-      if (!lastUser && msg.role === "user" && msg.content) {
+      if (lastUserIdx < 0 && msg.role === "user" && msg.content) {
         lastUser = clampPromptText(msg.content, RECENT_CHAT_USER_CHARS);
+        lastUserIdx = i;
       }
 
-      if (lastUser && lastAssistant) break;
+      if (lastUserIdx >= 0 && lastAssistantIdx >= 0) break;
+    }
+
+    const orderedTurns = [];
+    if (lastUserIdx >= 0 && lastAssistantIdx >= 0) {
+      if (lastUserIdx < lastAssistantIdx) {
+        orderedTurns.push({ role: "user", content: lastUser });
+        orderedTurns.push({ role: "assistant", notes: lastAssistant });
+      } else {
+        orderedTurns.push({ role: "assistant", notes: lastAssistant });
+        orderedTurns.push({ role: "user", content: lastUser });
+      }
+    } else {
+      if (lastAssistantIdx >= 0) orderedTurns.push({ role: "assistant", notes: lastAssistant });
+      if (lastUserIdx >= 0) orderedTurns.push({ role: "user", content: lastUser });
     }
 
     const context = [];
@@ -2473,8 +2495,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       used += clipped.length;
     };
 
-    pushTurn(lastUser ? { role: "user", content: lastUser } : null);
-    pushTurn(lastAssistant ? { role: "assistant", notes: lastAssistant } : null);
+    orderedTurns.forEach(pushTurn);
     return context;
   };
 
