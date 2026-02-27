@@ -98,10 +98,15 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const S_ICON_BTN = "background:transparent;border:none;color:#93a4c4;cursor:pointer;padding:4px;display:flex;align-items:center";
   const CLOSE_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg>';
   const FROG_MARK_DATA_URI = "__VIBBIT_FROG_MARK_DATA_URI__";
-  const FROG_MARK_URL = FROG_MARK_DATA_URI.indexOf("data:image/svg+xml") === 0 ? FROG_MARK_DATA_URI : "";
+  const FROG_MARK_FALLBACK_SVG = '<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="frog-gradient" x1="20" y1="22" x2="108" y2="108" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#34D399"/><stop offset="1" stop-color="#16A34A"/></linearGradient><mask id="frog-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128"><rect width="128" height="128" fill="black"/><g transform="translate(64 64) scale(1.2) translate(-64 -64)"><g fill="white"><circle cx="64" cy="68" r="36"/><circle cx="44" cy="38" r="15.4"/><circle cx="84" cy="38" r="15.4"/><path d="M25 104C25 90 31 84 40 84C49 84 55 90 55 104Z"/><path d="M73 104C73 90 79 84 88 84C97 84 103 90 103 104Z"/></g><circle cx="44" cy="38" r="5.5" fill="black"/><circle cx="84" cy="38" r="5.5" fill="black"/><path d="M55 104C55 98 59 93 64 93C69 93 73 98 73 104Z" fill="black"/><path d="M64 44.7L69 55.5L79.8 61.3L69 67.1L64 77.9L59 67.1L48.2 61.3L59 55.5L64 44.7Z" fill="black"/></g></mask></defs><rect width="128" height="128" fill="url(#frog-gradient)" mask="url(#frog-mask)"/></svg>';
+  const encodeSvgDataUri = (svgMarkup) => "data:image/svg+xml," + encodeURIComponent(svgMarkup.replace(/\s+/g, " ").trim());
+  // When running raw work.js (without the build step), use the embedded fallback icon.
+  const FROG_MARK_URL = FROG_MARK_DATA_URI.indexOf("data:image/svg+xml") === 0
+    ? FROG_MARK_DATA_URI
+    : encodeSvgDataUri(FROG_MARK_FALLBACK_SVG);
   const frogMarkImgHtml = (size) => {
     if (!FROG_MARK_URL) return "";
-    return '<img alt="" aria-hidden="true" src="' + FROG_MARK_URL + '" width="' + size + '" height="' + size + '" style="display:block;width:' + size + 'px;height:' + size + 'px">';
+    return '<img alt="" aria-hidden="true" src="' + FROG_MARK_URL + '" style="display:block;width:' + size + 'px;height:' + size + 'px">';
   };
   const SETUP_HEADER_FROG_MARK = frogMarkImgHtml(14);
   const MAIN_HEADER_FROG_MARK = frogMarkImgHtml(14);
