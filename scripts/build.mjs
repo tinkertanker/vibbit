@@ -9,6 +9,8 @@ const distDir = path.join(root, "dist");
 const sourcePath = path.join(root, "work.js");
 const manifestPath = path.join(root, "extension", "manifest.json");
 const iconsSourceDir = path.join(root, "extension", "icons");
+const frogSvgPath = path.join(iconsSourceDir, "vibbit-frog.svg");
+const frogDataUriToken = "__VIBBIT_FROG_MARK_DATA_URI__";
 const byokHostPermissions = [
   "https://api.openai.com/*",
   "https://generativelanguage.googleapis.com/*",
@@ -37,13 +39,20 @@ function hostPermissionForBackend(backend) {
   return `${parsed.protocol}//${parsed.host}/*`;
 }
 
+function svgToDataUri(svgMarkup) {
+  return `data:image/svg+xml,${encodeURIComponent(svgMarkup.replace(/\s+/g, " ").trim())}`;
+}
+
 async function build() {
-  const [rawClient, rawManifest] = await Promise.all([
+  const [rawClient, rawManifest, frogSvgMarkup] = await Promise.all([
     readFile(sourcePath, "utf8"),
-    readFile(manifestPath, "utf8")
+    readFile(manifestPath, "utf8"),
+    readFile(frogSvgPath, "utf8")
   ]);
 
   let builtClient = rawClient.replace(userscriptHeaderPattern, "");
+  const frogDataUri = svgToDataUri(frogSvgMarkup);
+  builtClient = builtClient.replaceAll(frogDataUriToken, frogDataUri);
   const manifest = JSON.parse(rawManifest);
 
   const backend = process.env.VIBBIT_BACKEND;

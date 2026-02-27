@@ -97,6 +97,15 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const S_BTN_PRIMARY = "width:100%;padding:10px;border:none;border-radius:8px;background:#3b82f6;color:#fff;font-weight:600;cursor:pointer;font-size:13px";
   const S_ICON_BTN = "background:transparent;border:none;color:#93a4c4;cursor:pointer;padding:4px;display:flex;align-items:center";
   const CLOSE_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 1l12 12M13 1L1 13"/></svg>';
+  const FROG_MARK_DATA_URI = "__VIBBIT_FROG_MARK_DATA_URI__";
+  const FROG_MARK_URL = FROG_MARK_DATA_URI.indexOf("data:image/svg+xml") === 0 ? FROG_MARK_DATA_URI : "";
+  const frogMarkImgHtml = (size) => {
+    if (!FROG_MARK_URL) return "";
+    return '<img alt="" aria-hidden="true" src="' + FROG_MARK_URL + '" width="' + size + '" height="' + size + '" style="display:block;width:' + size + 'px;height:' + size + 'px">';
+  };
+  const SETUP_HEADER_FROG_MARK = frogMarkImgHtml(14);
+  const MAIN_HEADER_FROG_MARK = frogMarkImgHtml(14);
+  const FAB_FROG_MARK = frogMarkImgHtml(26.4);
 
   /* ── panel container ─────────────────────────────────────── */
   const ui = document.createElement("div");
@@ -110,6 +119,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* header */
     + '<div id="h-setup" style="cursor:move;display:flex;align-items:center;padding:10px 12px;background:#111936;border-bottom:1px solid #21304f">'
+    + '  <span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;margin-right:8px">' + SETUP_HEADER_FROG_MARK + '</span>'
     + '  <span style="font-weight:600;font-size:13px">Vibbit</span>'
     + '  <button id="x-setup" aria-label="Close" style="margin-left:auto;' + S_ICON_BTN + '">' + CLOSE_SVG + '</button>'
     + '</div>'
@@ -167,6 +177,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* header */
     + '<div id="h-main" style="cursor:move;display:flex;align-items:center;padding:10px 12px;background:#111936;border-bottom:1px solid #21304f">'
+    + '  <span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;margin-right:8px">' + MAIN_HEADER_FROG_MARK + '</span>'
     + '  <span style="font-weight:600;font-size:13px">Vibbit</span>'
     + '  <span id="busy-indicator" aria-hidden="true" style="margin-left:8px;display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;opacity:0;visibility:hidden;transition:opacity .15s ease;">'
     + '    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#9bb1dd" stroke-width="1.5" style="animation:vibbit-spin .9s linear infinite">'
@@ -330,11 +341,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   fab.id = "vibbit-fab";
   fab.title = "Vibbit \u2013 AI code generator";
   fab.style.cssText = "position:fixed;right:20px;bottom:68px;width:44px;height:44px;border-radius:5px;background:#3454D1;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 14px rgba(52,84,209,.45);z-index:2147483646;transition:transform .15s ease,box-shadow .15s ease;border:none;";
-  fab.innerHTML = '<svg width="26.4" height="26.4" viewBox="0 0 24 24" fill="none">'
-    + '<path d="M9.5 2L10.7 6.5 15 8l-4.3 1.5L9.5 14l-1.2-4.5L4 8l4.3-1.5L9.5 2z" fill="#fff"/>'
-    + '<path d="M19 10l.8 2.7L22.5 14l-2.7.8L19 17.5l-.8-2.7-2.7-.8 2.7-.8L19 10z" fill="#fff" opacity=".75"/>'
-    + '<path d="M14.5 2l.4 1.5L16.5 4l-1.6.5-.4 1.5-.4-1.5L12.5 4l1.6-.5.4-1.5z" fill="#fff" opacity=".5"/>'
-    + '</svg>';
+  fab.innerHTML = FAB_FROG_MARK;
   fab.onmouseenter = function () { fab.style.background = "var(--secondary-background-color-hover, #2f4bc0)"; fab.style.boxShadow = "0 6px 20px rgba(52,84,209,.6)"; };
   fab.onmouseleave = function () { fab.style.background = "#3454D1"; fab.style.boxShadow = "0 4px 14px rgba(52,84,209,.45)"; };
 
