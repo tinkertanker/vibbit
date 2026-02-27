@@ -72,10 +72,7 @@ VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" n
 - Start backend: `npm run backend:start`
 - Dev backend (watch): `npm run backend:dev`
 - Backend env template: `apps/backend/.env.example`
-- Deployment adapters:
-  - Cloudflare: `apps/backend/src/cloudflare-worker.mjs`, `apps/backend/wrangler.toml`
-  - Vercel: `apps/backend/api/[[...path]].mjs`, `apps/backend/vercel.json`
-  - Netlify: `apps/backend/netlify/edge-functions/vibbit.mjs`, `apps/backend/netlify.toml`
+- Hosted deployment target: Railway (see `apps/backend/README.md`)
 
 ## Smoke-test checklist
 

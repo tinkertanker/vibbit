@@ -77,21 +77,20 @@ On start, backend logs the classroom share line (URL + class code).
 
 ## Deploy backend (monorepo)
 
-Backend includes adapters for:
+Supported hosted deployment target:
 
-- Cloudflare Workers
-- Vercel Edge
-- Netlify Edge
+- Railway
 
 See full backend setup and env docs here:
 
 - `apps/backend/README.md`
 
-One-click templates (replace `<YOUR_GITHUB_REPO_URL>`):
+Recommended teacher flow:
 
-- Cloudflare: [Deploy to Cloudflare](https://deploy.workers.cloudflare.com/?url=<YOUR_GITHUB_REPO_URL>)
-- Vercel: [Deploy to Vercel](https://vercel.com/new/clone?repository-url=<YOUR_GITHUB_REPO_URL>&root-directory=apps/backend)
-- Netlify: [Deploy to Netlify](https://app.netlify.com/start/deploy?repository=<YOUR_GITHUB_REPO_URL>)
+1. Open [Railway New Project](https://railway.com/new) and deploy from GitHub.
+2. Set service root directory to `apps/backend`.
+3. Add required env vars from `apps/backend/.env.example`.
+4. Generate a public domain and share URL + class code.
 
 ## Install extension in Chrome
 

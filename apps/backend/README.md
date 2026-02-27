@@ -129,7 +129,7 @@ Classroom auth:
 - `VIBBIT_CLASSROOM_CODE` (optional fixed code)
 - `VIBBIT_CLASSROOM_CODE_AUTO` (default `true`)
 - `VIBBIT_CLASSROOM_CODE_LENGTH` (default `5`; classroom codes are 5 uppercase letters)
-- `VIBBIT_CLASSROOM_SEED` (optional deterministic seed; recommended for serverless)
+- `VIBBIT_CLASSROOM_SEED` (optional deterministic seed)
 - `VIBBIT_SESSION_TTL_MS` (default `28800000` = 8h)
 
 Legacy app-token auth:
@@ -150,44 +150,29 @@ Provider keys/models:
 - `VIBBIT_GEMINI_API_KEY`, `VIBBIT_GEMINI_MODEL`
 - `VIBBIT_OPENROUTER_API_KEY`, `VIBBIT_OPENROUTER_MODEL`
 
-## Deploy targets (in-repo)
+## Deploy target (Railway)
 
-This backend ships adapters/config for:
+Railway is the supported hosted deployment target for this backend.
 
-- Cloudflare Workers (`wrangler.toml`, `src/cloudflare-worker.mjs`)
-- Vercel Edge Functions (`api/[[...path]].mjs`, `vercel.json`)
-- Netlify Edge Functions (`netlify/edge-functions/vibbit.mjs`, `netlify.toml`)
+### Deploy from GitHub (recommended)
 
-### Cloudflare
+1. Open [Railway New Project](https://railway.com/new) and choose **Deploy from GitHub repo**.
+2. Select this repository.
+3. Set the service root directory to `apps/backend`.
+4. Add environment variables from `.env.example` (at minimum, one provider API key).
+5. Generate a public domain for the service.
+6. Share that HTTPS URL plus the classroom code with students.
 
-```bash
-cd apps/backend
-npm run deploy:cloudflare
-```
-
-### Vercel
+### Deploy with CLI
 
 ```bash
 cd apps/backend
-npm run deploy:vercel
+npx @railway/cli login
+npx @railway/cli link
+npm run deploy:railway
 ```
-
-### Netlify
-
-```bash
-cd apps/backend
-npm run deploy:netlify
-```
-
-## One-click deploy links
-
-Replace `<YOUR_GITHUB_REPO_URL>` once, then share the links:
-
-- Cloudflare: [Deploy to Cloudflare](https://deploy.workers.cloudflare.com/?url=<YOUR_GITHUB_REPO_URL>)
-- Vercel: [Deploy to Vercel](https://vercel.com/new/clone?repository-url=<YOUR_GITHUB_REPO_URL>&root-directory=apps/backend)
-- Netlify: [Deploy to Netlify](https://app.netlify.com/start/deploy?repository=<YOUR_GITHUB_REPO_URL>)
 
 ## Notes
 
-- For serverless, set either `VIBBIT_CLASSROOM_CODE` or `VIBBIT_CLASSROOM_SEED` so the class code is stable across instances.
+- For multi-replica deployments, keep session validation consistent across instances (stateless signed tokens or shared store).
 - `GET /vibbit/config` is useful for quick diagnostics without exposing secrets.
