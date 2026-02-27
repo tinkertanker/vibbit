@@ -614,6 +614,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const out = { role: "assistant" };
     const status = typeof msg.status === "string" ? msg.status : "";
     out.status = allowedStatuses[status] ? status : "cancelled";
+    out.actionsHidden = !!msg.actionsHidden;
 
     const content = clampStoredText(msg.content, CHAT_HISTORY_MAX_CONTENT_CHARS).trim();
     if (content) out.content = content;
@@ -666,6 +667,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const buildAssistantHTML = (msg) => {
     let html = '';
+    const actionsHidden = !!msg.actionsHidden;
     if (msg.status === "generating") {
       html += '<div class="vibbit-msg-status">' + SPINNER_SMALL + ' ' + (msg.content || "Generating\u2026") + '</div>';
     } else if (msg.status === "done") {
@@ -675,12 +677,14 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         });
       }
       html += '<div class="vibbit-msg-success">' + CHECK_SVG + ' Code applied to MakeCode</div>';
-      html += '<div class="vibbit-msg-actions">';
-      html += '<button class="vibbit-btn-preview" data-action="preview">Preview</button>';
-      if (undoStack.length > 0) {
-        html += '<button class="vibbit-btn-undo" data-action="undo">Undo</button>';
+      if (!actionsHidden) {
+        html += '<div class="vibbit-msg-actions">';
+        html += '<button class="vibbit-btn-preview" data-action="preview">Preview</button>';
+        if (undoStack.length > 0) {
+          html += '<button class="vibbit-btn-undo" data-action="undo">Undo</button>';
+        }
+        html += '</div>';
       }
-      html += '</div>';
     } else if (msg.status === "error") {
       html += '<div class="vibbit-msg-error">' + escapeHTML(msg.content || "Something went wrong.") + '</div>';
     } else if (msg.status === "cancelled") {
@@ -692,12 +696,14 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         });
       }
       html += '<div class="vibbit-msg-error">MakeCode couldn\'t convert to blocks.</div>';
-      html += '<div class="vibbit-msg-actions">';
-      html += '<button class="vibbit-btn-fix" data-action="fix">Fix conversion</button>';
-      if (undoStack.length > 0) {
-        html += '<button class="vibbit-btn-undo" data-action="undo">Undo</button>';
+      if (!actionsHidden) {
+        html += '<div class="vibbit-msg-actions">';
+        html += '<button class="vibbit-btn-fix" data-action="fix">Fix conversion</button>';
+        if (undoStack.length > 0) {
+          html += '<button class="vibbit-btn-undo" data-action="undo">Undo</button>';
+        }
+        html += '</div>';
       }
-      html += '</div>';
     } else {
       html += '<div>' + escapeHTML(msg.content || "") + '</div>';
     }
@@ -813,6 +819,22 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     chatMessageEls = [];
     restored.forEach((msg) => addChatMessage(msg, { persist: false }));
     persistChatState();
+  };
+
+  const retirePreviousAssistantActions = () => {
+    let changed = false;
+    for (let i = 0; i < chatMessages.length; i++) {
+      const msg = chatMessages[i];
+      if (!msg || msg.role !== "assistant") continue;
+      if (msg.status !== "done" && msg.status !== "convert-error") continue;
+      if (msg.actionsHidden) continue;
+      msg.actionsHidden = true;
+      const wrapper = chatMessageEls[i];
+      const bubble = wrapper && wrapper.firstChild;
+      if (bubble) bubble.innerHTML = buildAssistantHTML(msg);
+      changed = true;
+    }
+    if (changed) persistChatState();
   };
 
   /* ── log helpers ───────────────────────────────────────── */
@@ -2026,6 +2048,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const forcedDialog = forcedDialogOverride || null;
     const recentChatContext = buildRecentChatContext();
     let includeCurrentForThisSend = true;
+    retirePreviousAssistantActions();
 
     /* add user message to chat */
     if (!forcedRequestOverride) {
