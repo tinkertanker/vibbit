@@ -505,6 +505,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* chat conversation state */
   let chatMessages = [];       /* {role,content,feedback?,code?,status?} */
   let chatMessageEls = [];     /* parallel DOM elements */
+  let loadingTicker = 0;
+  let loadingTick = 0;
+  let loadingAssistantIdx = -1;
+  let loadingVerbPhase = "model";
 
   const setStatus = (value) => {
     const next = value || "";
@@ -584,6 +588,41 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const CHAT_HISTORY_MAX_FEEDBACK_LINES = 6;
   const CHAT_HISTORY_MAX_FEEDBACK_CHARS = 320;
   const CHAT_HISTORY_TRUNCATION_SUFFIX = " [truncated]";
+  const LOADING_TICK_MS = 1100;
+  const LOADING_PHRASES = [
+    "Galvanizing Gadgets",
+    "Ionizing Instructions",
+    "Soldering Syntax",
+    "Sparking Sequences",
+    "Whittling Wires",
+    "Forging Firmware",
+    "Knitting Nodes",
+    "Etching Logic",
+    "Carving Commands",
+    "Incanting Inputs",
+    "Transmuting Toggles",
+    "Brewing Binaries",
+    "Manifesting Matrices",
+    "Summoning Signals",
+    "Pixel-Pushing",
+    "Accelerating Atoms",
+    "Microing the Bits",
+    "Humming Hexfiles",
+    "Igniting the Breadboard",
+    "Warping Radio Waves",
+    "Buffing Pixels",
+    "Calibrating Compasses",
+    "Agitating Accelerometers",
+    "Syncing Silicons",
+    "Tuning Transmitters",
+    "Oscillating Outputs",
+    "Polishing Pins"
+  ];
+  const LOADING_VERBS = {
+    model: LOADING_PHRASES,
+    apply: LOADING_PHRASES,
+    convert: LOADING_PHRASES
+  };
 
   const clampStoredText = (value, maxChars) => {
     const text = String(value || "");
@@ -669,7 +708,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     let html = '';
     const actionsHidden = !!msg.actionsHidden;
     if (msg.status === "generating") {
-      html += '<div class="vibbit-msg-status">' + SPINNER_SMALL + ' ' + (msg.content || "Generating\u2026") + '</div>';
+      html += '<div class="vibbit-msg-status" role="status" aria-live="polite" aria-atomic="true">' + SPINNER_SMALL + ' ' + (msg.content || "Generating...") + '</div>';
     } else if (msg.status === "done") {
       if (msg.feedback && msg.feedback.length) {
         msg.feedback.forEach(function (line) {
@@ -770,6 +809,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const clearChat = (options) => {
     const shouldPersist = !options || options.persist !== false;
+    stopLoadingTicker();
     chatMessages = [];
     chatMessageEls = [];
     undoStack = [];
@@ -835,6 +875,45 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       changed = true;
     }
     if (changed) persistChatState();
+  };
+
+  const loadingVerbsForPhase = (phase) => LOADING_VERBS[phase] || LOADING_VERBS.model;
+
+  const formatLoadingLabel = (phase, tick) => {
+    const verbs = loadingVerbsForPhase(phase);
+    const verbIndex = Math.floor(tick / 2) % verbs.length;
+    const dots = ".".repeat((tick % 3) + 1);
+    return verbs[verbIndex] + dots;
+  };
+
+  const stopLoadingTicker = () => {
+    if (loadingTicker) {
+      clearInterval(loadingTicker);
+      loadingTicker = 0;
+    }
+    loadingTick = 0;
+    loadingAssistantIdx = -1;
+    loadingVerbPhase = "model";
+  };
+
+  const setLoadingPhase = (phase) => {
+    loadingVerbPhase = phase || "model";
+  };
+
+  const startLoadingTicker = (assistantIdx, phase) => {
+    stopLoadingTicker();
+    loadingAssistantIdx = assistantIdx;
+    loadingVerbPhase = phase || "model";
+
+    const tickOnce = () => {
+      if (loadingAssistantIdx < 0) return;
+      const content = formatLoadingLabel(loadingVerbPhase, loadingTick);
+      loadingTick += 1;
+      updateAssistantMessage(loadingAssistantIdx, { content, status: "generating" }, { persist: false });
+    };
+
+    tickOnce();
+    loadingTicker = setInterval(tickOnce, LOADING_TICK_MS);
   };
 
   /* ── log helpers ───────────────────────────────────────── */
@@ -2043,6 +2122,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── generate handler ────────────────────────────────────── */
   const sendMessage = (forcedRequestOverride, forcedDialogOverride) => {
     if (busy) return;
+    stopLoadingTicker();
 
     const request = forcedRequestOverride || (promptEl.value || "").trim();
     const forcedDialog = forcedDialogOverride || null;
@@ -2067,7 +2147,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
 
     /* add assistant placeholder */
-    const assistantIdx = addChatMessage({ role: "assistant", content: "Generating\u2026", status: "generating" });
+    const assistantIdx = addChatMessage({ role: "assistant", content: "Generating...", status: "generating" });
+    startLoadingTicker(assistantIdx, "model");
 
     busy = true;
     setBusyIndicator(true);
@@ -2164,7 +2245,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             }
           }
 
-          updateAssistantMessage(assistantIdx, { content: "Calling AI model\u2026", status: "generating" });
+          setLoadingPhase("model");
 
           if (mode === "managed") {
             logLine("Mode: Managed backend.");
@@ -2193,7 +2274,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             return;
           }
 
-          updateAssistantMessage(assistantIdx, { content: "Applying code to MakeCode\u2026", status: "generating", feedback });
+          setLoadingPhase("apply");
           setStatus("Pasting");
           return pasteToMakeCode(code, { signal, snapshot: shouldSnapshot })
             .catch((error) => {
@@ -2243,7 +2324,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         if (conversionRetryCount < 1) {
           conversionRetryCount += 1;
           logLine("MakeCode could not convert to Blocks. Retrying once with a conversion-fix prompt.");
-          updateAssistantMessage(assistantIdx, { content: "Fixing block conversion\u2026", status: "generating" });
+          setLoadingPhase("convert");
           return runGenerationAttempt(buildConversionFixRequest(dialog), dialog, { snapshot: false }).catch(handleGenerationFailure);
         }
         setStatus("Needs fix");
@@ -2261,6 +2342,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     runGenerationAttempt(forcedRequestOverride || null, forcedDialog)
       .catch(handleGenerationFailure)
       .finally(() => {
+        stopLoadingTicker();
         generationController = null;
         busy = false;
         setBusyIndicator(false);
