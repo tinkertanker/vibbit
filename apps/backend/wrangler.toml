@@ -1,0 +1,9 @@
+name = "vibbit-backend"
+main = "src/cloudflare-worker.mjs"
+compatibility_date = "2025-11-01"
+
+[vars]
+VIBBIT_ALLOW_ORIGIN = "*"
+VIBBIT_PROVIDER = "openai"
+VIBBIT_CLASSROOM_ENABLED = "true"
+VIBBIT_CLASSROOM_CODE_AUTO = "true"

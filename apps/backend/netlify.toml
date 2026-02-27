@@ -1,0 +1,18 @@
+[build]
+  publish = "."
+
+[[edge_functions]]
+  path = "/healthz"
+  function = "vibbit"
+
+[[edge_functions]]
+  path = "/admin"
+  function = "vibbit"
+
+[[edge_functions]]
+  path = "/admin/*"
+  function = "vibbit"
+
+[[edge_functions]]
+  path = "/vibbit/*"
+  function = "vibbit"

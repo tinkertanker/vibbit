@@ -10,7 +10,8 @@ This repository ships one school-facing runtime that supports both:
 - Runtime script for shipping/testing: `work.js`
 - Extension build output: `dist/`
 - Packaged zip output: `artifacts/vibbit-extension.zip`
-- Managed backend reference: `apps/backend/src/server.mjs`
+- Managed backend core: `apps/backend/src/runtime.mjs`
+- Node adapter entrypoint: `apps/backend/src/server.mjs`
 
 `client.js` is legacy and not the primary build source.
 
@@ -32,12 +33,22 @@ Use this exact flow when asked to prepare a testable build:
 
 ### Managed mode
 
-- Optional app token:
-  - `APP_TOKEN` (Bearer token to your backend)
-- Endpoint:
+- Classroom auth flow:
+  - Students enter backend URL + class code in Vibbit
+  - Extension calls `POST {BACKEND}/vibbit/connect` and receives a session token
+  - Generation uses that session token on `POST {BACKEND}/vibbit/generate`
+- Endpoints:
+  - `GET {BACKEND}/healthz`
+  - `GET {BACKEND}/admin` (`?code=<CLASSCODE>` in classroom mode)
+  - `GET {BACKEND}/admin/status`
+  - `GET {BACKEND}/vibbit/config`
+  - `POST {BACKEND}/vibbit/connect`
   - `POST {BACKEND}/vibbit/generate`
+- Legacy optional app token:
+  - `APP_TOKEN` (Bearer token, only for `SERVER_APP_TOKEN` mode)
 - Payload supports:
   - `target`, `request`, `currentCode`, `pageErrors`, `conversionDialog` (detected editor/page diagnostics + conversion modal details)
+  - optional managed overrides: `provider`, `model`
 
 ### BYOK mode
 
@@ -61,6 +72,10 @@ VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" n
 - Start backend: `npm run backend:start`
 - Dev backend (watch): `npm run backend:dev`
 - Backend env template: `apps/backend/.env.example`
+- Deployment adapters:
+  - Cloudflare: `apps/backend/src/cloudflare-worker.mjs`, `apps/backend/wrangler.toml`
+  - Vercel: `apps/backend/api/[[...path]].mjs`, `apps/backend/vercel.json`
+  - Netlify: `apps/backend/netlify/edge-functions/vibbit.mjs`, `apps/backend/netlify.toml`
 
 ## Smoke-test checklist
 

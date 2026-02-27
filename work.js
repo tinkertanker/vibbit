@@ -36,6 +36,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const STORAGE_SETUP_DONE = "__vibbit_setup_done";
   const STORAGE_SERVER = "__vibbit_server";
   const STORAGE_TARGET = "__vibbit_target";
+  const STORAGE_CLASS_CODE = "__vibbit_class_code";
+  const STORAGE_MANAGED_SESSION = "__vibbit_managed_session";
+  const STORAGE_MANAGED_SESSION_EXPIRES = "__vibbit_managed_session_expires";
 
   const MODEL_PRESETS = {
     openai: [
@@ -155,6 +158,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '      <div style="' + S_LABEL + '">Server URL</div>'
     + '      <input id="setup-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
+    + '    <div style="display:grid;gap:4px;margin-top:8px">'
+    + '      <div style="' + S_LABEL + '">Class Code</div>'
+    + '      <input id="setup-class-code" placeholder="From your teacher" style="' + S_INPUT + '">'
+    + '    </div>'
     + '  </div>'
 
     /* get started */
@@ -262,6 +269,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '    <div style="display:grid;gap:4px">'
     + '      <div style="' + S_LABEL + '">Server URL</div>'
     + '      <input id="set-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
+    + '    </div>'
+    + '    <div style="display:grid;gap:4px;margin-top:8px">'
+    + '      <div style="' + S_LABEL + '">Class Code</div>'
+    + '      <input id="set-class-code" placeholder="From your teacher" style="' + S_INPUT + '">'
     + '    </div>'
     + '  </div>'
 
@@ -381,6 +392,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setupModel = $("#setup-model");
   const setupKey = $("#setup-key");
   const setupServer = $("#setup-server");
+  const setupClassCode = $("#setup-class-code");
   const setupByokProvider = $("#setup-byok-provider");
   const setupByokModel = $("#setup-byok-model");
   const setupByokKey = $("#setup-byok-key");
@@ -409,6 +421,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setModel = $("#set-model");
   const setKey = $("#set-key");
   const setServer = $("#set-server");
+  const setClassCode = $("#set-class-code");
   const setTarget = $("#set-target");
   const setByokProvider = $("#set-byok-provider");
   const setByokModel = $("#set-byok-model");
@@ -766,15 +779,97 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   refreshRevertButton();
 
   /* ── resolve effective backend URL ───────────────────────── */
-  const DEFAULT_SERVER = BACKEND.replace(/^https?:\/\//, "");
+  const DEFAULT_SERVER = BACKEND.replace(/\/+$/, "");
+  const MANAGED_SESSION_REFRESH_BUFFER_MS = 15000;
+
+  const normaliseClassCode = (value) => String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "")
+    .slice(0, 5);
+
+  const clearManagedSession = () => {
+    storageRemove(STORAGE_MANAGED_SESSION);
+    storageRemove(STORAGE_MANAGED_SESSION_EXPIRES);
+  };
+
+  const getStoredClassCode = () => normaliseClassCode(storageGet(STORAGE_CLASS_CODE) || "");
+
+  const storeClassCode = (value) => {
+    const normalized = normaliseClassCode(value);
+    if (normalized) storageSet(STORAGE_CLASS_CODE, normalized);
+    else storageRemove(STORAGE_CLASS_CODE);
+    clearManagedSession();
+    return normalized;
+  };
+
+  const saveManagedSession = (token, expiresAt) => {
+    const safeToken = String(token || "").trim();
+    if (!safeToken) {
+      clearManagedSession();
+      return;
+    }
+    storageSet(STORAGE_MANAGED_SESSION, safeToken);
+    const ts = expiresAt ? Date.parse(expiresAt) : NaN;
+    if (Number.isFinite(ts) && ts > 0) storageSet(STORAGE_MANAGED_SESSION_EXPIRES, String(ts));
+    else storageRemove(STORAGE_MANAGED_SESSION_EXPIRES);
+  };
+
+  const getStoredManagedSession = () => {
+    const token = String(storageGet(STORAGE_MANAGED_SESSION) || "").trim();
+    if (!token) return "";
+
+    const rawExpiry = storageGet(STORAGE_MANAGED_SESSION_EXPIRES);
+    const expiry = rawExpiry ? Number(rawExpiry) : 0;
+    if (expiry && (Date.now() + MANAGED_SESSION_REFRESH_BUFFER_MS) >= expiry) {
+      clearManagedSession();
+      return "";
+    }
+    return token;
+  };
+
+  const extractHostFromServerInput = (value) => {
+    const source = String(value || "").trim();
+    if (!source) return "";
+    if (/^https?:\/\//i.test(source)) {
+      try {
+        return new URL(source).hostname.toLowerCase();
+      } catch (error) {
+      }
+    }
+
+    const trimmed = source.replace(/^[^@]*@/, "").split(/[/?#]/)[0];
+    if (!trimmed) return "";
+    const ipv6 = trimmed.match(/^\[([^\]]+)\](?::\d+)?$/);
+    if (ipv6 && ipv6[1]) return ipv6[1].toLowerCase();
+    return trimmed.split(":")[0].toLowerCase();
+  };
+
+  const isLikelyLocalHost = (host) => {
+    const value = String(host || "").trim().toLowerCase();
+    if (!value) return false;
+    if (value === "localhost" || value === "0.0.0.0") return true;
+    if (value.endsWith(".localhost") || value.endsWith(".local")) return true;
+    if (/^127(?:\.\d{1,3}){3}$/.test(value)) return true;
+    if (/^10\./.test(value)) return true;
+    if (/^192\.168\./.test(value)) return true;
+    if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(value)) return true;
+    return false;
+  };
+
+  const normaliseServerUrl = (value) => {
+    const raw = String(value || "").trim().replace(/\/+$/, "");
+    if (!raw) return "";
+    if (/^https?:\/\//i.test(raw)) return raw;
+    const host = extractHostFromServerInput(raw);
+    const protocol = isLikelyLocalHost(host) ? "http://" : "https://";
+    return protocol + raw;
+  };
 
   const getBackendUrl = () => {
-    const server = storageGet(STORAGE_SERVER);
-    if (server && server.trim()) {
-      const host = server.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
-      return "https://" + host;
-    }
-    return BACKEND;
+    const configured = normaliseServerUrl(storageGet(STORAGE_SERVER));
+    if (configured) return configured;
+    return normaliseServerUrl(BACKEND) || BACKEND;
   };
 
   /* ── load saved state ────────────────────────────────────── */
@@ -783,6 +878,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const savedModel = storageGet(STORAGE_MODEL);
   const savedKey = getStoredProviderKey(savedProvider);
   const savedServer = storageGet(STORAGE_SERVER) || "";
+  const savedClassCode = getStoredClassCode();
   const savedTarget = storageGet(STORAGE_TARGET) || "microbit";
   const setupDone = storageGet(STORAGE_SETUP_DONE) === "1";
 
@@ -792,6 +888,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   populateModels(setupModel, savedProvider, savedModel);
   setupKey.value = savedKey;
   setupServer.value = savedServer || DEFAULT_SERVER;
+  setupClassCode.value = savedClassCode;
   applySetupMode();
 
   /* hydrate settings view */
@@ -800,6 +897,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   populateModels(setModel, savedProvider, savedModel);
   setKey.value = savedKey;
   setServer.value = savedServer || DEFAULT_SERVER;
+  setClassCode.value = savedClassCode;
   setTarget.value = savedTarget;
   applySettingsMode();
 
@@ -815,6 +913,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     populateModels(setupModel, setupProv.value, null);
     setupKey.value = getStoredProviderKey(setupProv.value);
   };
+
+  setupClassCode.onchange = () => {
+    setupClassCode.value = normaliseClassCode(setupClassCode.value);
+  };
+  setupClassCode.oninput = setupClassCode.onchange;
 
   setupGo.onclick = () => {
     const mode = setupMode.value;
@@ -832,6 +935,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     } else {
       const server = setupServer.value.trim() || DEFAULT_SERVER;
       storageSet(STORAGE_SERVER, server);
+      const classCode = storeClassCode(setupClassCode.value);
+      setupClassCode.value = classCode;
     }
     storageSet(STORAGE_MODE, mode);
     storageSet(STORAGE_SETUP_DONE, "1");
@@ -842,6 +947,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     populateModels(setModel, setupProv.value, setupModel.value);
     setKey.value = getStoredProviderKey(setupProv.value);
     setServer.value = setupServer.value;
+    setClassCode.value = setupClassCode.value;
     applySettingsMode();
 
     showView("main");
@@ -876,7 +982,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   setServer.onchange = () => {
     storageSet(STORAGE_SERVER, setServer.value.trim());
+    setupServer.value = setServer.value;
+    clearManagedSession();
   };
+  setServer.oninput = setServer.onchange;
+
+  setClassCode.onchange = () => {
+    const classCode = storeClassCode(setClassCode.value);
+    setClassCode.value = classCode;
+    setupClassCode.value = classCode;
+  };
+  setClassCode.oninput = setClassCode.onchange;
 
   setTarget.onchange = () => {
     storageSet(STORAGE_TARGET, setTarget.value);
@@ -1854,29 +1970,89 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       });
   };
 
-  const buildBackendHeaders = () => {
+  const parseJsonSafe = async (response) => {
+    try {
+      return await response.json();
+    } catch (error) {
+      return null;
+    }
+  };
+
+  const connectManagedSession = async (backendUrl, classCode, signal) => {
+    const normalizedCode = normaliseClassCode(classCode);
+    if (!normalizedCode || APP_TOKEN) return "";
+
+    const existingSession = getStoredManagedSession();
+    if (existingSession) return existingSession;
+
+    logLine("Connecting to classroom server...");
+    const response = await fetch(backendUrl + "/vibbit/connect", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Vibbit-Class-Code": normalizedCode
+      },
+      body: JSON.stringify({ classCode: normalizedCode }),
+      signal
+    });
+
+    if (response.status === 404 || response.status === 405) {
+      return "";
+    }
+
+    const json = await parseJsonSafe(response);
+    if (!response.ok) {
+      const message = json && json.error
+        ? json.error
+        : (response.status === 401 ? "Invalid class code." : ("Classroom connect failed (HTTP " + response.status + ")."));
+      throw new Error(message);
+    }
+
+    const token = json && typeof json.sessionToken === "string" ? json.sessionToken.trim() : "";
+    if (!token) return "";
+    saveManagedSession(token, json.expiresAt);
+    logLine("Connected to classroom session.");
+    return token;
+  };
+
+  const buildBackendHeaders = async (backendUrl, signal) => {
     const headers = { "Content-Type": "application/json" };
-    if (APP_TOKEN) headers.Authorization = "Bearer " + APP_TOKEN;
+    if (APP_TOKEN) {
+      headers.Authorization = "Bearer " + APP_TOKEN;
+      return headers;
+    }
+
+    const classCode = getStoredClassCode();
+    if (classCode) headers["X-Vibbit-Class-Code"] = classCode;
+
+    const sessionToken = await connectManagedSession(backendUrl, classCode, signal);
+    if (sessionToken) headers.Authorization = "Bearer " + sessionToken;
     return headers;
   };
 
-  const requestBackendGenerate = (payload, signal) => {
+  const requestBackendGenerate = async (payload, signal) => {
     const backendUrl = getBackendUrl();
-    return fetch(backendUrl + "/vibbit/generate", {
-      method: "POST",
-      headers: buildBackendHeaders(),
-      body: JSON.stringify(payload),
-      signal
-    }).then(async (response) => {
-      if (response.ok) return response.json();
-      let message = "HTTP " + response.status;
-      try {
-        const json = await response.json();
-        if (json && json.error) message = json.error;
-      } catch (error) {
-      }
-      throw new Error(message);
-    });
+    const doRequest = async () => {
+      const headers = await buildBackendHeaders(backendUrl, signal);
+      return fetch(backendUrl + "/vibbit/generate", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal
+      });
+    };
+
+    let response = await doRequest();
+    if (response.status === 401 && !APP_TOKEN && getStoredClassCode()) {
+      clearManagedSession();
+      response = await doRequest();
+    }
+
+    if (response.ok) return response.json();
+    let message = "HTTP " + response.status;
+    const json = await parseJsonSafe(response);
+    if (json && json.error) message = json.error;
+    throw new Error(message);
   };
 
   /* ── generate handler ────────────────────────────────────── */
