@@ -6,3 +6,5 @@ output/playwright/
 .env.audit
 .env.audit.local
 apps/backend/.env
+.vibbit-backend-state.json
+apps/backend/.vibbit-backend-state.json

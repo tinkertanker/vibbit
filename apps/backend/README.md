@@ -20,11 +20,11 @@ The backend keeps provider API keys server-side and proxies generation requests.
 
 ## Admin panel
 
-- Classroom mode: open `/admin?code=<CLASSCODE>`
-- App-token mode: open `/admin?token=<SERVER_APP_TOKEN>`
-- No-auth mode: open `/admin`
+- Open `/admin?admin=<ADMINTOKEN>`
+- On startup, backend logs the admin URL with token.
+- Optional: set `VIBBIT_ADMIN_TOKEN` to provide a fixed admin token.
 
-The panel shows effective runtime config, active session count, and quick links to diagnostic endpoints.
+The panel shows effective runtime config, active session count, quick links, and provider setup controls.
 
 ## Classroom connection flow
 
@@ -101,7 +101,6 @@ Error response:
 ```bash
 cd apps/backend
 cp .env.example .env
-# set at least one provider API key (for example VIBBIT_OPENAI_API_KEY)
 npm start
 ```
 
@@ -113,6 +112,8 @@ By default:
 
 Share that URL + code with students.
 
+Then open `/admin?admin=<ADMINTOKEN>` and set provider API keys/models in the **Provider Setup** section.
+
 ## Environment variables
 
 Core:
@@ -122,6 +123,8 @@ Core:
 - `VIBBIT_REQUEST_TIMEOUT_MS` (default `60000`)
 - `VIBBIT_EMPTY_RETRIES` (default `2`)
 - `VIBBIT_VALIDATION_RETRIES` (default `2`)
+- `VIBBIT_STATE_FILE` (default `.vibbit-backend-state.json`; persisted admin provider config path)
+- `VIBBIT_ADMIN_TOKEN` (optional fixed admin token; if empty, auto-generated and persisted in `VIBBIT_STATE_FILE`)
 
 Classroom auth:
 
@@ -145,23 +148,38 @@ Provider routing:
 
 Provider keys/models:
 
-- `VIBBIT_API_KEY` (shared fallback)
-- `VIBBIT_OPENAI_API_KEY`, `VIBBIT_OPENAI_MODEL`
-- `VIBBIT_GEMINI_API_KEY`, `VIBBIT_GEMINI_MODEL`
-- `VIBBIT_OPENROUTER_API_KEY`, `VIBBIT_OPENROUTER_MODEL`
+- `VIBBIT_API_KEY` (shared fallback; optional)
+- `VIBBIT_OPENAI_API_KEY`, `VIBBIT_OPENAI_MODEL` (optional)
+- `VIBBIT_GEMINI_API_KEY`, `VIBBIT_GEMINI_MODEL` (optional)
+- `VIBBIT_OPENROUTER_API_KEY`, `VIBBIT_OPENROUTER_MODEL` (optional)
+
+If these are omitted, set provider keys/models via `/admin` and they are persisted to `VIBBIT_STATE_FILE`.
 
 ## Deploy target (Railway)
 
 Railway is the supported hosted deployment target for this backend.
+
+Deploy button (placeholder until template is published):
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/REPLACE_WITH_TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=vibbit)
 
 ### Deploy from GitHub (recommended)
 
 1. Open [Railway New Project](https://railway.com/new) and choose **Deploy from GitHub repo**.
 2. Select this repository.
 3. Set the service root directory to `apps/backend`.
-4. Add environment variables from `.env.example` (at minimum, one provider API key).
+4. Add environment variables from `.env.example` (provider API keys are optional if entered via `/admin`).
 5. Generate a public domain for the service.
 6. Share that HTTPS URL plus the classroom code with students.
+
+### Cheapest setup (single-service, low-budget)
+
+To keep usage as low as possible (targeting Railway Free credit):
+
+1. Run only one backend service (no Postgres/Redis service).
+2. Attach a Railway volume and set `VIBBIT_STATE_FILE=/data/vibbit-state.json`.
+3. Keep one replica for this service.
+4. Set Railway hard usage limit to `$1` so spend cannot exceed budget.
 
 ### Deploy with CLI
 
@@ -175,4 +193,5 @@ npm run deploy:railway
 ## Notes
 
 - For multi-replica deployments, keep session validation consistent across instances (stateless signed tokens or shared store).
+- `VIBBIT_STATE_FILE` stores admin-saved provider keys; treat it as sensitive and do not commit it.
 - `GET /vibbit/config` is useful for quick diagnostics without exposing secrets.

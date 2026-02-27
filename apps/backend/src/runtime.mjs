@@ -143,6 +143,109 @@ function createProviderConfig(env) {
   };
 }
 
+function createEmptyAdminProviderState() {
+  return {
+    defaultProvider: "",
+    models: {},
+    apiKeys: {},
+    updatedAt: ""
+  };
+}
+
+function sanitiseAdminProviderState(input, enabledProviders) {
+  const providers = Array.isArray(enabledProviders) && enabledProviders.length
+    ? enabledProviders
+    : SUPPORTED_PROVIDERS;
+  const source = input && typeof input === "object" ? input : {};
+  const state = createEmptyAdminProviderState();
+
+  const requestedDefault = normaliseProvider(source.defaultProvider || "");
+  if (requestedDefault && providers.includes(requestedDefault)) {
+    state.defaultProvider = requestedDefault;
+  }
+
+  const sourceModels = source.models && typeof source.models === "object" ? source.models : {};
+  for (const provider of providers) {
+    const model = String(sourceModels[provider] || "").trim();
+    if (model) state.models[provider] = model.slice(0, 160);
+  }
+
+  const sourceKeys = source.apiKeys && typeof source.apiKeys === "object" ? source.apiKeys : {};
+  for (const provider of providers) {
+    const key = String(sourceKeys[provider] || "").trim();
+    if (key) state.apiKeys[provider] = key.slice(0, 4096);
+  }
+
+  state.updatedAt = String(source.updatedAt || "").trim();
+  return state;
+}
+
+function hasAdminProviderOverrides(adminProviderState) {
+  const state = adminProviderState || createEmptyAdminProviderState();
+  return Boolean(
+    state.defaultProvider
+    || Object.keys(state.models || {}).length
+    || Object.keys(state.apiKeys || {}).length
+  );
+}
+
+function applyAdminProviderUpdate(existingState, updateInput, enabledProviders) {
+  const providers = Array.isArray(enabledProviders) && enabledProviders.length
+    ? enabledProviders
+    : SUPPORTED_PROVIDERS;
+  const existing = sanitiseAdminProviderState(existingState, providers);
+  const update = updateInput && typeof updateInput === "object" ? updateInput : {};
+
+  const next = {
+    defaultProvider: existing.defaultProvider,
+    models: { ...existing.models },
+    apiKeys: { ...existing.apiKeys },
+    updatedAt: new Date().toISOString()
+  };
+
+  const requestedDefault = normaliseProvider(update.defaultProvider || "");
+  if (requestedDefault && providers.includes(requestedDefault)) {
+    next.defaultProvider = requestedDefault;
+  }
+
+  for (const provider of providers) {
+    const modelField = `${provider}Model`;
+    const modelValue = String(update[modelField] || "").trim();
+    if (modelValue) next.models[provider] = modelValue.slice(0, 160);
+
+    const keyField = `${provider}ApiKey`;
+    const keyValue = String(update[keyField] || "").trim();
+    if (keyValue) next.apiKeys[provider] = keyValue.slice(0, 4096);
+  }
+
+  return sanitiseAdminProviderState(next, providers);
+}
+
+function buildEffectiveProviderConfig(baseProviderConfig, adminProviderStateInput) {
+  const enabledProviders = Array.isArray(baseProviderConfig.enabledProviders)
+    ? baseProviderConfig.enabledProviders.slice()
+    : SUPPORTED_PROVIDERS.slice();
+  const adminProviderState = sanitiseAdminProviderState(adminProviderStateInput, enabledProviders);
+
+  const defaultProvider = adminProviderState.defaultProvider && enabledProviders.includes(adminProviderState.defaultProvider)
+    ? adminProviderState.defaultProvider
+    : baseProviderConfig.defaultProvider;
+
+  return {
+    enabledProviders,
+    defaultProvider,
+    allowedModels: baseProviderConfig.allowedModels || {},
+    defaultModelFor: (provider) => {
+      const safeProvider = normaliseProvider(provider);
+      return adminProviderState.models[safeProvider] || baseProviderConfig.defaultModelFor(safeProvider);
+    },
+    apiKeyFor: (provider) => {
+      const safeProvider = normaliseProvider(provider);
+      return adminProviderState.apiKeys[safeProvider] || baseProviderConfig.apiKeyFor(safeProvider);
+    }
+  };
+}
+
 function resolveProviderSelection(providerConfig, payloadProvider, payloadModel) {
   const requestedProvider = normaliseProvider(payloadProvider || providerConfig.defaultProvider);
   if (!providerConfig.enabledProviders.includes(requestedProvider)) {
@@ -157,7 +260,7 @@ function resolveProviderSelection(providerConfig, payloadProvider, payloadModel)
 
   const key = providerConfig.apiKeyFor(requestedProvider);
   if (!key) {
-    throw new Error(`Missing API key for provider '${requestedProvider}'. Configure provider key env vars.`);
+    throw new Error(`Missing API key for provider '${requestedProvider}'. Configure provider key env vars or save keys in /admin.`);
   }
 
   return { provider: requestedProvider, model, key };
@@ -319,6 +422,24 @@ async function readJson(request, maxBytes = MAX_JSON_BYTES) {
   } catch (error) {
     throw new Error("Invalid JSON");
   }
+}
+
+async function readAdminProviderUpdate(request) {
+  const contentType = String(request.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("application/json")) {
+    return readJson(request, 64 * 1024);
+  }
+
+  if (contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data")) {
+    const form = await request.formData();
+    const payload = {};
+    for (const [key, value] of form.entries()) {
+      payload[key] = typeof value === "string" ? value : "";
+    }
+    return payload;
+  }
+
+  return readJson(request, 64 * 1024);
 }
 
 function withTimeout(promise, timeoutMs) {
@@ -834,8 +955,8 @@ async function callGemini(key, model, system, user, signal) {
   return extractGeminiText(data);
 }
 
-async function generateManaged({ target, request, currentCode, pageErrors, conversionDialog, provider, model }, runtimeConfig) {
-  const selected = resolveProviderSelection(runtimeConfig.providerConfig, provider, model);
+async function generateManaged({ target, request, currentCode, pageErrors, conversionDialog, provider, model }, runtimeConfig, providerConfig) {
+  const selected = resolveProviderSelection(providerConfig || runtimeConfig.providerConfig, provider, model);
 
   const system = systemPromptFor(target);
   const user = userPromptFor(request, currentCode || "", pageErrors || [], conversionDialog || null);
@@ -949,25 +1070,45 @@ function getAuthMode(runtimeConfig) {
   return runtimeConfig.authMode || "none";
 }
 
-function getPublicServerConfig(runtimeConfig) {
-  const defaultProvider = runtimeConfig.providerConfig.defaultProvider;
+function getPublicServerConfig(runtimeConfig, effectiveProviderConfig = runtimeConfig.providerConfig) {
+  const defaultProvider = effectiveProviderConfig.defaultProvider;
   return {
     authMode: getAuthMode(runtimeConfig),
     classCodeRequired: getAuthMode(runtimeConfig) === "classroom",
     classCodeLength: runtimeConfig.classCodeLength,
-    enabledProviders: runtimeConfig.providerConfig.enabledProviders,
+    enabledProviders: effectiveProviderConfig.enabledProviders,
     defaultProvider,
-    defaultModel: runtimeConfig.providerConfig.defaultModelFor(defaultProvider)
+    defaultModel: effectiveProviderConfig.defaultModelFor(defaultProvider)
   };
 }
 
-function buildAdminStatus(runtimeConfig, sessionStore) {
+function buildAdminStatus(runtimeConfig, sessionStore, adminProviderState) {
+  const effectiveProviderConfig = buildEffectiveProviderConfig(runtimeConfig.providerConfig, adminProviderState);
   const status = {
     ok: true,
     timestamp: new Date().toISOString(),
-    ...getPublicServerConfig(runtimeConfig),
+    ...getPublicServerConfig(runtimeConfig, effectiveProviderConfig),
     allowOrigin: runtimeConfig.allowOrigin,
     activeSessions: sessionStore.size()
+  };
+
+  const providerModels = {};
+  const providerKeyConfigured = {};
+  const providerKeySource = {};
+  for (const provider of effectiveProviderConfig.enabledProviders) {
+    providerModels[provider] = effectiveProviderConfig.defaultModelFor(provider);
+    const hasAdminKey = Boolean(adminProviderState && adminProviderState.apiKeys && adminProviderState.apiKeys[provider]);
+    const hasEnvKey = Boolean(runtimeConfig.providerConfig.apiKeyFor(provider));
+    providerKeyConfigured[provider] = hasAdminKey || hasEnvKey;
+    providerKeySource[provider] = hasAdminKey ? "admin" : (hasEnvKey ? "env" : "missing");
+  }
+
+  status.providerModels = providerModels;
+  status.providerKeyConfigured = providerKeyConfigured;
+  status.providerKeySource = providerKeySource;
+  status.adminProviderConfig = {
+    hasOverrides: hasAdminProviderOverrides(adminProviderState),
+    updatedAt: adminProviderState && adminProviderState.updatedAt ? adminProviderState.updatedAt : null
   };
 
   if (getAuthMode(runtimeConfig) === "classroom") {
@@ -975,6 +1116,27 @@ function buildAdminStatus(runtimeConfig, sessionStore) {
   }
 
   return status;
+}
+
+function providerDisplayName(provider) {
+  if (provider === "openai") return "OpenAI";
+  if (provider === "openrouter") return "OpenRouter";
+  if (provider === "gemini") return "Gemini";
+  return provider;
+}
+
+function buildAdminAuthQuery(requestUrl, extras = {}) {
+  const params = new URLSearchParams();
+  const admin = String(requestUrl.searchParams.get("admin") || "").trim();
+  if (admin) params.set("admin", admin);
+  for (const [key, value] of Object.entries(extras || {})) {
+    if (value == null) continue;
+    const text = String(value).trim();
+    if (!text) continue;
+    params.set(key, text);
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
 }
 
 function escapeHtml(value) {
@@ -986,19 +1148,47 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function renderAdminPanel(runtimeConfig, sessionStore, requestUrl) {
-  const status = buildAdminStatus(runtimeConfig, sessionStore);
-  const authMode = getAuthMode(runtimeConfig);
-  const authHint = authMode === "classroom"
-    ? `Classroom mode is enabled. Open this page with <code>?code=${escapeHtml(runtimeConfig.classroomCode)}</code> or send <code>X-Vibbit-Class-Code</code>.`
-    : (authMode === "app-token"
-      ? "App-token mode is enabled. Open this page with <code>?token=...</code> or send <code>Authorization: Bearer ...</code>."
-      : "No admin auth is configured.");
+function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken) {
+  const status = buildAdminStatus(runtimeConfig, sessionStore, adminProviderState);
+  const authHint = adminAuthToken
+    ? "Admin token auth is enabled. Open this page with <code>?admin=...</code>, or send <code>X-Vibbit-Admin-Token</code>, or <code>Authorization: Bearer ...</code>."
+    : "Admin auth token is not configured.";
 
+  const authQuery = buildAdminAuthQuery(requestUrl);
   const baseUrl = `${requestUrl.origin}`;
   const healthzUrl = `${baseUrl}/healthz`;
   const configUrl = `${baseUrl}/vibbit/config`;
-  const statusUrl = `${baseUrl}/admin/status`;
+  const statusUrl = `${baseUrl}/admin/status${authQuery}`;
+  const saveConfigUrl = `${baseUrl}/admin/config${authQuery}`;
+  const saveNotice = requestUrl.searchParams.get("saved") === "1"
+    ? "<p class=\"notice\">Provider settings saved.</p>"
+    : "";
+
+  const defaultProviderOptions = status.enabledProviders.map((provider) => {
+    const selected = provider === status.defaultProvider ? " selected" : "";
+    return `<option value="${escapeHtml(provider)}"${selected}>${escapeHtml(providerDisplayName(provider))}</option>`;
+  }).join("");
+
+  const providerSetupRows = status.enabledProviders.map((provider) => {
+    const providerName = providerDisplayName(provider);
+    const modelValue = status.providerModels && status.providerModels[provider]
+      ? status.providerModels[provider]
+      : "";
+    const keyConfigured = Boolean(status.providerKeyConfigured && status.providerKeyConfigured[provider]);
+    const keySource = status.providerKeySource && status.providerKeySource[provider]
+      ? status.providerKeySource[provider]
+      : "missing";
+    return [
+      "<div class=\"metric\">",
+      `<div class=\"label\">${escapeHtml(providerName)} model</div>`,
+      `<input class=\"input\" type=\"text\" name="${escapeHtml(provider)}Model" value="${escapeHtml(modelValue)}" placeholder="Model id">`,
+      "</div>",
+      "<div class=\"metric\">",
+      `<div class=\"label\">${escapeHtml(providerName)} API key (${escapeHtml(keyConfigured ? `configured via ${keySource}` : "missing")})</div>`,
+      `<input class=\"input\" type=\"password\" name="${escapeHtml(provider)}ApiKey" placeholder="${escapeHtml(keyConfigured ? "Leave blank to keep current key" : "Paste API key")}" autocomplete="off">`,
+      "</div>"
+    ].join("");
+  }).join("");
 
   return [
     "<!doctype html>",
@@ -1020,8 +1210,12 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl) {
     "a:hover{text-decoration:underline}",
     ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}",
     ".metric{background:#0b162b;border:1px solid #1d2b49;border-radius:10px;padding:10px}",
-    ".label{font-size:12px;color:#9eb1d6;margin-bottom:2px}",
+    ".label{font-size:12px;color:#9eb1d6;margin-bottom:6px}",
     ".value{font-size:15px;font-weight:600;color:#f4f8ff}",
+    ".input,.select{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #2a3a5f;border-radius:8px;background:#091127;color:#e6edf8}",
+    ".btn{margin-top:12px;background:#2b6de8;color:#fff;border:none;border-radius:8px;padding:9px 14px;font-weight:600;cursor:pointer}",
+    ".btn:hover{background:#245fd0}",
+    ".notice{display:inline-block;background:#0f2a1f;border:1px solid #1f6542;color:#b8f5d3;border-radius:8px;padding:7px 10px}",
     "</style>",
     "</head>",
     "<body>",
@@ -1040,6 +1234,21 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl) {
     "</div>",
     "</div>",
     "<div class=\"card\">",
+    "<h2>Provider Setup</h2>",
+    "<p>You can configure provider defaults and API keys here. Leave API key fields blank to keep the current value.</p>",
+    saveNotice,
+    `<form method="POST" action="${escapeHtml(saveConfigUrl)}">`,
+    "<div class=\"grid\">",
+    "<div class=\"metric\">",
+    "<div class=\"label\">Default provider</div>",
+    `<select class="select" name="defaultProvider">${defaultProviderOptions}</select>`,
+    "</div>",
+    providerSetupRows,
+    "</div>",
+    "<button class=\"btn\" type=\"submit\">Save provider settings</button>",
+    "</form>",
+    "</div>",
+    "<div class=\"card\">",
     "<h2>Quick Links</h2>",
     `<p><a href="${escapeHtml(healthzUrl)}" target="_blank" rel="noreferrer">/healthz</a></p>`,
     `<p><a href="${escapeHtml(configUrl)}" target="_blank" rel="noreferrer">/vibbit/config</a></p>`,
@@ -1055,26 +1264,18 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl) {
   ].join("");
 }
 
-function isAdminRequestAuthorised(request, runtimeConfig, requestUrl) {
-  const authMode = getAuthMode(runtimeConfig);
-  if (authMode === "none") return true;
-
-  const bearer = extractBearerToken(request.headers.get("authorization"));
-
-  if (authMode === "app-token") {
-    const queryToken = String(requestUrl.searchParams.get("token") || "").trim();
-    const candidate = bearer || queryToken;
-    return Boolean(candidate && candidate === runtimeConfig.appToken);
+function isAdminRequestAuthorised(request, runtimeConfig, requestUrl, adminAuthToken) {
+  const configuredAdminToken = String(adminAuthToken || "").trim();
+  if (configuredAdminToken) {
+    const headerToken = String(request.headers.get("x-vibbit-admin-token") || "").trim();
+    const queryToken = String(requestUrl.searchParams.get("admin") || "").trim();
+    const legacyQueryToken = String(requestUrl.searchParams.get("token") || "").trim();
+    const bearer = extractBearerToken(request.headers.get("authorization"));
+    const candidate = headerToken || queryToken || legacyQueryToken || bearer;
+    return Boolean(candidate && candidate === configuredAdminToken);
   }
 
-  if (authMode === "classroom") {
-    const classHeader = String(request.headers.get("x-vibbit-class-code") || "").trim();
-    const queryCode = String(requestUrl.searchParams.get("code") || "").trim();
-    const candidate = classHeader || queryCode || bearer;
-    return isClassroomCodeValid(candidate, runtimeConfig);
-  }
-
-  return false;
+  return getAuthMode(runtimeConfig) === "none";
 }
 
 function isClassroomCodeValid(candidate, runtimeConfig) {
@@ -1104,10 +1305,11 @@ function isGenerateRequestAuthorised(request, runtimeConfig, sessionStore) {
   return false;
 }
 
-function buildStartupInfo(runtimeConfig, { listenUrl } = {}) {
+function buildStartupInfo(runtimeConfig, { listenUrl, effectiveProviderConfig } = {}) {
+  const providerConfig = effectiveProviderConfig || runtimeConfig.providerConfig;
   const info = [
-    `[Vibbit backend] Provider=${runtimeConfig.providerConfig.defaultProvider} model=${runtimeConfig.providerConfig.defaultModelFor(runtimeConfig.providerConfig.defaultProvider)}`,
-    `[Vibbit backend] Enabled providers=${runtimeConfig.providerConfig.enabledProviders.join(", ")}`,
+    `[Vibbit backend] Provider=${providerConfig.defaultProvider} model=${providerConfig.defaultModelFor(providerConfig.defaultProvider)}`,
+    `[Vibbit backend] Enabled providers=${providerConfig.enabledProviders.join(", ")}`,
     `[Vibbit backend] Auth mode=${getAuthMode(runtimeConfig)}`
   ];
   if (listenUrl) info.unshift(`[Vibbit backend] Listening on ${listenUrl}`);
@@ -1143,6 +1345,20 @@ export function createBackendRuntime(options = {}) {
   const env = options.env || (typeof process !== "undefined" ? process.env : {});
   const runtimeConfig = createRuntimeConfig(env);
   const sessionStore = createSessionStore(runtimeConfig.sessionTtlMs);
+  const adminAuthToken = String(
+    options.adminAuthToken
+    || env.VIBBIT_ADMIN_TOKEN
+    || runtimeConfig.appToken
+    || ""
+  ).trim();
+  const persistAdminProviderState = typeof options.persistAdminProviderState === "function"
+    ? options.persistAdminProviderState
+    : (() => Promise.resolve());
+  let adminProviderState = sanitiseAdminProviderState(
+    options.adminProviderState || createEmptyAdminProviderState(),
+    runtimeConfig.providerConfig.enabledProviders
+  );
+  const getEffectiveProviderConfig = () => buildEffectiveProviderConfig(runtimeConfig.providerConfig, adminProviderState);
 
   const handleConnect = async (request, origin) => {
     const authMode = getAuthMode(runtimeConfig);
@@ -1167,7 +1383,7 @@ export function createBackendRuntime(options = {}) {
 
     return respondJson(200, {
       ok: true,
-      ...getPublicServerConfig(runtimeConfig),
+      ...getPublicServerConfig(runtimeConfig, getEffectiveProviderConfig()),
       sessionToken: session.token,
       expiresAt: new Date(session.expiresAt).toISOString()
     }, origin, runtimeConfig);
@@ -1188,7 +1404,7 @@ export function createBackendRuntime(options = {}) {
     if (pathname === "/healthz" && request.method === "GET") {
       return respondJson(200, {
         ok: true,
-        ...getPublicServerConfig(runtimeConfig),
+        ...getPublicServerConfig(runtimeConfig, getEffectiveProviderConfig()),
         tokenRequired: getAuthMode(runtimeConfig) !== "none",
         activeSessions: sessionStore.size()
       }, origin, runtimeConfig);
@@ -1197,7 +1413,7 @@ export function createBackendRuntime(options = {}) {
     if (pathname === "/vibbit/config" && request.method === "GET") {
       return respondJson(200, {
         ok: true,
-        ...getPublicServerConfig(runtimeConfig)
+        ...getPublicServerConfig(runtimeConfig, getEffectiveProviderConfig())
       }, origin, runtimeConfig);
     }
 
@@ -1211,18 +1427,51 @@ export function createBackendRuntime(options = {}) {
     }
 
     if (pathname === "/admin" && request.method === "GET") {
-      if (!isAdminRequestAuthorised(request, runtimeConfig, requestUrl)) {
+      if (!isAdminRequestAuthorised(request, runtimeConfig, requestUrl, adminAuthToken)) {
         return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
       }
-      const html = renderAdminPanel(runtimeConfig, sessionStore, requestUrl);
+      const html = renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken);
       return respondHtml(200, html, origin, runtimeConfig);
     }
 
     if (pathname === "/admin/status" && request.method === "GET") {
-      if (!isAdminRequestAuthorised(request, runtimeConfig, requestUrl)) {
+      if (!isAdminRequestAuthorised(request, runtimeConfig, requestUrl, adminAuthToken)) {
         return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
       }
-      return respondJson(200, buildAdminStatus(runtimeConfig, sessionStore), origin, runtimeConfig);
+      return respondJson(200, buildAdminStatus(runtimeConfig, sessionStore, adminProviderState), origin, runtimeConfig);
+    }
+
+    if (pathname === "/admin/config" && request.method === "POST") {
+      if (!isAdminRequestAuthorised(request, runtimeConfig, requestUrl, adminAuthToken)) {
+        return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
+      }
+      try {
+        const update = await readAdminProviderUpdate(request);
+        adminProviderState = applyAdminProviderUpdate(
+          adminProviderState,
+          update,
+          runtimeConfig.providerConfig.enabledProviders
+        );
+        await persistAdminProviderState(adminProviderState);
+
+        const acceptsJson = String(request.headers.get("accept") || "").toLowerCase().includes("application/json")
+          || String(request.headers.get("content-type") || "").toLowerCase().includes("application/json");
+        if (acceptsJson) {
+          return respondJson(200, buildAdminStatus(runtimeConfig, sessionStore, adminProviderState), origin, runtimeConfig);
+        }
+
+        const nextQuery = buildAdminAuthQuery(requestUrl, { saved: "1" });
+        return new Response(null, {
+          status: 303,
+          headers: {
+            Location: `/admin${nextQuery}`,
+            ...buildCorsHeaders(origin, runtimeConfig)
+          }
+        });
+      } catch (error) {
+        const { status, message } = classifyRequestError(error, runtimeConfig);
+        return respondJson(status, { error: message }, origin, runtimeConfig);
+      }
     }
 
     if (pathname === "/vibbit/generate" && request.method === "POST") {
@@ -1237,7 +1486,7 @@ export function createBackendRuntime(options = {}) {
           return respondJson(400, { error: validated.error }, origin, runtimeConfig);
         }
 
-        const result = await generateManaged(validated.value, runtimeConfig);
+        const result = await generateManaged(validated.value, runtimeConfig, getEffectiveProviderConfig());
         return respondJson(200, result, origin, runtimeConfig);
       } catch (error) {
         const { status, message } = classifyRequestError(error, runtimeConfig);
@@ -1251,6 +1500,9 @@ export function createBackendRuntime(options = {}) {
   return {
     config: runtimeConfig,
     fetch: fetchHandler,
-    getStartupInfo: (options) => buildStartupInfo(runtimeConfig, options)
+    getStartupInfo: (options) => buildStartupInfo(runtimeConfig, {
+      ...(options || {}),
+      effectiveProviderConfig: getEffectiveProviderConfig()
+    })
   };
 }

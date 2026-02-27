@@ -73,6 +73,7 @@ VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" n
 - Dev backend (watch): `npm run backend:dev`
 - Backend env template: `apps/backend/.env.example`
 - Hosted deployment target: Railway (see `apps/backend/README.md`)
+- Admin panel can save provider keys/models without env vars (persisted via `VIBBIT_STATE_FILE`) and is protected by an admin token (`/admin?admin=...`)
 
 ## Smoke-test checklist
 

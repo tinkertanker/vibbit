@@ -11,7 +11,7 @@ This repo ships one Vibbit runtime supporting both:
 2. Teacher shares only:
    - server URL
    - class code
-3. Teacher can inspect backend status at `/admin` (for classroom mode: `/admin?code=<CLASSCODE>`).
+3. Teacher can inspect backend status at `/admin` (using `/admin?admin=<ADMINTOKEN>`).
 4. Students open Vibbit in MakeCode, choose `Managed`, and enter URL + class code.
 5. Vibbit connects to `/vibbit/connect`, receives a short-lived session token, then calls `/vibbit/generate`.
 6. Provider keys stay on the server.
@@ -65,7 +65,6 @@ VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" n
 
 ```bash
 cp apps/backend/.env.example apps/backend/.env
-# set at least one provider API key, for example VIBBIT_OPENAI_API_KEY
 npm run backend:start
 ```
 
@@ -73,13 +72,19 @@ Default local URL:
 
 - `http://localhost:8787`
 
-On start, backend logs the classroom share line (URL + class code).
+On start, backend logs the classroom share line (URL + class code) and the admin URL (`/admin?admin=...`).
+
+If provider keys are not set in env, open `/admin?admin=<ADMINTOKEN>` and configure them in the Provider Setup form.
 
 ## Deploy backend (monorepo)
 
 Supported hosted deployment target:
 
 - Railway
+
+Deploy button (placeholder until template is published):
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/REPLACE_WITH_TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=vibbit)
 
 See full backend setup and env docs here:
 
@@ -91,6 +96,11 @@ Recommended teacher flow:
 2. Set service root directory to `apps/backend`.
 3. Add required env vars from `apps/backend/.env.example`.
 4. Generate a public domain and share URL + class code.
+
+Cheapest hosted option:
+
+- Use one Railway backend service only, attach a volume, and set `VIBBIT_STATE_FILE=/data/vibbit-state.json`.
+- Set Railway hard usage limit to `$1`.
 
 ## Install extension in Chrome
 
