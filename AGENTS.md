@@ -29,6 +29,21 @@ Use this exact flow when asked to prepare a testable build:
    - `artifacts/vibbit-extension.zip`
 4. For local browser testing, load unpacked from `dist/` at `chrome://extensions`.
 
+## Bookmarklet build flow
+
+Use this when packaging for users who cannot install browser extensions:
+
+1. Build Managed-first bookmarklet artefacts:
+   - `npm run build:bookmarklet`
+2. Optional BYOK-enabled bookmarklet artefacts:
+   - `npm run build:bookmarklet:byok`
+3. Verify outputs:
+   - `artifacts/bookmarklet/vibbit-runtime.js`
+   - `artifacts/bookmarklet/bookmarklet-managed.txt`
+   - optional: `artifacts/bookmarklet/bookmarklet-byok.txt`
+
+Use `VIBBIT_BOOKMARKLET_RUNTIME_URL` when generating production bookmarklet links.
+
 ## Supported keys and endpoints
 
 ### Managed mode
@@ -41,6 +56,8 @@ Use this exact flow when asked to prepare a testable build:
   - `GET {BACKEND}/healthz`
   - `GET {BACKEND}/admin` (`?code=<CLASSCODE>` in classroom mode)
   - `GET {BACKEND}/admin/status`
+  - `GET {BACKEND}/bookmarklet`
+  - `GET {BACKEND}/bookmarklet/runtime.js`
   - `GET {BACKEND}/vibbit/config`
   - `POST {BACKEND}/vibbit/connect`
   - `POST {BACKEND}/vibbit/generate`

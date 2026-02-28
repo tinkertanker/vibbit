@@ -2,6 +2,11 @@ const BACKEND = "https://vibbit.dev.tk.sg";
 const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
 (function () {
+  const existingRuntime = window.__vibbit;
+  if (existingRuntime && typeof existingRuntime.reinvoke === "function") {
+    const handled = existingRuntime.reinvoke();
+    if (handled !== false) return;
+  }
   if (window.__vibbitStrict) return;
   window.__vibbitStrict = 1;
 
@@ -94,6 +99,30 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     else storageRemove(key);
   };
 
+  const bookmarkletConfig = window.__vibbitBookmarkletConfig && typeof window.__vibbitBookmarkletConfig === "object"
+    ? window.__vibbitBookmarkletConfig
+    : {};
+  const enableManagedMode = bookmarkletConfig.enableManaged !== false;
+  const enableByokMode = bookmarkletConfig.enableByok !== false;
+  const configuredForceMode = String(bookmarkletConfig.forceMode || "").trim().toLowerCase();
+  const modeFlags = {
+    managed: enableManagedMode,
+    byok: enableByokMode
+  };
+  if (!modeFlags.managed && !modeFlags.byok) modeFlags.managed = true;
+  if (configuredForceMode === "managed" || configuredForceMode === "byok") {
+    modeFlags[configuredForceMode] = true;
+  }
+  const fallbackMode = modeFlags.managed ? "managed" : "byok";
+  const forceMode = modeFlags[configuredForceMode] ? configuredForceMode : "";
+  const coerceMode = (value) => {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "managed" && modeFlags.managed) return "managed";
+    if (normalized === "byok" && modeFlags.byok) return "byok";
+    if (forceMode) return forceMode;
+    return fallbackMode;
+  };
+
   /* ── shared styles ───────────────────────────────────────── */
   const S_LABEL = "font-size:11px;color:#9eb2ff;text-transform:uppercase;letter-spacing:0.08em";
   const S_SELECT = "width:100%;padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef;cursor:pointer";
@@ -146,7 +175,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '  <div style="font-size:16px;font-weight:600;color:#e6e8ef">Welcome to Vibbit</div>'
 
     /* mode */
-    + '  <div style="display:grid;gap:4px">'
+    + '  <div id="setup-mode-row" style="display:grid;gap:4px">'
     + '    <div style="' + S_LABEL + '">Mode</div>'
     + '    <select id="setup-mode" style="' + S_SELECT + '">'
     + '      <option value="byok">Bring your own key</option>'
@@ -246,7 +275,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '<div style="padding:16px 18px;display:grid;gap:12px">'
 
     /* mode */
-    + '  <div style="display:grid;gap:4px">'
+    + '  <div id="set-mode-row" style="display:grid;gap:4px">'
     + '    <div style="' + S_LABEL + '">Mode</div>'
     + '    <select id="set-mode" style="' + S_SELECT + '">'
     + '      <option value="byok">Bring your own key</option>'
@@ -308,7 +337,6 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '</div>';
 
   backdrop.appendChild(ui);
-  document.body.appendChild(backdrop);
 
   /* ── preview bar (shown when modal dismissed for preview) ── */
   const previewBar = document.createElement("div");
@@ -320,7 +348,6 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '  Return to Vibbit'
     + '</button>'
     + '<button id="preview-new" aria-label="Start a new chat" style="padding:6px 14px;border:1px solid #29324e;border-radius:999px;background:transparent;color:#8899bb;font-size:12px;font-weight:500;cursor:pointer">New Chat</button>';
-  document.body.appendChild(previewBar);
 
   /* hidden elements for backwards-compat refs */
   const hiddenCompat = document.createElement("div");
@@ -353,8 +380,6 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     ".vibbit-btn-cancel{border:1px solid #dc2626;background:rgba(220,38,38,0.18);color:#fecaca}",
     ".vibbit-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:14px;color:#4a5f82;padding:40px 20px;text-align:center;user-select:none}"
   ].join("\n");
-  document.head.appendChild(runtimeStyle);
-
   /* ── FAB ─────────────────────────────────────────────────── */
   const fab = document.createElement("div");
   fab.id = "vibbit-fab";
@@ -364,7 +389,17 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   fab.onmouseenter = function () { fab.style.background = "var(--secondary-background-color-hover, #2f4bc0)"; fab.style.boxShadow = "0 6px 20px rgba(52,84,209,.6)"; };
   fab.onmouseleave = function () { fab.style.background = "#3454D1"; fab.style.boxShadow = "0 4px 14px rgba(52,84,209,.45)"; };
 
+  const ensureRuntimeMounted = () => {
+    if (!document.head || !document.body) return false;
+    if (!document.head.contains(runtimeStyle)) document.head.appendChild(runtimeStyle);
+    if (!document.body.contains(backdrop)) document.body.appendChild(backdrop);
+    if (!document.body.contains(previewBar)) document.body.appendChild(previewBar);
+    if (!document.body.contains(fab)) document.body.appendChild(fab);
+    return true;
+  };
+
   const openPanel = function () {
+    if (!ensureRuntimeMounted()) return;
     fab.style.display = "none";
     previewBar.style.display = "none";
     backdrop.style.display = "flex";
@@ -377,6 +412,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const closePanel = function () {
+    if (!ensureRuntimeMounted()) return;
     backdrop.dataset.active = "";
     previewBar.style.display = "none";
     setTimeout(function () {
@@ -399,7 +435,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   fab.onclick = openPanel;
-  document.body.appendChild(fab);
+  ensureRuntimeMounted();
 
   /* ── backdrop click to close ───────────────────────────── */
   backdrop.addEventListener("mousedown", function (e) {
@@ -422,6 +458,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setupByokModel = $("#setup-byok-model");
   const setupByokKey = $("#setup-byok-key");
   const setupManagedServer = $("#setup-managed-server");
+  const setupModeRow = $("#setup-mode-row");
   const setupGo = $("#setup-go");
 
   /* main view refs */
@@ -459,6 +496,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setByokModel = $("#set-byok-model");
   const setByokKey = $("#set-byok-key");
   const setManagedServer = $("#set-managed-server");
+  const setModeRow = $("#set-mode-row");
   const saveBtn = $("#save");
   const backBtn = $("#back");
 
@@ -511,13 +549,39 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     managedServer: setManagedServer
   };
 
+  const filterModeOptions = (selectEl) => {
+    const options = Array.from(selectEl.options || []);
+    options.forEach((option) => {
+      const modeValue = String(option.value || "").trim().toLowerCase();
+      if (!modeFlags[modeValue]) option.remove();
+    });
+    if (!selectEl.options.length) {
+      const fallbackOption = document.createElement("option");
+      fallbackOption.value = fallbackMode;
+      fallbackOption.textContent = fallbackMode === "managed" ? "Managed (school account)" : "Bring your own key";
+      selectEl.appendChild(fallbackOption);
+    }
+    const mode = coerceMode(selectEl.value);
+    if (selectEl.value !== mode) selectEl.value = mode;
+  };
+
+  filterModeOptions(setupMode);
+  filterModeOptions(setMode);
+  const showModePicker = modeFlags.byok && modeFlags.managed;
+  if (setupModeRow) setupModeRow.style.display = showModePicker ? "grid" : "none";
+  if (setModeRow) setModeRow.style.display = showModePicker ? "grid" : "none";
+
   const applySetupMode = () => {
-    setModeVisibility(setupMode.value, setupModeRefs);
+    const mode = coerceMode(setupMode.value);
+    if (setupMode.value !== mode) setupMode.value = mode;
+    setModeVisibility(mode, setupModeRefs);
   };
 
   const applySettingsMode = () => {
-    setModeVisibility(setMode.value, settingsModeRefs);
-    storageSet(STORAGE_MODE, setMode.value);
+    const mode = coerceMode(setMode.value);
+    if (setMode.value !== mode) setMode.value = mode;
+    setModeVisibility(mode, settingsModeRefs);
+    storageSet(STORAGE_MODE, mode);
   };
 
   /* ── state ───────────────────────────────────────────────── */
@@ -1185,7 +1249,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   /* ── load saved state ────────────────────────────────────── */
-  const savedMode = storageGet(STORAGE_MODE) || "byok";
+  const savedMode = forceMode || coerceMode(storageGet(STORAGE_MODE) || "byok");
   const savedProvider = storageGet(STORAGE_PROVIDER) || "openai";
   const savedModel = storageGet(STORAGE_MODEL);
   const savedKey = getStoredProviderKey(savedProvider);
@@ -1195,7 +1259,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const setupDone = storageGet(STORAGE_SETUP_DONE) === "1";
 
   /* hydrate setup view */
-  setupMode.value = savedMode;
+  setupMode.value = coerceMode(savedMode);
   setupProv.value = savedProvider;
   populateModels(setupModel, savedProvider, savedModel);
   setupKey.value = savedKey;
@@ -1204,7 +1268,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   applySetupMode();
 
   /* hydrate settings view */
-  setMode.value = savedMode;
+  setMode.value = coerceMode(savedMode);
   setProv.value = savedProvider;
   populateModels(setModel, savedProvider, savedModel);
   setKey.value = savedKey;
@@ -1219,6 +1283,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── setup view events ───────────────────────────────────── */
   setupMode.onchange = () => {
     applySetupMode();
+    setMode.value = setupMode.value;
+    applySettingsMode();
   };
 
   setupProv.onchange = () => {
@@ -1232,7 +1298,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   setupClassCode.oninput = setupClassCode.onchange;
 
   setupGo.onclick = () => {
-    const mode = setupMode.value;
+    const mode = coerceMode(setupMode.value);
+    setupMode.value = mode;
     if (mode === "byok") {
       const key = setupKey.value.trim();
       if (!key) {
@@ -1268,6 +1335,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── settings view events ────────────────────────────────── */
   setMode.onchange = () => {
     applySettingsMode();
+    setupMode.value = setMode.value;
+    applySetupMode();
   };
 
   setProv.onchange = () => {
@@ -1317,6 +1386,40 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   $("#x-setup").onclick = closePanel;
   $("#x-main").onclick = closePanel;
   $("#x-settings").onclick = closePanel;
+
+  const isPanelOpen = () => backdrop.style.display !== "none" && backdrop.dataset.active === "true";
+  const togglePanel = () => {
+    if (isPanelOpen()) closePanel();
+    else openPanel();
+  };
+  const reinvokeRuntime = () => {
+    if (!ensureRuntimeMounted()) return false;
+    togglePanel();
+    return true;
+  };
+  const destroyRuntime = () => {
+    try {
+      if (fab && fab.parentNode) fab.parentNode.removeChild(fab);
+      if (previewBar && previewBar.parentNode) previewBar.parentNode.removeChild(previewBar);
+      if (backdrop && backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+      if (runtimeStyle && runtimeStyle.parentNode) runtimeStyle.parentNode.removeChild(runtimeStyle);
+    } catch (error) {
+    }
+    if (window.__vibbit === runtimeApi) {
+      delete window.__vibbit;
+    }
+    window.__vibbitStrict = 0;
+    return true;
+  };
+  const runtimeApi = {
+    version: "1",
+    open: openPanel,
+    close: closePanel,
+    toggle: togglePanel,
+    reinvoke: reinvokeRuntime,
+    destroy: destroyRuntime
+  };
+  window.__vibbit = runtimeApi;
 
   /* ── Monaco helpers ──────────────────────────────────────── */
   const clickLike = (root, labels) => {

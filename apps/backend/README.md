@@ -17,6 +17,8 @@ The backend keeps provider API keys server-side and proxies generation requests.
 - `GET /vibbit/config`
 - `POST /vibbit/connect`
 - `POST /vibbit/generate`
+- `GET /bookmarklet` (bookmarklet installer page)
+- `GET /bookmarklet/runtime.js` (bookmarklet runtime script)
 
 ## Admin panel
 
@@ -25,6 +27,23 @@ The backend keeps provider API keys server-side and proxies generation requests.
 - Optional: set `VIBBIT_ADMIN_TOKEN` to provide a fixed admin token.
 
 The panel shows effective runtime config, active session count, quick links, and provider setup controls.
+
+## Bookmarklet flow (no extension install)
+
+The backend can host a bookmarklet installer page at:
+
+- `/bookmarklet`
+
+This page includes a managed classroom bookmarklet that loads runtime from:
+
+- `/bookmarklet/runtime.js`
+
+Recommended classroom flow:
+
+1. Teacher opens `/bookmarklet`.
+2. Teacher/student drags **Vibbit (Managed)** to the bookmarks bar.
+3. Student opens a MakeCode project and clicks the bookmarklet.
+4. Student enters backend URL + class code in Vibbit managed mode.
 
 ## Classroom connection flow
 
@@ -125,6 +144,8 @@ Core:
 - `VIBBIT_VALIDATION_RETRIES` (default `2`)
 - `VIBBIT_STATE_FILE` (default `.vibbit-backend-state.json`; persisted admin provider config path)
 - `VIBBIT_ADMIN_TOKEN` (optional fixed admin token; if empty, auto-generated and persisted in `VIBBIT_STATE_FILE`)
+- `VIBBIT_BOOKMARKLET_ENABLED` (default `true`; enables `/bookmarklet` and `/bookmarklet/runtime.js`)
+- `VIBBIT_BOOKMARKLET_ENABLE_BYOK` (default `false`; adds optional BYOK-enabled bookmarklet link on `/bookmarklet`)
 
 Classroom auth:
 
@@ -171,6 +192,7 @@ Deploy button (placeholder until template is published):
 4. Add environment variables from `.env.example` (provider API keys are optional if entered via `/admin`).
 5. Generate a public domain for the service.
 6. Share that HTTPS URL plus the classroom code with students.
+7. For no-extension usage, share `https://<your-domain>/bookmarklet`.
 
 ### Cheapest setup (single-service, low-budget)
 

@@ -60,8 +60,19 @@ const runtime = createBackendRuntime({
 });
 
 function toFetchRequest(req) {
-  const protocol = req.socket && req.socket.encrypted ? "https" : "http";
-  const host = req.headers.host || `localhost:${PORT}`;
+  const forwardedProtoRaw = req.headers["x-forwarded-proto"];
+  const forwardedHostRaw = req.headers["x-forwarded-host"];
+  const forwardedProto = Array.isArray(forwardedProtoRaw)
+    ? String(forwardedProtoRaw[0] || "").split(",")[0].trim().toLowerCase()
+    : String(forwardedProtoRaw || "").split(",")[0].trim().toLowerCase();
+  const forwardedHost = Array.isArray(forwardedHostRaw)
+    ? String(forwardedHostRaw[0] || "").split(",")[0].trim()
+    : String(forwardedHostRaw || "").split(",")[0].trim();
+
+  const protocol = (forwardedProto === "http" || forwardedProto === "https")
+    ? forwardedProto
+    : (req.socket && req.socket.encrypted ? "https" : "http");
+  const host = forwardedHost || req.headers.host || `localhost:${PORT}`;
   const url = `${protocol}://${host}${req.url || "/"}`;
 
   const headers = new Headers();

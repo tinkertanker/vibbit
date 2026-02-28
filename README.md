@@ -27,6 +27,8 @@ This repo ships one Vibbit runtime supporting both:
 - Admin endpoints:
   - `GET {BACKEND}/admin`
   - `GET {BACKEND}/admin/status`
+  - `GET {BACKEND}/bookmarklet`
+  - `GET {BACKEND}/bookmarklet/runtime.js`
 - Request payload supports:
   - `target`, `request`, `currentCode`, `pageErrors`, `conversionDialog`
   - optional managed overrides: `provider`, `model`
@@ -67,6 +69,43 @@ Build-time backend overrides:
 ```bash
 VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" npm run build
 ```
+
+## Build bookmarklet distribution
+
+For users who cannot install the Chrome extension, build bookmarklet artefacts:
+
+```bash
+npm run build:bookmarklet
+```
+
+Default output is Managed-first (BYOK hidden) and writes:
+
+- `artifacts/bookmarklet/vibbit-runtime.js`
+- `artifacts/bookmarklet/bookmarklet-managed.txt`
+- `artifacts/bookmarklet/install-managed.html`
+
+To emit an additional BYOK-enabled bookmarklet:
+
+```bash
+npm run build:bookmarklet:byok
+```
+
+Set the hosted runtime URL used inside the bookmarklet link:
+
+```bash
+VIBBIT_BOOKMARKLET_RUNTIME_URL="https://cdn.example.com/vibbit-runtime.js" npm run build:bookmarklet
+```
+
+Deploy `artifacts/bookmarklet/vibbit-runtime.js` to that URL, then distribute the generated bookmarklet text or install HTML.
+
+## Backend-hosted bookmarklet (Railway-friendly)
+
+The managed backend can host bookmarklet assets directly, so you can avoid a separate static hosting step:
+
+- Installer page: `GET {BACKEND}/bookmarklet`
+- Runtime script: `GET {BACKEND}/bookmarklet/runtime.js`
+
+After deploying the backend, share `{BACKEND}/bookmarklet` with students who cannot install extensions.
 
 ## Shared compat core
 

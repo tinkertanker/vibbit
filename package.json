@@ -6,6 +6,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:watch": "node --watch scripts/build.mjs",
+    "build:bookmarklet": "npm run check:compat-core && npm --prefix apps/bookmarklet run build",
+    "build:bookmarklet:byok": "npm run check:compat-core && npm --prefix apps/bookmarklet run build -- --enable-byok",
     "sync:compat-core": "node scripts/sync-compat-core.mjs",
     "check:compat-core": "node scripts/sync-compat-core.mjs --check",
     "dev:watch-reload": "node scripts/dev/watch-build-reload.mjs",

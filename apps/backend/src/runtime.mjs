@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildTargetPromptExtras,
   buildUserPrompt,
@@ -14,6 +17,19 @@ const DEFAULT_CORS_HEADERS = "Content-Type, Authorization, X-Vibbit-Class-Code, 
 const MAX_JSON_BYTES = 1024 * 1024;
 const CLASS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CLASS_CODE_LENGTH = 5;
+const BOOKMARKLET_RUNTIME_ROUTE = "/bookmarklet/runtime.js";
+const BOOKMARKLET_INSTALL_ROUTE = "/bookmarklet";
+const WORK_JS_USERSCRIPT_HEADER_PATTERN = /^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/;
+const WORK_JS_BACKEND_CONST_PATTERN = /const BACKEND = ".*?";/;
+const WORK_JS_APP_TOKEN_CONST_PATTERN = /const APP_TOKEN = ".*?";/;
+
+const runtimeFileDir = dirname(fileURLToPath(import.meta.url));
+const WORK_JS_CANDIDATE_PATHS = [
+  resolve(runtimeFileDir, "../../../work.js"),
+  resolve(process.cwd(), "work.js"),
+  resolve(process.cwd(), "../work.js"),
+  resolve(process.cwd(), "../../work.js")
+];
 
 function parseInteger(value, fallback, { min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER } = {}) {
   const parsed = Number(value);
@@ -35,6 +51,22 @@ function parseCsv(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function firstHeaderToken(value) {
+  return String(value || "")
+    .split(",")[0]
+    .trim();
+}
+
+function resolvePublicOrigin(request, requestUrl) {
+  const forwardedProto = firstHeaderToken(request.headers.get("x-forwarded-proto")).toLowerCase();
+  const forwardedHost = firstHeaderToken(request.headers.get("x-forwarded-host"));
+  const protocol = (forwardedProto === "http" || forwardedProto === "https")
+    ? forwardedProto
+    : String((requestUrl && requestUrl.protocol) || "https:").replace(/:$/, "");
+  const host = forwardedHost || firstHeaderToken(request.headers.get("host")) || requestUrl.host;
+  return `${protocol || "https"}://${host}`;
 }
 
 function normaliseProvider(value) {
@@ -320,6 +352,8 @@ function createRuntimeConfig(envInput = {}) {
   const requestTimeoutMs = parseInteger(env.VIBBIT_REQUEST_TIMEOUT_MS, 60000, { min: 5000, max: 180000 });
   const emptyRetries = parseInteger(env.VIBBIT_EMPTY_RETRIES, 2, { min: 0, max: 5 });
   const validationRetries = parseInteger(env.VIBBIT_VALIDATION_RETRIES, 2, { min: 0, max: 5 });
+  const bookmarkletEnabled = parseBoolean(env.VIBBIT_BOOKMARKLET_ENABLED, true);
+  const bookmarkletEnableByok = parseBoolean(env.VIBBIT_BOOKMARKLET_ENABLE_BYOK, false);
   const providerConfig = createProviderConfig(env);
   const appToken = String(env.SERVER_APP_TOKEN || "").trim();
 
@@ -361,6 +395,8 @@ function createRuntimeConfig(envInput = {}) {
     requestTimeoutMs,
     emptyRetries,
     validationRetries,
+    bookmarkletEnabled,
+    bookmarkletEnableByok,
     providerConfig,
     appToken,
     authMode,
@@ -409,6 +445,17 @@ function respondHtml(status, html, origin, config) {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       ...buildCorsHeaders(origin, config)
+    }
+  });
+}
+
+function respondJavaScript(status, source, origin, config, extraHeaders = {}) {
+  return new Response(source, {
+    status,
+    headers: {
+      "Content-Type": "application/javascript; charset=utf-8",
+      ...buildCorsHeaders(origin, config),
+      ...extraHeaders
     }
   });
 }
@@ -812,7 +859,10 @@ function getPublicServerConfig(runtimeConfig, effectiveProviderConfig = runtimeC
     classCodeLength: runtimeConfig.classCodeLength,
     enabledProviders: effectiveProviderConfig.enabledProviders,
     defaultProvider,
-    defaultModel: effectiveProviderConfig.defaultModelFor(defaultProvider)
+    defaultModel: effectiveProviderConfig.defaultModelFor(defaultProvider),
+    bookmarkletEnabled: Boolean(runtimeConfig.bookmarkletEnabled),
+    bookmarkletByokEnabled: Boolean(runtimeConfig.bookmarkletEnableByok),
+    bookmarkletInstallPath: BOOKMARKLET_INSTALL_ROUTE
   };
 }
 
@@ -823,7 +873,13 @@ function buildAdminStatus(runtimeConfig, sessionStore, adminProviderState) {
     timestamp: new Date().toISOString(),
     ...getPublicServerConfig(runtimeConfig, effectiveProviderConfig),
     allowOrigin: runtimeConfig.allowOrigin,
-    activeSessions: sessionStore.size()
+    activeSessions: sessionStore.size(),
+    bookmarklet: {
+      enabled: Boolean(runtimeConfig.bookmarkletEnabled),
+      byokEnabled: Boolean(runtimeConfig.bookmarkletEnableByok),
+      installPath: BOOKMARKLET_INSTALL_ROUTE,
+      runtimePath: BOOKMARKLET_RUNTIME_ROUTE
+    }
   };
 
   const providerModels = {};
@@ -989,6 +1045,72 @@ function renderLandingPage() {
 </html>`;
 }
 
+function escapeTextarea(value) {
+  return String(value ?? "").replace(/<\/textarea/gi, "<\\/textarea");
+}
+
+function renderBookmarkletInstallPage({ managedHref, byokHref, runtimeUrl, enableByok }) {
+  const byokSection = enableByok
+    ? [
+      "<section class=\"card\">",
+      "<h2>Optional BYOK bookmarklet</h2>",
+      "<p>Use this only if your students should enter provider keys directly in the browser.</p>",
+      `<p><a class="bookmarklet" href="${escapeHtml(byokHref)}">Vibbit (BYOK enabled)</a></p>`,
+      `<textarea readonly>${escapeTextarea(byokHref)}</textarea>`,
+      "</section>"
+    ].join("")
+    : "";
+
+  return [
+    "<!doctype html>",
+    "<html lang=\"en\">",
+    "<head>",
+    "<meta charset=\"utf-8\">",
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+    "<title>Vibbit Bookmarklet</title>",
+    "<style>",
+    "body{margin:0;background:#0b1324;color:#e6edf8;font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}",
+    ".wrap{max-width:980px;margin:32px auto;padding:0 16px}",
+    ".card{background:#111b33;border:1px solid #243152;border-radius:12px;padding:16px;margin-bottom:14px}",
+    "h1{margin:0 0 6px;font-size:24px}",
+    "h2{margin:0 0 8px;font-size:17px}",
+    "p{margin:8px 0;color:#c0cee8}",
+    ".bookmarklet{display:inline-block;padding:10px 14px;border-radius:10px;background:#2b6de8;color:#fff;text-decoration:none;font-weight:600}",
+    ".bookmarklet:hover{background:#245fd0}",
+    "code,textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}",
+    "textarea{width:100%;min-height:84px;box-sizing:border-box;border:1px solid #2a3a5f;border-radius:8px;background:#091127;color:#e6edf8;padding:10px}",
+    "ol{margin:8px 0 0 20px;color:#c0cee8}",
+    "li{margin:4px 0}",
+    "</style>",
+    "</head>",
+    "<body>",
+    "<main class=\"wrap\">",
+    "<section class=\"card\">",
+    "<h1>Install Vibbit Bookmarklet</h1>",
+    "<p>This page is hosted by your Vibbit backend, so students can launch Vibbit without installing a browser extension.</p>",
+    "<ol>",
+    "<li>Show the bookmarks bar in your browser.</li>",
+    "<li>Drag the bookmarklet button below into the bookmarks bar.</li>",
+    "<li>Open a MakeCode project page and click the bookmark.</li>",
+    "</ol>",
+    "</section>",
+    "<section class=\"card\">",
+    "<h2>Managed classroom bookmarklet</h2>",
+    "<p>Recommended for schools. Students use server URL + class code; provider keys stay on your backend.</p>",
+    `<p><a class="bookmarklet" href="${escapeHtml(managedHref)}">Vibbit (Managed)</a></p>`,
+    `<textarea readonly>${escapeTextarea(managedHref)}</textarea>`,
+    "</section>",
+    byokSection,
+    "<section class=\"card\">",
+    "<h2>Runtime URL</h2>",
+    `<p><code>${escapeHtml(runtimeUrl)}</code></p>`,
+    "</section>",
+    "</main>",
+    "</body>",
+    "</html>"
+  ].join("");
+}
+
 function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken) {
   const status = buildAdminStatus(runtimeConfig, sessionStore, adminProviderState);
   const authHint = adminAuthToken
@@ -1001,6 +1123,7 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProvider
   const configUrl = `${baseUrl}/vibbit/config`;
   const statusUrl = `${baseUrl}/admin/status${authQuery}`;
   const saveConfigUrl = `${baseUrl}/admin/config${authQuery}`;
+  const bookmarkletUrl = `${baseUrl}${BOOKMARKLET_INSTALL_ROUTE}`;
   const saveNotice = requestUrl.searchParams.get("saved") === "1"
     ? "<p class=\"notice\">Provider settings saved.</p>"
     : "";
@@ -1093,6 +1216,7 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProvider
     "<h2>Quick Links</h2>",
     `<p><a href="${escapeHtml(healthzUrl)}" target="_blank" rel="noreferrer">/healthz</a></p>`,
     `<p><a href="${escapeHtml(configUrl)}" target="_blank" rel="noreferrer">/vibbit/config</a></p>`,
+    `<p><a href="${escapeHtml(bookmarkletUrl)}" target="_blank" rel="noreferrer">${BOOKMARKLET_INSTALL_ROUTE}</a></p>`,
     `<p><a href="${escapeHtml(statusUrl)}" target="_blank" rel="noreferrer">/admin/status</a></p>`,
     "</div>",
     "<div class=\"card\">",
@@ -1157,6 +1281,10 @@ function buildStartupInfo(runtimeConfig, { listenUrl, effectiveProviderConfig } 
   if (getAuthMode(runtimeConfig) === "classroom") {
     info.push(`[Vibbit backend] Share with students -> URL: ${listenUrl || "<your-server-url>"} | class code: ${runtimeConfig.classroomCode}`);
   }
+  if (runtimeConfig.bookmarkletEnabled) {
+    info.push(`[Vibbit backend] Bookmarklet install page -> ${(listenUrl || "<your-server-url>") + BOOKMARKLET_INSTALL_ROUTE}`);
+    info.push(`[Vibbit backend] Bookmarklet runtime -> ${(listenUrl || "<your-server-url>") + BOOKMARKLET_RUNTIME_ROUTE}`);
+  }
   if (getAuthMode(runtimeConfig) === "app-token") {
     info.push("[Vibbit backend] SERVER_APP_TOKEN auth enabled");
   }
@@ -1182,9 +1310,75 @@ function classifyRequestError(error, runtimeConfig) {
   return { status: 500, message };
 }
 
+function loadBookmarkletRuntimeTemplate() {
+  for (const candidatePath of WORK_JS_CANDIDATE_PATHS) {
+    try {
+      const source = readFileSync(candidatePath, "utf8");
+      if (!source) continue;
+      return source.replace(WORK_JS_USERSCRIPT_HEADER_PATTERN, "");
+    } catch {
+    }
+  }
+  return "";
+}
+
+function buildBookmarkletRuntimeSource(templateSource, backendUrl) {
+  if (!templateSource) {
+    return [
+      `console.error(${JSON.stringify("Vibbit bookmarklet runtime source is unavailable on this backend deployment.")});`,
+      `alert(${JSON.stringify("Vibbit bookmarklet runtime is not available on this server.")});`
+    ].join("\n");
+  }
+
+  let output = templateSource;
+  const backendLine = `const BACKEND = ${JSON.stringify(backendUrl)};`;
+  const appTokenLine = 'const APP_TOKEN = "";';
+
+  output = WORK_JS_BACKEND_CONST_PATTERN.test(output)
+    ? output.replace(WORK_JS_BACKEND_CONST_PATTERN, backendLine)
+    : `${backendLine}\n${output}`;
+  output = WORK_JS_APP_TOKEN_CONST_PATTERN.test(output)
+    ? output.replace(WORK_JS_APP_TOKEN_CONST_PATTERN, appTokenLine)
+    : `${appTokenLine}\n${output}`;
+
+  return output;
+}
+
+function buildBookmarkletLoaderSource(runtimeUrl, config) {
+  return (
+    "(function(){" +
+      "try{" +
+        "var w=window,d=document;" +
+        "w.__vibbitBookmarkletConfig=Object.assign({},w.__vibbitBookmarkletConfig||{}," + JSON.stringify(config || {}) + ");" +
+        "if(w.__vibbit&&typeof w.__vibbit.reinvoke==='function'){" +
+          "if(w.__vibbit.reinvoke()!==false)return;" +
+        "}" +
+        "var src=" + JSON.stringify(runtimeUrl) + ";" +
+        "if(!src){alert('Vibbit bookmarklet runtime URL is not configured.');return;}" +
+        "var id='vibbit-bookmarklet-runtime';" +
+        "var existing=d.getElementById(id);" +
+        "if(existing&&existing.parentNode){existing.parentNode.removeChild(existing);}" +
+        "var script=d.createElement('script');" +
+        "script.id=id;" +
+        "script.async=true;" +
+        "script.src=src+(src.indexOf('?')===-1?'?':'&')+'v='+Date.now();" +
+        "script.onerror=function(){alert('Vibbit bookmarklet could not load its runtime.');};" +
+        "(d.head||d.documentElement).appendChild(script);" +
+      "}catch(err){" +
+        "alert('Vibbit bookmarklet failed: '+(err&&err.message?err.message:String(err)));" +
+      "}" +
+    "})();"
+  );
+}
+
+function buildBookmarkletHref(runtimeUrl, config) {
+  return "javascript:" + buildBookmarkletLoaderSource(runtimeUrl, config);
+}
+
 export function createBackendRuntime(options = {}) {
   const env = options.env || (typeof process !== "undefined" ? process.env : {});
   const runtimeConfig = createRuntimeConfig(env);
+  const bookmarkletRuntimeTemplate = loadBookmarkletRuntimeTemplate();
   const sessionStore = createSessionStore(runtimeConfig.sessionTtlMs);
   const adminAuthToken = String(
     options.adminAuthToken
@@ -1244,6 +1438,35 @@ export function createBackendRuntime(options = {}) {
 
     if (pathname === "/" && request.method === "GET") {
       const html = renderLandingPage();
+      return respondHtml(200, html, origin, runtimeConfig);
+    }
+
+    if (runtimeConfig.bookmarkletEnabled && pathname === BOOKMARKLET_RUNTIME_ROUTE && request.method === "GET") {
+      const publicOrigin = resolvePublicOrigin(request, requestUrl);
+      const runtimeSource = buildBookmarkletRuntimeSource(bookmarkletRuntimeTemplate, publicOrigin);
+      return respondJavaScript(200, runtimeSource, origin, runtimeConfig, {
+        "Cache-Control": "no-store"
+      });
+    }
+
+    if (runtimeConfig.bookmarkletEnabled && pathname === BOOKMARKLET_INSTALL_ROUTE && request.method === "GET") {
+      const publicOrigin = resolvePublicOrigin(request, requestUrl);
+      const runtimeUrl = `${publicOrigin}${BOOKMARKLET_RUNTIME_ROUTE}`;
+      const managedHref = buildBookmarkletHref(runtimeUrl, {
+        forceMode: "managed",
+        enableManaged: true,
+        enableByok: false
+      });
+      const byokHref = buildBookmarkletHref(runtimeUrl, {
+        enableManaged: true,
+        enableByok: true
+      });
+      const html = renderBookmarkletInstallPage({
+        managedHref,
+        byokHref,
+        runtimeUrl,
+        enableByok: runtimeConfig.bookmarkletEnableByok
+      });
       return respondHtml(200, html, origin, runtimeConfig);
     }
 
