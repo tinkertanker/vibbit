@@ -19,6 +19,8 @@ const CLASS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CLASS_CODE_LENGTH = 5;
 const BOOKMARKLET_RUNTIME_ROUTE = "/bookmarklet/runtime.js";
 const BOOKMARKLET_INSTALL_ROUTE = "/bookmarklet";
+const EXTENSION_DOWNLOAD_ROUTE = "/download/vibbit-extension.zip";
+const DEFAULT_EXTENSION_DOWNLOAD_URL = "https://github.com/tinkertanker/vibbit-extension/releases/latest/download/vibbit-extension.zip";
 const WORK_JS_USERSCRIPT_HEADER_PATTERN = /^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/;
 const WORK_JS_BACKEND_CONST_PATTERN = /const BACKEND = ".*?";/;
 const WORK_JS_APP_TOKEN_CONST_PATTERN = /const APP_TOKEN = ".*?";/;
@@ -354,6 +356,11 @@ function createRuntimeConfig(envInput = {}) {
   const validationRetries = parseInteger(env.VIBBIT_VALIDATION_RETRIES, 2, { min: 0, max: 5 });
   const bookmarkletEnabled = parseBoolean(env.VIBBIT_BOOKMARKLET_ENABLED, true);
   const bookmarkletEnableByok = parseBoolean(env.VIBBIT_BOOKMARKLET_ENABLE_BYOK, false);
+  const extensionDownloadUrl = String(
+    env.VIBBIT_EXTENSION_DOWNLOAD_URL == null
+      ? DEFAULT_EXTENSION_DOWNLOAD_URL
+      : env.VIBBIT_EXTENSION_DOWNLOAD_URL
+  ).trim();
   const providerConfig = createProviderConfig(env);
   const appToken = String(env.SERVER_APP_TOKEN || "").trim();
 
@@ -397,6 +404,7 @@ function createRuntimeConfig(envInput = {}) {
     validationRetries,
     bookmarkletEnabled,
     bookmarkletEnableByok,
+    extensionDownloadUrl,
     providerConfig,
     appToken,
     authMode,
@@ -862,7 +870,9 @@ function getPublicServerConfig(runtimeConfig, effectiveProviderConfig = runtimeC
     defaultModel: effectiveProviderConfig.defaultModelFor(defaultProvider),
     bookmarkletEnabled: Boolean(runtimeConfig.bookmarkletEnabled),
     bookmarkletByokEnabled: Boolean(runtimeConfig.bookmarkletEnableByok),
-    bookmarkletInstallPath: BOOKMARKLET_INSTALL_ROUTE
+    bookmarkletInstallPath: BOOKMARKLET_INSTALL_ROUTE,
+    extensionDownloadEnabled: Boolean(runtimeConfig.extensionDownloadUrl),
+    extensionDownloadPath: EXTENSION_DOWNLOAD_ROUTE
   };
 }
 
@@ -879,6 +889,11 @@ function buildAdminStatus(runtimeConfig, sessionStore, adminProviderState) {
       byokEnabled: Boolean(runtimeConfig.bookmarkletEnableByok),
       installPath: BOOKMARKLET_INSTALL_ROUTE,
       runtimePath: BOOKMARKLET_RUNTIME_ROUTE
+    },
+    extension: {
+      enabled: Boolean(runtimeConfig.extensionDownloadUrl),
+      downloadPath: EXTENSION_DOWNLOAD_ROUTE,
+      downloadTarget: runtimeConfig.extensionDownloadUrl || null
     }
   };
 
@@ -938,11 +953,20 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function renderLandingPage() {
-  const repoUrl = "https://github.com/tinkertanker/vibbit";
+function renderLandingPage({ extensionDownloadEnabled } = {}) {
+  const repoUrl = "https://github.com/tinkertanker/vibbit-extension";
+  const releasesUrl = "https://github.com/tinkertanker/vibbit-extension/releases";
+  const installGuideUrl = "https://github.com/tinkertanker/vibbit-extension#install-extension-in-chrome-unpacked";
   const tinkercademyUrl = "https://tinkercademy.com";
   const slidesUrl = "https://1drv.ms/p/c/21dfaef5d0fccb4a/IQAKZM4cKK8zRYasGC45G6yvAcUdrDNoPAOGWaeOajftVtA";
-  const installUrl = "#installation-instructions-coming-soon";
+  const installUrl = EXTENSION_DOWNLOAD_ROUTE;
+  const canDownloadExtension = Boolean(extensionDownloadEnabled);
+  const extensionDownloadLink = canDownloadExtension
+    ? `<li><a href="${escapeHtml(installUrl)}">Download Chrome extension (.zip)</a></li>`
+    : `<li>Chrome extension download is not available on this server right now. See <a href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">GitHub releases</a>.</li>`;
+  const unpackedInstallHint = canDownloadExtension
+    ? "<li>Not on Chrome Web Store yet: unzip the file and load it in Chrome via <code>chrome://extensions</code> with <strong>Developer mode</strong> enabled.</li>"
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -1033,12 +1057,15 @@ function renderLandingPage() {
         <li>
           <a class="row" href="${escapeHtml(repoUrl)}" target="_blank" rel="noreferrer">
             <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.1 0 0 .67-.21 2.2.82a7.49 7.49 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.09.16 1.9.08 2.1.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-            tinkertanker/vibbit on GitHub
+            tinkertanker/vibbit-extension on GitHub
           </a>
         </li>
         <li>A project by <a href="${escapeHtml(tinkercademyUrl)}" target="_blank" rel="noreferrer">Tinkercademy</a> from Singapore.</li>
         <li><a href="${escapeHtml(slidesUrl)}" target="_blank" rel="noreferrer">Launch slides (Micro:bit Live 2026)</a></li>
-        <li><a href="${escapeHtml(installUrl)}">Installation &amp; instructions — coming soon</a></li>
+        ${extensionDownloadLink}
+        ${unpackedInstallHint}
+        <li><a href="${escapeHtml(installGuideUrl)}" target="_blank" rel="noreferrer">Unpacked installation instructions</a></li>
+        <li><a href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">GitHub releases</a></li>
       </ul>
     </main>
   </body>
@@ -1124,6 +1151,7 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProvider
   const statusUrl = `${baseUrl}/admin/status${authQuery}`;
   const saveConfigUrl = `${baseUrl}/admin/config${authQuery}`;
   const bookmarkletUrl = `${baseUrl}${BOOKMARKLET_INSTALL_ROUTE}`;
+  const extensionDownloadUrl = `${baseUrl}${EXTENSION_DOWNLOAD_ROUTE}`;
   const saveNotice = requestUrl.searchParams.get("saved") === "1"
     ? "<p class=\"notice\">Provider settings saved.</p>"
     : "";
@@ -1217,6 +1245,7 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProvider
     `<p><a href="${escapeHtml(healthzUrl)}" target="_blank" rel="noreferrer">/healthz</a></p>`,
     `<p><a href="${escapeHtml(configUrl)}" target="_blank" rel="noreferrer">/vibbit/config</a></p>`,
     `<p><a href="${escapeHtml(bookmarkletUrl)}" target="_blank" rel="noreferrer">${BOOKMARKLET_INSTALL_ROUTE}</a></p>`,
+    `<p><a href="${escapeHtml(extensionDownloadUrl)}" target="_blank" rel="noreferrer">${EXTENSION_DOWNLOAD_ROUTE}</a></p>`,
     `<p><a href="${escapeHtml(statusUrl)}" target="_blank" rel="noreferrer">/admin/status</a></p>`,
     "</div>",
     "<div class=\"card\">",
@@ -1284,6 +1313,10 @@ function buildStartupInfo(runtimeConfig, { listenUrl, effectiveProviderConfig } 
   if (runtimeConfig.bookmarkletEnabled) {
     info.push(`[Vibbit backend] Bookmarklet install page -> ${(listenUrl || "<your-server-url>") + BOOKMARKLET_INSTALL_ROUTE}`);
     info.push(`[Vibbit backend] Bookmarklet runtime -> ${(listenUrl || "<your-server-url>") + BOOKMARKLET_RUNTIME_ROUTE}`);
+  }
+  if (runtimeConfig.extensionDownloadUrl) {
+    info.push(`[Vibbit backend] Extension download -> ${(listenUrl || "<your-server-url>") + EXTENSION_DOWNLOAD_ROUTE}`);
+    info.push(`[Vibbit backend] Extension asset source -> ${runtimeConfig.extensionDownloadUrl}`);
   }
   if (getAuthMode(runtimeConfig) === "app-token") {
     info.push("[Vibbit backend] SERVER_APP_TOKEN auth enabled");
@@ -1375,6 +1408,18 @@ function buildBookmarkletHref(runtimeUrl, config) {
   return "javascript:" + buildBookmarkletLoaderSource(runtimeUrl, config);
 }
 
+function resolveExtensionDownloadTarget(request, requestUrl, runtimeConfig) {
+  const configured = String(runtimeConfig.extensionDownloadUrl || "").trim();
+  if (!configured) return "";
+  if (/^https?:\/\//i.test(configured)) return configured;
+  try {
+    const publicOrigin = resolvePublicOrigin(request, requestUrl);
+    return new URL(configured, `${publicOrigin}/`).toString();
+  } catch {
+    return "";
+  }
+}
+
 export function createBackendRuntime(options = {}) {
   const env = options.env || (typeof process !== "undefined" ? process.env : {});
   const runtimeConfig = createRuntimeConfig(env);
@@ -1437,8 +1482,25 @@ export function createBackendRuntime(options = {}) {
     }
 
     if (rawPathname === "/" && request.method === "GET") {
-      const html = renderLandingPage();
+      const html = renderLandingPage({
+        extensionDownloadEnabled: Boolean(runtimeConfig.extensionDownloadUrl)
+      });
       return respondHtml(200, html, origin, runtimeConfig);
+    }
+
+    if (pathname === EXTENSION_DOWNLOAD_ROUTE && request.method === "GET") {
+      const targetUrl = resolveExtensionDownloadTarget(request, requestUrl, runtimeConfig);
+      if (!targetUrl) {
+        return respondJson(404, { error: "Extension download is not configured on this server." }, origin, runtimeConfig);
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          Location: targetUrl,
+          "Cache-Control": "no-store",
+          ...buildCorsHeaders(origin, runtimeConfig)
+        }
+      });
     }
 
     if (runtimeConfig.bookmarkletEnabled && pathname === BOOKMARKLET_RUNTIME_ROUTE && request.method === "GET") {

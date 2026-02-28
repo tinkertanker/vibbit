@@ -57,6 +57,7 @@ Use `VIBBIT_BOOKMARKLET_RUNTIME_URL` when generating production bookmarklet link
   - `GET {BACKEND}/healthz`
   - `GET {BACKEND}/admin` (`?code=<CLASSCODE>` in classroom mode)
   - `GET {BACKEND}/admin/status`
+  - `GET {BACKEND}/download/vibbit-extension.zip`
   - `GET {BACKEND}/bookmarklet`
   - `GET {BACKEND}/bookmarklet/runtime.js`
   - `GET {BACKEND}/vibbit/config`
