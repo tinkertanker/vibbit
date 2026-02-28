@@ -90,7 +90,7 @@ Website download route:
 
 By default, that backend route redirects to the latest GitHub release asset:
 
-- `https://github.com/tinkertanker/vibbit-extension/releases/latest/download/vibbit-extension.zip`
+- `https://github.com/tinkertanker/vibbit/releases/latest/download/vibbit-extension.zip`
 
 To ship a new downloadable version on GitHub:
 

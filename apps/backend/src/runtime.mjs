@@ -20,7 +20,7 @@ const CLASS_CODE_LENGTH = 5;
 const BOOKMARKLET_RUNTIME_ROUTE = "/bookmarklet/runtime.js";
 const BOOKMARKLET_INSTALL_ROUTE = "/bookmarklet";
 const EXTENSION_DOWNLOAD_ROUTE = "/download/vibbit-extension.zip";
-const DEFAULT_EXTENSION_DOWNLOAD_URL = "https://github.com/tinkertanker/vibbit-extension/releases/latest/download/vibbit-extension.zip";
+const DEFAULT_EXTENSION_DOWNLOAD_URL = "https://github.com/tinkertanker/vibbit/releases/latest/download/vibbit-extension.zip";
 const WORK_JS_USERSCRIPT_HEADER_PATTERN = /^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/;
 const WORK_JS_BACKEND_CONST_PATTERN = /const BACKEND = ".*?";/;
 const WORK_JS_APP_TOKEN_CONST_PATTERN = /const APP_TOKEN = ".*?";/;
@@ -954,9 +954,9 @@ function escapeHtml(value) {
 }
 
 function renderLandingPage({ extensionDownloadEnabled } = {}) {
-  const repoUrl = "https://github.com/tinkertanker/vibbit-extension";
-  const releasesUrl = "https://github.com/tinkertanker/vibbit-extension/releases";
-  const installGuideUrl = "https://github.com/tinkertanker/vibbit-extension#install-extension-in-chrome-unpacked";
+  const repoUrl = "https://github.com/tinkertanker/vibbit";
+  const releasesUrl = "https://github.com/tinkertanker/vibbit/releases";
+  const installGuideUrl = "https://github.com/tinkertanker/vibbit#install-extension-in-chrome-unpacked";
   const tinkercademyUrl = "https://tinkercademy.com";
   const slidesUrl = "https://1drv.ms/p/c/21dfaef5d0fccb4a/IQAKZM4cKK8zRYasGC45G6yvAcUdrDNoPAOGWaeOajftVtA";
   const installUrl = EXTENSION_DOWNLOAD_ROUTE;
@@ -1057,7 +1057,7 @@ function renderLandingPage({ extensionDownloadEnabled } = {}) {
         <li>
           <a class="row" href="${escapeHtml(repoUrl)}" target="_blank" rel="noreferrer">
             <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.1 0 0 .67-.21 2.2.82a7.49 7.49 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.09.16 1.9.08 2.1.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-            tinkertanker/vibbit-extension on GitHub
+            tinkertanker/vibbit on GitHub
           </a>
         </li>
         <li>A project by <a href="${escapeHtml(tinkercademyUrl)}" target="_blank" rel="noreferrer">Tinkercademy</a> from Singapore.</li>
