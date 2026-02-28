@@ -148,7 +148,7 @@ Core:
 - `VIBBIT_ADMIN_TOKEN` (optional fixed admin token; if empty, auto-generated and persisted in `VIBBIT_STATE_FILE`)
 - `VIBBIT_BOOKMARKLET_ENABLED` (default `true`; enables `/bookmarklet` and `/bookmarklet/runtime.js`)
 - `VIBBIT_BOOKMARKLET_ENABLE_BYOK` (default `false`; adds optional BYOK-enabled bookmarklet link on `/bookmarklet`)
-- `VIBBIT_EXTENSION_DOWNLOAD_URL` (default `https://github.com/tinkertanker/vibbit-extension/releases/latest/download/vibbit-extension.zip`; target URL for `/download/vibbit-extension.zip`)
+- `VIBBIT_EXTENSION_DOWNLOAD_URL` (default `https://github.com/tinkertanker/vibbit/releases/latest/download/vibbit-extension.zip`; target URL for `/download/vibbit-extension.zip`)
 
 Classroom auth:
 
