@@ -1,0 +1,64 @@
+name: Release Extension Zip
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  package-extension:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and package extension
+        run: npm run package
+
+      - name: Prepare release assets
+        id: assets
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && -n "${GITHUB_REF_NAME}" ]]; then
+            suffix="${GITHUB_REF_NAME}"
+          else
+            suffix="run-${GITHUB_RUN_NUMBER}"
+          fi
+          cp artifacts/vibbit-extension.zip "artifacts/vibbit-extension-${suffix}.zip"
+          shasum -a 256 artifacts/vibbit-extension.zip > artifacts/vibbit-extension.zip.sha256
+          shasum -a 256 "artifacts/vibbit-extension-${suffix}.zip" > "artifacts/vibbit-extension-${suffix}.zip.sha256"
+          echo "asset_suffix=${suffix}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibbit-extension-${{ steps.assets.outputs.asset_suffix }}
+          path: |
+            artifacts/vibbit-extension.zip
+            artifacts/vibbit-extension.zip.sha256
+            artifacts/vibbit-extension-${{ steps.assets.outputs.asset_suffix }}.zip
+            artifacts/vibbit-extension-${{ steps.assets.outputs.asset_suffix }}.zip.sha256
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          overwrite_files: true
+          files: |
+            artifacts/vibbit-extension.zip
+            artifacts/vibbit-extension.zip.sha256
+            artifacts/vibbit-extension-${{ github.ref_name }}.zip
+            artifacts/vibbit-extension-${{ github.ref_name }}.zip.sha256

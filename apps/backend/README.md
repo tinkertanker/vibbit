@@ -18,6 +18,7 @@ The backend keeps provider API keys server-side and proxies generation requests.
 - `GET /vibbit/config`
 - `POST /vibbit/connect`
 - `POST /vibbit/generate`
+- `GET /download/vibbit-extension.zip` (Chrome extension zip download redirect)
 - `GET /bookmarklet` (bookmarklet installer page)
 - `GET /bookmarklet/runtime.js` (bookmarklet runtime script)
 
@@ -147,6 +148,7 @@ Core:
 - `VIBBIT_ADMIN_TOKEN` (optional fixed admin token; if empty, auto-generated and persisted in `VIBBIT_STATE_FILE`)
 - `VIBBIT_BOOKMARKLET_ENABLED` (default `true`; enables `/bookmarklet` and `/bookmarklet/runtime.js`)
 - `VIBBIT_BOOKMARKLET_ENABLE_BYOK` (default `false`; adds optional BYOK-enabled bookmarklet link on `/bookmarklet`)
+- `VIBBIT_EXTENSION_DOWNLOAD_URL` (default `https://github.com/tinkertanker/vibbit-extension/releases/latest/download/vibbit-extension.zip`; target URL for `/download/vibbit-extension.zip`)
 
 Classroom auth:
 
@@ -193,7 +195,8 @@ Deploy button (placeholder until template is published):
 4. Add environment variables from `.env.example` (provider API keys are optional if entered via `/admin`).
 5. Generate a public domain for the service.
 6. Share that HTTPS URL plus the classroom code with students.
-7. For no-extension usage, share `https://<your-domain>/bookmarklet`.
+7. For no-extension usage, share `https://vibbit.tk.sg/bookmarklet` (or your own hosted domain).
+8. For extension download installs, share `https://vibbit.tk.sg/download/vibbit-extension.zip` (or your own hosted domain).
 
 ### Cheapest setup (single-service, low-budget)
 

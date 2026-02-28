@@ -28,6 +28,7 @@ This repo ships one Vibbit runtime supporting both:
   - `GET {BACKEND}/` (informational landing page)
   - `GET {BACKEND}/admin`
   - `GET {BACKEND}/admin/status`
+  - `GET {BACKEND}/download/vibbit-extension.zip`
   - `GET {BACKEND}/bookmarklet`
   - `GET {BACKEND}/bookmarklet/runtime.js`
 - Request payload supports:
@@ -70,6 +71,39 @@ Build-time backend overrides:
 ```bash
 VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" npm run build
 ```
+
+## Distribute extension (website + GitHub)
+
+Extension packaging is built into the repo:
+
+```bash
+npm run package
+```
+
+Output:
+
+- `artifacts/vibbit-extension.zip`
+
+Website download route:
+
+- `GET {BACKEND}/download/vibbit-extension.zip`
+
+By default, that backend route redirects to the latest GitHub release asset:
+
+- `https://github.com/tinkertanker/vibbit-extension/releases/latest/download/vibbit-extension.zip`
+
+To ship a new downloadable version on GitHub:
+
+1. Push a release tag (for example `v0.2.1`).
+2. GitHub Actions workflow `.github/workflows/release-extension.yml` builds and packages the extension.
+3. The workflow publishes release assets:
+   - `vibbit-extension.zip` (stable filename for latest download URL)
+   - `vibbit-extension-<tag>.zip` (versioned copy)
+   - matching `.sha256` checksum files
+
+Optional backend override:
+
+- Set `VIBBIT_EXTENSION_DOWNLOAD_URL` to any custom hosted zip URL if you do not want to use GitHub release assets.
 
 ## Build bookmarklet distribution
 
@@ -160,13 +194,21 @@ Cheapest hosted option:
 - Use one Railway backend service only, attach a volume, and set `VIBBIT_STATE_FILE=/data/vibbit-state.json`.
 - Set Railway hard usage limit to `$1`.
 
-## Install extension in Chrome
+## Install extension in Chrome (unpacked)
 
-1. Open `chrome://extensions`
-2. Enable **Developer mode**
-3. Click **Load unpacked**
-4. Select `dist/`
-5. Rebuild (`npm run build`) and click **Reload** after changes
+Vibbit is not on the Chrome Web Store yet. Install it as an unpacked extension:
+
+- Download the latest zip from `https://vibbit.tk.sg/download/vibbit-extension.zip`, or
+- Build locally with `npm run build` and use `dist/`.
+
+Then:
+
+1. If you downloaded the zip, unzip it first.
+2. Open `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Click **Load unpacked**.
+5. Select the unzipped folder (or `dist/` for local builds) containing `manifest.json`.
+6. For updates, rebuild/re-download and click **Reload** on the extension card.
 
 ## Browser-test checklist
 
