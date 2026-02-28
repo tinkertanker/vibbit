@@ -66,6 +66,19 @@ async function runSmokeUi() {
       !runtime.includes("FEEDBACK:"),
       "Runtime prompt no longer uses legacy FEEDBACK: prefix instructions."
     );
+    pushCheck(
+      "03 Prompt micro:bit guardrails",
+      runtime.includes("MICRO:BIT BUILT-IN ICON/ENUM RULES")
+        && runtime.includes("MICRO:BIT BLOCKS-TEST STYLE EXAMPLES"),
+      "Runtime prompt keeps pxt-microbit icon/enum + blocks-test style guidance."
+    );
+    const backendRuntime = await readFile(path.join(repoRoot, "apps", "backend", "src", "runtime.mjs"), "utf8");
+    pushCheck(
+      "03b Backend prompt micro:bit guardrails",
+      backendRuntime.includes("MICRO:BIT BUILT-IN ICON/ENUM RULES")
+        && backendRuntime.includes("MICRO:BIT BLOCKS-TEST STYLE EXAMPLES"),
+      "Backend prompt keeps pxt-microbit icon/enum + blocks-test style guidance."
+    );
     await page.addScriptTag({ content: runtime });
     await page.waitForSelector("#vibbit-fab", { timeout: 20000 });
     await page.click("#vibbit-fab");
@@ -81,7 +94,7 @@ async function runSmokeUi() {
       return panelRect.width > 0 && panelRect.height > 0 && setupStyle.display !== "none";
     });
     pushCheck(
-      "03 Panel visible",
+      "04 Panel visible",
       panelVisible,
       panelVisible
         ? `Panel rendered and screenshot saved at \`${screenshots.panel}\`.`
@@ -103,7 +116,7 @@ async function runSmokeUi() {
       };
     });
     pushCheck(
-      "04 Setup defaults",
+      "05 Setup defaults",
       setupDefault.modeValue === "byok"
         && setupDefault.byokProviderVisible
         && setupDefault.byokModelVisible
@@ -130,7 +143,7 @@ async function runSmokeUi() {
     });
     await page.screenshot({ path: screenshots.managed, fullPage: false });
     pushCheck(
-      "05 Setup mode toggle (managed)",
+      "06 Setup mode toggle (managed)",
       managedState.modeValue === "managed"
         && managedState.byokProviderHidden
         && managedState.byokModelHidden
@@ -157,7 +170,7 @@ async function runSmokeUi() {
     });
     await page.screenshot({ path: screenshots.byok, fullPage: false });
     pushCheck(
-      "06 Setup mode toggle (BYOK)",
+      "07 Setup mode toggle (BYOK)",
       byokState.modeValue === "byok"
         && byokState.byokProviderVisible
         && byokState.byokModelVisible
@@ -252,7 +265,7 @@ async function runSmokeUi() {
 
     await page.screenshot({ path: screenshots.status, fullPage: false });
     pushCheck(
-      "07 Empty prompt feedback",
+      "08 Empty prompt feedback",
       statusState.status === "Idle" && statusState.logText.includes("Please enter a request."),
       `status='${statusState.status}', logHasPromptValidation=${statusState.logText.includes("Please enter a request.")}.`
     );
@@ -278,7 +291,7 @@ async function runSmokeUi() {
     await page.screenshot({ path: screenshots.managedFeedback, fullPage: false });
 
     pushCheck(
-      "08 Managed mocked generation + feedback fallback",
+      "09 Managed mocked generation + feedback fallback",
       managedGenerationState.status === "Done"
         && managedGenerationState.logText.includes("Pasted and switched back to Blocks.")
         && managedGenerationState.pastedCode.includes("basic.showString(\"Managed\")")
@@ -316,7 +329,7 @@ async function runSmokeUi() {
     await page.screenshot({ path: screenshots.byokFeedback, fullPage: false });
 
     pushCheck(
-      "09 BYOK mocked generation + parser guard + feedback fallback",
+      "10 BYOK mocked generation + parser guard + feedback fallback",
       byokGenerationState.status === "Done"
         && byokGenerationState.pastedCode.includes("basic.showString(\"BYOK\")")
         && byokGenerationState.feedbackVisible
@@ -327,7 +340,7 @@ async function runSmokeUi() {
 
     const hasProbeLog = /Live decompile check (passed|unavailable|failed)/i.test(byokGenerationState.logText);
     pushCheck(
-      "10 Decompile probe log",
+      "11 Decompile probe log",
       hasProbeLog,
       `logHasProbeMessage=${hasProbeLog}.`
     );

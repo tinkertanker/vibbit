@@ -1783,6 +1783,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     extractCode,
     parseModelOutput,
     validateBlocksCompatibility,
+    buildTargetPromptExtras,
     stubForTarget,
     extractGeminiText,
   } = (() => {
@@ -2018,6 +2019,561 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       return { feedback: [], code: extractCode(raw) };
     }
 
+    const MICROBIT_ICON_NAMES = [
+      "Heart",
+      "SmallHeart",
+      "Yes",
+      "No",
+      "Happy",
+      "Sad",
+      "Confused",
+      "Angry",
+      "Asleep",
+      "Surprised",
+      "Silly",
+      "Fabulous",
+      "Meh",
+      "TShirt",
+      "Rollerskate",
+      "Duck",
+      "House",
+      "Tortoise",
+      "Butterfly",
+      "StickFigure",
+      "Ghost",
+      "Sword",
+      "Giraffe",
+      "Skull",
+      "Umbrella",
+      "Snake",
+      "Rabbit",
+      "Cow",
+      "QuarterNote",
+      "EighthNote",
+      "Pitchfork",
+      "Target",
+      "Triangle",
+      "LeftTriangle",
+      "Chessboard",
+      "Diamond",
+      "SmallDiamond",
+      "Square",
+      "SmallSquare",
+      "Scissors"
+    ];
+
+    const MICROBIT_DEPRECATED_ICON_ALIASES = ["EigthNote"];
+
+    const MICROBIT_ARROW_NAMES = [
+      "North",
+      "NorthEast",
+      "East",
+      "SouthEast",
+      "South",
+      "SouthWest",
+      "West",
+      "NorthWest"
+    ];
+
+    const MICROBIT_GESTURE_NAMES = [
+      "Shake",
+      "LogoUp",
+      "LogoDown",
+      "ScreenUp",
+      "ScreenDown",
+      "TiltLeft",
+      "TiltRight",
+      "FreeFall",
+      "ThreeG",
+      "SixG",
+      "EightG"
+    ];
+
+    const MICROBIT_ENUM_MEMBER_SETS = Object.freeze({
+      Button: new Set(["A", "B", "AB"]),
+      Gesture: new Set(MICROBIT_GESTURE_NAMES),
+      TouchPin: new Set(["P0", "P1", "P2"]),
+      Dimension: new Set(["X", "Y", "Z", "Strength"]),
+      Rotation: new Set(["Pitch", "Roll"]),
+      IconNames: new Set([...MICROBIT_ICON_NAMES, ...MICROBIT_DEPRECATED_ICON_ALIASES]),
+      ArrowNames: new Set(MICROBIT_ARROW_NAMES),
+      DigitalPin: new Set(["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16", "P19", "P20"]),
+      AnalogPin: new Set(["P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "P11", "P12", "P13", "P14", "P15", "P16", "P19", "P20"]),
+      PulseValue: new Set(["High", "Low"]),
+      BeatFraction: new Set(["Whole", "Half", "Quarter", "Eighth", "Sixteenth", "Double", "Breve"])
+    });
+
+    const MICROBIT_CALL_SIGNATURES = [
+      { call: "basic.showNumber", minArgs: 1, maxArgs: 2 },
+      { call: "basic.showString", minArgs: 1, maxArgs: 2 },
+      { call: "basic.showIcon", minArgs: 1, maxArgs: 2 },
+      { call: "basic.showLeds", minArgs: 1, maxArgs: 1 },
+      { call: "basic.showArrow", minArgs: 1, maxArgs: 2 },
+      { call: "basic.clearScreen", minArgs: 0, maxArgs: 0 },
+      { call: "basic.forever", minArgs: 1, maxArgs: 1 },
+      { call: "basic.pause", minArgs: 1, maxArgs: 1 },
+      { call: "input.onButtonPressed", minArgs: 2, maxArgs: 2 },
+      { call: "input.onGesture", minArgs: 2, maxArgs: 2 },
+      { call: "input.onPinPressed", minArgs: 2, maxArgs: 2 },
+      { call: "input.buttonIsPressed", minArgs: 1, maxArgs: 1 },
+      { call: "input.temperature", minArgs: 0, maxArgs: 0 },
+      { call: "input.lightLevel", minArgs: 0, maxArgs: 0 },
+      { call: "input.acceleration", minArgs: 1, maxArgs: 1 },
+      { call: "input.compassHeading", minArgs: 0, maxArgs: 0 },
+      { call: "input.rotation", minArgs: 1, maxArgs: 1 },
+      { call: "input.magneticForce", minArgs: 1, maxArgs: 1 },
+      { call: "input.runningTime", minArgs: 0, maxArgs: 0 },
+      { call: "music.playTone", minArgs: 2, maxArgs: 2 },
+      { call: "music.ringTone", minArgs: 1, maxArgs: 1 },
+      { call: "music.rest", minArgs: 1, maxArgs: 1 },
+      { call: "music.beat", minArgs: 0, maxArgs: 1 },
+      { call: "music.tempo", minArgs: 0, maxArgs: 0 },
+      { call: "music.setTempo", minArgs: 1, maxArgs: 1 },
+      { call: "music.changeTempoBy", minArgs: 1, maxArgs: 1 },
+      { call: "led.plot", minArgs: 2, maxArgs: 2 },
+      { call: "led.unplot", minArgs: 2, maxArgs: 2 },
+      { call: "led.toggle", minArgs: 2, maxArgs: 2 },
+      { call: "led.point", minArgs: 2, maxArgs: 2 },
+      { call: "led.brightness", minArgs: 0, maxArgs: 0 },
+      { call: "led.setBrightness", minArgs: 1, maxArgs: 1 },
+      { call: "led.plotBarGraph", minArgs: 2, maxArgs: 3 },
+      { call: "led.enable", minArgs: 1, maxArgs: 1 },
+      { call: "radio.sendNumber", minArgs: 1, maxArgs: 1 },
+      { call: "radio.sendString", minArgs: 1, maxArgs: 1 },
+      { call: "radio.sendValue", minArgs: 2, maxArgs: 2 },
+      { call: "radio.onReceivedNumber", minArgs: 1, maxArgs: 1 },
+      { call: "radio.onReceivedString", minArgs: 1, maxArgs: 1 },
+      { call: "radio.setGroup", minArgs: 1, maxArgs: 1 },
+      { call: "radio.setTransmitPower", minArgs: 1, maxArgs: 1 },
+      { call: "radio.setTransmitSerialNumber", minArgs: 1, maxArgs: 1 },
+      { call: "game.createSprite", minArgs: 2, maxArgs: 2 },
+      { call: "game.addScore", minArgs: 1, maxArgs: 1 },
+      { call: "game.score", minArgs: 0, maxArgs: 0 },
+      { call: "game.setScore", minArgs: 1, maxArgs: 1 },
+      { call: "game.setLife", minArgs: 1, maxArgs: 1 },
+      { call: "game.addLife", minArgs: 1, maxArgs: 1 },
+      { call: "game.removeLife", minArgs: 1, maxArgs: 1 },
+      { call: "game.gameOver", minArgs: 0, maxArgs: 0 },
+      { call: "game.startCountdown", minArgs: 1, maxArgs: 1 },
+      { call: "pins.digitalReadPin", minArgs: 1, maxArgs: 1 },
+      { call: "pins.digitalWritePin", minArgs: 2, maxArgs: 2 },
+      { call: "pins.analogReadPin", minArgs: 1, maxArgs: 1 },
+      { call: "pins.analogWritePin", minArgs: 2, maxArgs: 2 },
+      { call: "pins.servoWritePin", minArgs: 2, maxArgs: 2 },
+      { call: "pins.map", minArgs: 5, maxArgs: 5 },
+      { call: "pins.onPulsed", minArgs: 3, maxArgs: 3 },
+      { call: "pins.analogSetPitchPin", minArgs: 1, maxArgs: 1 },
+      { call: "pins.analogPitch", minArgs: 2, maxArgs: 2 },
+      { call: "images.createImage", minArgs: 1, maxArgs: 1 },
+      { call: "images.createBigImage", minArgs: 1, maxArgs: 1 },
+      { call: "images.arrowImage", minArgs: 1, maxArgs: 1 },
+      { call: "images.iconImage", minArgs: 1, maxArgs: 1 },
+      { call: "serial.writeLine", minArgs: 1, maxArgs: 1 },
+      { call: "serial.writeNumber", minArgs: 1, maxArgs: 1 },
+      { call: "serial.writeValue", minArgs: 2, maxArgs: 2 },
+      { call: "serial.readLine", minArgs: 0, maxArgs: 0 },
+      { call: "serial.onDataReceived", minArgs: 2, maxArgs: 2 },
+      { call: "serial.redirect", minArgs: 3, maxArgs: 3 },
+      { call: "control.inBackground", minArgs: 1, maxArgs: 1 },
+      { call: "control.reset", minArgs: 0, maxArgs: 0 },
+      { call: "control.waitMicros", minArgs: 1, maxArgs: 1 }
+    ];
+
+    const MICROBIT_BLOCKS_TEST_EXAMPLES = [
+      "input.onButtonPressed(Button.A, function () { basic.showIcon(IconNames.Heart) })",
+      "basic.forever(function () { led.toggle(2, 2); basic.pause(100) })",
+      "radio.onReceivedNumber(function (receivedNumber) { basic.showNumber(receivedNumber) })"
+    ];
+
+    function escapeRegExp(value) {
+      return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function stripNonCodeSegments(source) {
+      const input = String(source || "");
+      const chars = input.split("");
+      let inSingle = false;
+      let inDouble = false;
+      let inTemplate = false;
+      let inLineComment = false;
+      let inBlockComment = false;
+      let escaped = false;
+
+      const blankAt = (index) => {
+        const ch = chars[index];
+        if (ch !== "\n" && ch !== "\r") chars[index] = " ";
+      };
+
+      for (let i = 0; i < chars.length; i += 1) {
+        const char = chars[i];
+        const next = i + 1 < chars.length ? chars[i + 1] : "";
+
+        if (inLineComment) {
+          if (char === "\n") {
+            inLineComment = false;
+          } else {
+            blankAt(i);
+          }
+          continue;
+        }
+        if (inBlockComment) {
+          if (char === "*" && next === "/") {
+            blankAt(i);
+            blankAt(i + 1);
+            inBlockComment = false;
+            i += 1;
+          } else {
+            blankAt(i);
+          }
+          continue;
+        }
+        if (inSingle) {
+          if (escaped) {
+            blankAt(i);
+            escaped = false;
+          } else if (char === "\\") {
+            blankAt(i);
+            escaped = true;
+          } else if (char === "'") {
+            inSingle = false;
+          } else {
+            blankAt(i);
+          }
+          continue;
+        }
+        if (inDouble) {
+          if (escaped) {
+            blankAt(i);
+            escaped = false;
+          } else if (char === "\\") {
+            blankAt(i);
+            escaped = true;
+          } else if (char === "\"") {
+            inDouble = false;
+          } else {
+            blankAt(i);
+          }
+          continue;
+        }
+        if (inTemplate) {
+          if (escaped) {
+            blankAt(i);
+            escaped = false;
+          } else if (char === "\\") {
+            blankAt(i);
+            escaped = true;
+          } else if (char === "`") {
+            inTemplate = false;
+          } else {
+            blankAt(i);
+          }
+          continue;
+        }
+
+        if (char === "/" && next === "/") {
+          blankAt(i);
+          blankAt(i + 1);
+          inLineComment = true;
+          i += 1;
+          continue;
+        }
+        if (char === "/" && next === "*") {
+          blankAt(i);
+          blankAt(i + 1);
+          inBlockComment = true;
+          i += 1;
+          continue;
+        }
+        if (char === "'") {
+          inSingle = true;
+          continue;
+        }
+        if (char === "\"") {
+          inDouble = true;
+          continue;
+        }
+        if (char === "`") {
+          inTemplate = true;
+          continue;
+        }
+      }
+
+      return chars.join("");
+    }
+
+    function readBalancedParentheses(source, openParenIndex) {
+      if (openParenIndex < 0 || source[openParenIndex] !== "(") return null;
+      let depth = 0;
+      let inSingle = false;
+      let inDouble = false;
+      let inTemplate = false;
+      let inLineComment = false;
+      let inBlockComment = false;
+      let escaped = false;
+
+      for (let i = openParenIndex; i < source.length; i += 1) {
+        const char = source[i];
+        const next = i + 1 < source.length ? source[i + 1] : "";
+        if (inLineComment) {
+          if (char === "\n") inLineComment = false;
+          continue;
+        }
+        if (inBlockComment) {
+          if (char === "*" && next === "/") {
+            inBlockComment = false;
+            i += 1;
+          }
+          continue;
+        }
+        if (inSingle) {
+          if (escaped) {
+            escaped = false;
+          } else if (char === "\\") {
+            escaped = true;
+          } else if (char === "'") {
+            inSingle = false;
+          }
+          continue;
+        }
+        if (inDouble) {
+          if (escaped) {
+            escaped = false;
+          } else if (char === "\\") {
+            escaped = true;
+          } else if (char === "\"") {
+            inDouble = false;
+          }
+          continue;
+        }
+        if (inTemplate) {
+          if (escaped) {
+            escaped = false;
+          } else if (char === "\\") {
+            escaped = true;
+          } else if (char === "`") {
+            inTemplate = false;
+          }
+          continue;
+        }
+        if (char === "/" && next === "/") {
+          inLineComment = true;
+          i += 1;
+          continue;
+        }
+        if (char === "/" && next === "*") {
+          inBlockComment = true;
+          i += 1;
+          continue;
+        }
+        if (char === "'") {
+          inSingle = true;
+          continue;
+        }
+        if (char === "\"") {
+          inDouble = true;
+          continue;
+        }
+        if (char === "`") {
+          inTemplate = true;
+          continue;
+        }
+        if (char === "(") {
+          depth += 1;
+          continue;
+        }
+        if (char === ")") {
+          depth -= 1;
+          if (depth === 0) {
+            return { inner: source.slice(openParenIndex + 1, i), end: i };
+          }
+        }
+      }
+      return null;
+    }
+
+    function splitTopLevelArguments(source) {
+      const input = String(source || "");
+      if (!input.trim()) return [];
+
+      const args = [];
+      let start = 0;
+      let parenDepth = 0;
+      let braceDepth = 0;
+      let bracketDepth = 0;
+      let inSingle = false;
+      let inDouble = false;
+      let inTemplate = false;
+      let inLineComment = false;
+      let inBlockComment = false;
+      let escaped = false;
+
+      for (let i = 0; i < input.length; i += 1) {
+        const char = input[i];
+        const next = i + 1 < input.length ? input[i + 1] : "";
+        if (inLineComment) {
+          if (char === "\n") inLineComment = false;
+          continue;
+        }
+        if (inBlockComment) {
+          if (char === "*" && next === "/") {
+            inBlockComment = false;
+            i += 1;
+          }
+          continue;
+        }
+        if (inSingle) {
+          if (escaped) {
+            escaped = false;
+          } else if (char === "\\") {
+            escaped = true;
+          } else if (char === "'") {
+            inSingle = false;
+          }
+          continue;
+        }
+        if (inDouble) {
+          if (escaped) {
+            escaped = false;
+          } else if (char === "\\") {
+            escaped = true;
+          } else if (char === "\"") {
+            inDouble = false;
+          }
+          continue;
+        }
+        if (inTemplate) {
+          if (escaped) {
+            escaped = false;
+          } else if (char === "\\") {
+            escaped = true;
+          } else if (char === "`") {
+            inTemplate = false;
+          }
+          continue;
+        }
+        if (char === "/" && next === "/") {
+          inLineComment = true;
+          i += 1;
+          continue;
+        }
+        if (char === "/" && next === "*") {
+          inBlockComment = true;
+          i += 1;
+          continue;
+        }
+        if (char === "'") {
+          inSingle = true;
+          continue;
+        }
+        if (char === "\"") {
+          inDouble = true;
+          continue;
+        }
+        if (char === "`") {
+          inTemplate = true;
+          continue;
+        }
+        if (char === "(") {
+          parenDepth += 1;
+          continue;
+        }
+        if (char === ")") {
+          parenDepth = Math.max(0, parenDepth - 1);
+          continue;
+        }
+        if (char === "{") {
+          braceDepth += 1;
+          continue;
+        }
+        if (char === "}") {
+          braceDepth = Math.max(0, braceDepth - 1);
+          continue;
+        }
+        if (char === "[") {
+          bracketDepth += 1;
+          continue;
+        }
+        if (char === "]") {
+          bracketDepth = Math.max(0, bracketDepth - 1);
+          continue;
+        }
+        if (char === "," && parenDepth === 0 && braceDepth === 0 && bracketDepth === 0) {
+          args.push(input.slice(start, i).trim());
+          start = i + 1;
+        }
+      }
+      args.push(input.slice(start).trim());
+      return args.filter((arg) => arg.length > 0);
+    }
+
+    function findCallArguments(searchableCode, callPath) {
+      const callRe = new RegExp("\\b" + escapeRegExp(callPath) + "\\s*\\(", "g");
+      const matches = [];
+      let match;
+      while ((match = callRe.exec(searchableCode))) {
+        const openParenOffset = match[0].lastIndexOf("(");
+        const openParenIndex = openParenOffset >= 0 ? (match.index + openParenOffset) : -1;
+        const segment = readBalancedParentheses(searchableCode, openParenIndex);
+        if (!segment) continue;
+        matches.push({ argsText: segment.inner, index: match.index });
+        callRe.lastIndex = Math.max(callRe.lastIndex, segment.end + 1);
+      }
+      return matches;
+    }
+
+    function validateCallSignatures(code, signatures) {
+      const searchableCode = stripNonCodeSegments(code);
+      const violations = [];
+      for (const signature of signatures) {
+        const calls = findCallArguments(searchableCode, signature.call);
+        if (!calls.length) continue;
+        for (const callSite of calls) {
+          const argCount = splitTopLevelArguments(callSite.argsText).length;
+          if (argCount < signature.minArgs || argCount > signature.maxArgs) {
+            const expected = signature.minArgs === signature.maxArgs
+              ? String(signature.minArgs)
+              : `${signature.minArgs}-${signature.maxArgs}`;
+            violations.push(`${signature.call} arity (expected ${expected}, got ${argCount})`);
+          }
+        }
+      }
+      return violations;
+    }
+
+    function validateKnownEnumMembers(code, enumSets) {
+      const violations = [];
+      const searchable = stripNonCodeSegments(code);
+      const enumReferenceRe = /\b([A-Z][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
+      let match;
+      while ((match = enumReferenceRe.exec(searchable))) {
+        const enumName = match[1];
+        const memberName = match[2];
+        const allowed = enumSets[enumName];
+        if (!allowed) continue;
+        if (!allowed.has(memberName)) {
+          violations.push(`invalid enum member ${enumName}.${memberName}`);
+        }
+      }
+      return violations;
+    }
+
+    function buildTargetPromptExtras(target) {
+      if (target !== "microbit") return [];
+      return [
+        "MICRO:BIT BUILT-IN ICON/ENUM RULES (from pxt-microbit):",
+        "If the request matches a built-in icon name (for example duck, heart, skull), prefer basic.showIcon(IconNames.<Name>).",
+        "For known icons, do NOT hand-draw LED art with basic.showLeds(`...`) unless the user explicitly asks for a custom pattern.",
+        "Valid IconNames: " + MICROBIT_ICON_NAMES.map((name) => "IconNames." + name).join(", "),
+        "Deprecated alias accepted only for compatibility: IconNames.EigthNote (prefer IconNames.EighthNote).",
+        "Valid ArrowNames: " + MICROBIT_ARROW_NAMES.map((name) => "ArrowNames." + name).join(", "),
+        "Use exact event enums: Button.A, Button.B, Button.AB; Gesture." + MICROBIT_GESTURE_NAMES.join(", Gesture."),
+        "Use only valid enum members from pxt-microbit enums.d.ts (Button, Gesture, TouchPin, Dimension, Rotation, DigitalPin, AnalogPin, PulseValue, BeatFraction).",
+        "Follow canonical block signatures and argument counts from pxt-microbit //% blockId APIs. Do not invent extra arguments.",
+        "MICRO:BIT BLOCKS-TEST STYLE EXAMPLES (few-shot shape guidance):",
+        ...MICROBIT_BLOCKS_TEST_EXAMPLES.map((example) => "- " + example)
+      ];
+    }
+
     function validateBlocksCompatibility(code, target) {
       const rules = [
         { re: /=>/g, why: "arrow functions" },
@@ -2111,7 +2667,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         }
         const opens = (line.match(/\{/g) || []).length;
         const closes = (line.match(/\}/g) || []).length;
-        depth = Math.max(0, depth + opens - closes);
+          depth = Math.max(0, depth + opens - closes);
+      }
+
+      if (target === "microbit") {
+        violations.push(...validateKnownEnumMembers(code, MICROBIT_ENUM_MEMBER_SETS));
+        violations.push(...validateCallSignatures(code, MICROBIT_CALL_SIGNATURES));
       }
 
       if (/[^\x09\x0A\x0D\x20-\x7E]/.test(code)) violations.push("non-ASCII characters");
@@ -2166,6 +2727,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       extractCode,
       parseModelOutput,
       validateBlocksCompatibility,
+      buildTargetPromptExtras,
       stubForTarget,
       extractGeminiText,
     };
@@ -2177,6 +2739,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const sysFor = (target) => {
     const { namespaceList, targetName } = resolvePromptTargetContext(target);
+    const targetPromptExtras = buildTargetPromptExtras(target);
     return [
       "ROLE: You are a friendly Microsoft MakeCode assistant helping a student build a " + targetName + " project. You are having a conversation – be helpful, brief, and encouraging.",
       "HARD REQUIREMENT: Return ONLY Microsoft MakeCode Static JavaScript that the MakeCode decompiler can convert to BLOCKS for " + targetName + " with ZERO errors.",
@@ -2190,6 +2753,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       "ERROR FIXING: If PAGE_ERRORS are provided, treat them as failing diagnostics and prioritise resolving all of them in your output.",
       "BLOCKS CONVERSION: If CONVERSION_DIALOG is provided, ensure the output can be converted from JavaScript back to Blocks in MakeCode.",
       "ALLOWED APIS: " + namespaceList + ". Prefer event handlers and forever/update loops.",
+      ...targetPromptExtras,
       "RANDOMNESS: For random choices, prefer list._pickRandom() from an array of options. Do NOT use randint(...).",
       "BLOCK-SAFE REQUIREMENTS (hard): no grey JavaScript blocks; every variable declaration must have an initializer; for loops must be exactly for (let i = 0; i < limit; i++) or for (let i = 0; i <= limit; i++); event registrations and function declarations must be top-level; no optional/default params in user-defined functions; callbacks/event handlers must not return a value; do not pass more arguments than block signatures support; statement assignment operators are limited to =, +=, -=.",
       "FORBIDDEN IN OUTPUT: arrow functions (=>), classes, new constructors, async/await/Promise, import/export, template strings (`), higher-order array methods (map/filter/reduce/forEach/find/some/every), namespaces/modules, enums, interfaces, type aliases, generics, timers (setTimeout/setInterval), console calls, markdown, onstart functions, null, undefined, as-casts, bitwise operators (| & ^ << >> >>>) and bitwise compound assignments.",

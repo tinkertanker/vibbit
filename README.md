@@ -44,6 +44,13 @@ This repo ships one Vibbit runtime supporting both:
 - `artifacts/vibbit-extension.zip`: packaged extension
 - `apps/backend/`: managed backend (classroom auth + provider proxy)
 
+## Block compatibility guardrails
+
+- Prompts for `micro:bit` prefer built-in icons (`basic.showIcon(IconNames.*)`) using canonical names from `pxt-microbit/libs/core/icons.ts` (for example `IconNames.Duck`).
+- Runtime validation checks known enum members from `pxt-microbit` core enums (for example `Button`, `Gesture`, `TouchPin`, `DigitalPin`).
+- Runtime validation checks argument counts for core block APIs (derived from `//% blockId` signatures) before accepting model output.
+- Prompt guidance includes `blocks-test` style example shapes to bias towards code that decompiles cleanly to Blocks.
+
 ## Build extension
 
 ```bash

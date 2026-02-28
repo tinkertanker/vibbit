@@ -1,4 +1,5 @@
 import {
+  buildTargetPromptExtras,
   buildUserPrompt,
   extractGeminiText,
   normaliseFeedback,
@@ -540,7 +541,9 @@ const TARGET_CONFIGS = {
 };
 
 function systemPromptFor(target) {
-  const config = TARGET_CONFIGS[target] || TARGET_CONFIGS.microbit;
+  const targetKey = TARGET_CONFIGS[target] ? target : "microbit";
+  const config = TARGET_CONFIGS[targetKey];
+  const targetPromptExtras = buildTargetPromptExtras(targetKey);
 
   return [
     `You are a Microsoft MakeCode assistant for ${config.name}.`,
@@ -548,6 +551,7 @@ function systemPromptFor(target) {
     "",
     "AVAILABLE APIs:",
     config.apis,
+    ...targetPromptExtras,
     "",
     "BLOCK-COMPATIBLE PATTERNS (use these):",
     "- Event handlers: input.onButtonPressed(Button.A, function () { })",
