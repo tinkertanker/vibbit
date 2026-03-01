@@ -26,6 +26,13 @@ const WORK_JS_BACKEND_CONST_PATTERN = /const BACKEND = ".*?";/;
 const WORK_JS_APP_TOKEN_CONST_PATTERN = /const APP_TOKEN = ".*?";/;
 
 const runtimeFileDir = dirname(fileURLToPath(import.meta.url));
+const FAVICON_SVG_PATH = resolve(runtimeFileDir, "../../../extension/icons/vibbit-frog.svg");
+let FAVICON_SVG = null;
+try {
+  FAVICON_SVG = readFileSync(FAVICON_SVG_PATH, "utf8");
+} catch {
+  // Extension icons may be missing when backend runs from a different context
+}
 const WORK_JS_CANDIDATE_PATHS = [
   resolve(runtimeFileDir, "../../../work.js"),
   resolve(process.cwd(), "work.js"),
@@ -464,6 +471,17 @@ function respondJavaScript(status, source, origin, config, extraHeaders = {}) {
       "Content-Type": "application/javascript; charset=utf-8",
       ...buildCorsHeaders(origin, config),
       ...extraHeaders
+    }
+  });
+}
+
+function respondSvg(status, svg, origin, config) {
+  return new Response(svg, {
+    status,
+    headers: {
+      "Content-Type": "image/svg+xml; charset=utf-8",
+      "Cache-Control": "public, max-age=86400",
+      ...buildCorsHeaders(origin, config)
     }
   });
 }
@@ -973,6 +991,7 @@ function renderLandingPage({ extensionDownloadEnabled } = {}) {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Vibbit</title>
     <style>
       :root {
@@ -1094,6 +1113,7 @@ function renderBookmarkletInstallPage({ managedHref, byokHref, runtimeUrl, enabl
     "<head>",
     "<meta charset=\"utf-8\">",
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+    "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\">",
     "<title>Vibbit Bookmarklet</title>",
     "<style>",
     "body{margin:0;background:#0b1324;color:#e6edf8;font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}",
@@ -1188,6 +1208,7 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProvider
     "<head>",
     "<meta charset=\"utf-8\">",
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
+    "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\">",
     "<title>Vibbit Backend Admin</title>",
     "<style>",
     "body{margin:0;background:#0b1324;color:#e6edf8;font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}",
@@ -1486,6 +1507,13 @@ export function createBackendRuntime(options = {}) {
         extensionDownloadEnabled: Boolean(runtimeConfig.extensionDownloadUrl)
       });
       return respondHtml(200, html, origin, runtimeConfig);
+    }
+
+    if ((rawPathname === "/favicon.svg" || rawPathname === "/favicon.ico") && request.method === "GET") {
+      if (FAVICON_SVG) {
+        return respondSvg(200, FAVICON_SVG, origin, runtimeConfig);
+      }
+      return new Response(null, { status: 404, headers: buildCorsHeaders(origin, runtimeConfig) });
     }
 
     if (pathname === EXTENSION_DOWNLOAD_ROUTE && request.method === "GET") {
