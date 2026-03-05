@@ -362,7 +362,10 @@ function createRuntimeConfig(envInput = {}) {
   const emptyRetries = parseInteger(env.VIBBIT_EMPTY_RETRIES, 2, { min: 0, max: 5 });
   const validationRetries = parseInteger(env.VIBBIT_VALIDATION_RETRIES, 2, { min: 0, max: 5 });
   const bookmarkletEnabled = parseBoolean(env.VIBBIT_BOOKMARKLET_ENABLED, true);
-  const bookmarkletEnableByok = parseBoolean(env.VIBBIT_BOOKMARKLET_ENABLE_BYOK, false);
+  const bookmarkletEnableByok = parseBoolean(
+    env.VIBBIT_BOOKMARKLET_ENABLE_BYOK,
+    true
+  );
   const extensionDownloadUrl = String(
     env.VIBBIT_EXTENSION_DOWNLOAD_URL == null
       ? DEFAULT_EXTENSION_DOWNLOAD_URL
@@ -971,7 +974,11 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, managedBookmarkletHref } = {}) {
+function renderLandingPage({
+  extensionDownloadEnabled,
+  bookmarkletEnabled,
+  bookmarkletHref
+} = {}) {
   const repoUrl = "https://github.com/tinkertanker/vibbit";
   const releasesUrl = "https://github.com/tinkertanker/vibbit/releases";
   const tinkercademyUrl = "https://tinkercademy.com";
@@ -979,7 +986,7 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
   const installUrl = EXTENSION_DOWNLOAD_ROUTE;
   const canDownloadExtension = Boolean(extensionDownloadEnabled);
   const canUseBookmarklet = Boolean(bookmarkletEnabled);
-  const canDragInstallBookmarklet = canUseBookmarklet && Boolean(String(managedBookmarkletHref || "").trim());
+  const canDragInstallBookmarklet = canUseBookmarklet && Boolean(String(bookmarkletHref || "").trim());
   const extensionPrimaryAction = canDownloadExtension
     ? `<a class="action action-primary" href="${escapeHtml(installUrl)}">Download Chrome extension (.zip)</a>`
     : `<a class="action action-primary" href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">Open GitHub releases</a>`;
@@ -990,10 +997,10 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
     ? `
         <div class="bookmarklet-inline">
           <h3>Bookmarklet option</h3>
-          <p>Prefer not to install an extension? Drag this into your bookmarks bar:</p>
+          <p>Prefer not to install an extension? Add Vibbit to your bookmarks bar.</p>
           <div class="cta-row">
             ${canDragInstallBookmarklet
-              ? `<a class="action action-secondary" href="${escapeHtml(managedBookmarkletHref)}">Drag Vibbit (Managed)</a>`
+              ? `<a class="action action-secondary" href="${escapeHtml(bookmarkletHref)}">Vibbit</a>`
               : `<a href="${escapeHtml(BOOKMARKLET_INSTALL_ROUTE)}">Open bookmarklet installer</a>`}
           </div>
         </div>
@@ -1215,17 +1222,7 @@ function escapeTextarea(value) {
   return String(value ?? "").replace(/<\/textarea/gi, "<\\/textarea");
 }
 
-function renderBookmarkletInstallPage({ managedHref, byokHref, runtimeUrl, enableByok }) {
-  const byokSection = enableByok
-    ? [
-      "<section class=\"card\">",
-      "<h2>Optional BYOK bookmarklet</h2>",
-      "<p>Use this only if your students should enter provider keys directly in the browser.</p>",
-      `<p><a class="bookmarklet" href="${escapeHtml(byokHref)}">Vibbit (BYOK enabled)</a></p>`,
-      `<textarea readonly>${escapeTextarea(byokHref)}</textarea>`,
-      "</section>"
-    ].join("")
-    : "";
+function renderBookmarkletInstallPage({ bookmarkletHref, runtimeUrl, byokEnabled }) {
 
   return [
     "<!doctype html>",
@@ -1262,12 +1259,13 @@ function renderBookmarkletInstallPage({ managedHref, byokHref, runtimeUrl, enabl
     "</ol>",
     "</section>",
     "<section class=\"card\">",
-    "<h2>Managed classroom bookmarklet</h2>",
-    "<p>Recommended for schools. Students use server URL + class code; provider keys stay on your backend.</p>",
-    `<p><a class="bookmarklet" href="${escapeHtml(managedHref)}">Vibbit (Managed)</a></p>`,
-    `<textarea readonly>${escapeTextarea(managedHref)}</textarea>`,
+    "<h2>Vibbit bookmarklet</h2>",
+    byokEnabled
+      ? "<p>Choose managed or BYOK mode once Vibbit opens.</p>"
+      : "<p>This bookmarklet uses managed mode.</p>",
+    `<p><a class="bookmarklet" href="${escapeHtml(bookmarkletHref)}">Vibbit</a></p>`,
+    `<textarea readonly>${escapeTextarea(bookmarkletHref)}</textarea>`,
     "</section>",
-    byokSection,
     "<section class=\"card\">",
     "<h2>Runtime URL</h2>",
     `<p><code>${escapeHtml(runtimeUrl)}</code></p>`,
@@ -1625,17 +1623,16 @@ export function createBackendRuntime(options = {}) {
     if (rawPathname === "/" && request.method === "GET") {
       const publicOrigin = resolvePublicOrigin(request, requestUrl);
       const runtimeUrl = `${publicOrigin}${BOOKMARKLET_RUNTIME_ROUTE}`;
-      const managedBookmarkletHref = runtimeConfig.bookmarkletEnabled
-        ? buildBookmarkletHref(runtimeUrl, {
-          forceMode: "managed",
-          enableManaged: true,
-          enableByok: false
-        })
+      const bookmarkletConfig = runtimeConfig.bookmarkletEnableByok
+        ? { enableManaged: true, enableByok: true }
+        : { forceMode: "managed", enableManaged: true, enableByok: false };
+      const bookmarkletHref = runtimeConfig.bookmarkletEnabled
+        ? buildBookmarkletHref(runtimeUrl, bookmarkletConfig)
         : "";
       const html = renderLandingPage({
         extensionDownloadEnabled: Boolean(runtimeConfig.extensionDownloadUrl),
         bookmarkletEnabled: Boolean(runtimeConfig.bookmarkletEnabled),
-        managedBookmarkletHref
+        bookmarkletHref
       });
       return respondHtml(200, html, origin, runtimeConfig);
     }
@@ -1684,20 +1681,16 @@ export function createBackendRuntime(options = {}) {
     if (runtimeConfig.bookmarkletEnabled && pathname === BOOKMARKLET_INSTALL_ROUTE && request.method === "GET") {
       const publicOrigin = resolvePublicOrigin(request, requestUrl);
       const runtimeUrl = `${publicOrigin}${BOOKMARKLET_RUNTIME_ROUTE}`;
-      const managedHref = buildBookmarkletHref(runtimeUrl, {
-        forceMode: "managed",
-        enableManaged: true,
-        enableByok: false
-      });
-      const byokHref = buildBookmarkletHref(runtimeUrl, {
-        enableManaged: true,
-        enableByok: true
+      const bookmarkletConfig = runtimeConfig.bookmarkletEnableByok
+        ? { enableManaged: true, enableByok: true }
+        : { forceMode: "managed", enableManaged: true, enableByok: false };
+      const bookmarkletHref = buildBookmarkletHref(runtimeUrl, {
+        ...bookmarkletConfig
       });
       const html = renderBookmarkletInstallPage({
-        managedHref,
-        byokHref,
+        bookmarkletHref,
         runtimeUrl,
-        enableByok: runtimeConfig.bookmarkletEnableByok
+        byokEnabled: runtimeConfig.bookmarkletEnableByok
       });
       return respondHtml(200, html, origin, runtimeConfig);
     }

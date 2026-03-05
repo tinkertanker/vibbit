@@ -113,16 +113,18 @@ For users who cannot install the Chrome extension, build bookmarklet artefacts:
 npm run build:bookmarklet
 ```
 
-Default output is Managed-first (BYOK hidden) and writes:
+Default output includes both managed and BYOK bookmarklets (matching the extension):
 
 - `artifacts/bookmarklet/vibbit-runtime.js`
 - `artifacts/bookmarklet/bookmarklet-managed.txt`
 - `artifacts/bookmarklet/install-managed.html`
+- `artifacts/bookmarklet/bookmarklet-byok.txt`
+- `artifacts/bookmarklet/install-byok.html`
 
-To emit an additional BYOK-enabled bookmarklet:
+To emit managed-only output:
 
 ```bash
-npm run build:bookmarklet:byok
+VIBBIT_BOOKMARKLET_ENABLE_BYOK=false npm run build:bookmarklet
 ```
 
 Set the hosted runtime URL used inside the bookmarklet link:

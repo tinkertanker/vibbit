@@ -92,7 +92,9 @@ function writeBookmarkletFiles(outputRoot, suffix, runtimeUrl, config, enableByo
 }
 
 async function run() {
-  const enableByok = process.argv.includes("--enable-byok") || hasTruthyEnv("VIBBIT_BOOKMARKLET_ENABLE_BYOK");
+  const enableByokEnvRaw = process.env.VIBBIT_BOOKMARKLET_ENABLE_BYOK;
+  const enableByok = process.argv.includes("--enable-byok")
+    || (enableByokEnvRaw === undefined ? true : hasTruthyEnv("VIBBIT_BOOKMARKLET_ENABLE_BYOK"));
   const runtimeUrl = getOption("--runtime-url=") || String(process.env.VIBBIT_BOOKMARKLET_RUNTIME_URL || "").trim() || defaultRuntimeUrl;
 
   const [runtimeSourceRaw, frogSvgMarkup] = await Promise.all([
@@ -103,9 +105,11 @@ async function run() {
   let runtimeSource = runtimeSourceRaw.replace(userscriptHeaderPattern, "");
   runtimeSource = runtimeSource.replaceAll(frogDataUriToken, svgToDataUri(frogSvgMarkup));
 
-  const backend = String(process.env.VIBBIT_BACKEND || "").trim();
+  const backend = process.env.VIBBIT_BACKEND === undefined
+    ? ""
+    : String(process.env.VIBBIT_BACKEND || "").trim();
   const appTokenRaw = process.env.VIBBIT_APP_TOKEN;
-  if (backend) runtimeSource = overrideConst(runtimeSource, "BACKEND", backend);
+  runtimeSource = overrideConst(runtimeSource, "BACKEND", backend);
   if (appTokenRaw !== undefined) runtimeSource = overrideConst(runtimeSource, "APP_TOKEN", String(appTokenRaw));
 
   await rm(outputDir, { recursive: true, force: true });

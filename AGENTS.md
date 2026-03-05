@@ -33,10 +33,10 @@ Use this exact flow when asked to prepare a testable build:
 
 Use this when packaging for users who cannot install browser extensions:
 
-1. Build Managed-first bookmarklet artefacts:
+1. Build bookmarklet artefacts (managed + BYOK by default):
    - `npm run build:bookmarklet`
-2. Optional BYOK-enabled bookmarklet artefacts:
-   - `npm run build:bookmarklet:byok`
+2. Build managed-only bookmarklets if needed:
+   - `VIBBIT_BOOKMARKLET_ENABLE_BYOK=false npm run build:bookmarklet`
 3. Verify outputs:
    - `artifacts/bookmarklet/vibbit-runtime.js`
    - `artifacts/bookmarklet/bookmarklet-managed.txt`
