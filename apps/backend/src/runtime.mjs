@@ -971,20 +971,44 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function renderLandingPage({ extensionDownloadEnabled } = {}) {
+function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, managedBookmarkletHref } = {}) {
   const repoUrl = "https://github.com/tinkertanker/vibbit";
   const releasesUrl = "https://github.com/tinkertanker/vibbit/releases";
   const installGuideUrl = "https://github.com/tinkertanker/vibbit#install-extension-in-chrome-unpacked";
   const tinkercademyUrl = "https://tinkercademy.com";
   const slidesUrl = "https://1drv.ms/p/c/21dfaef5d0fccb4a/IQAKZM4cKK8zRYasGC45G6yvAcUdrDNoPAOGWaeOajftVtA";
   const installUrl = EXTENSION_DOWNLOAD_ROUTE;
+  const bookmarkletInstallUrl = BOOKMARKLET_INSTALL_ROUTE;
   const canDownloadExtension = Boolean(extensionDownloadEnabled);
-  const extensionDownloadLink = canDownloadExtension
-    ? `<li><a href="${escapeHtml(installUrl)}">Download Chrome extension (.zip)</a></li>`
-    : `<li>Chrome extension download is not available on this server right now. See <a href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">GitHub releases</a>.</li>`;
-  const unpackedInstallHint = canDownloadExtension
-    ? "<li>Not on Chrome Web Store yet: unzip the file and load it in Chrome via <code>chrome://extensions</code> with <strong>Developer mode</strong> enabled.</li>"
-    : "";
+  const canUseBookmarklet = Boolean(bookmarkletEnabled);
+  const canDragInstallBookmarklet = canUseBookmarklet && Boolean(String(managedBookmarkletHref || "").trim());
+  const extensionPrimaryAction = canDownloadExtension
+    ? `<a class="action action-primary" href="${escapeHtml(installUrl)}">Download Chrome extension (.zip)</a>`
+    : `<a class="action action-primary" href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">Open GitHub releases</a>`;
+  const extensionInstallCopy = canDownloadExtension
+    ? "Not on Chrome Web Store yet: unzip the file and load it in Chrome via <code>chrome://extensions</code> with <strong>Developer mode</strong> enabled."
+    : "Direct extension download is not enabled on this server. Use GitHub releases for the latest packaged build.";
+  const bookmarkletPanel = canUseBookmarklet
+    ? `
+        <div class="bookmarklet-box">
+          <p class="eyebrow">Fastest setup</p>
+          <h3>Bookmarklet install</h3>
+          <p>Drag the button below straight into your bookmarks bar to install Vibbit.</p>
+          <div class="cta-row">
+            ${canDragInstallBookmarklet
+              ? `<a class="action action-bookmarklet" href="${escapeHtml(managedBookmarkletHref)}">Drag Vibbit (Managed)</a>`
+              : `<a class="action action-secondary" href="${escapeHtml(bookmarkletInstallUrl)}">Open bookmarklet installer</a>`}
+            <a class="action action-secondary" href="${escapeHtml(bookmarkletInstallUrl)}">Installer page and manual steps</a>
+          </div>
+        </div>
+      `
+    : `
+        <div class="bookmarklet-box">
+          <p class="eyebrow">Bookmarklet</p>
+          <h3>Currently unavailable</h3>
+          <p>This server has bookmarklet mode disabled at the moment.</p>
+        </div>
+      `;
 
   return `<!doctype html>
 <html lang="en">
@@ -995,12 +1019,17 @@ function renderLandingPage({ extensionDownloadEnabled } = {}) {
     <title>Vibbit</title>
     <style>
       :root {
-        color-scheme: light dark;
-        --bg: #0b1220;
-        --panel: #121b2c;
+        color-scheme: dark;
+        --bg-1: #0b1220;
+        --bg-2: #121f38;
+        --panel: #0d1b31;
+        --panel-soft: #122744;
         --text: #e8eefc;
-        --muted: #b8c4df;
+        --muted: #b9c9e5;
         --link: #7ec8ff;
+        --line: rgba(158, 186, 228, 0.28);
+        --accent: #2ad387;
+        --accent-strong: #15b46d;
       }
       * { box-sizing: border-box; }
       body {
@@ -1008,84 +1037,196 @@ function renderLandingPage({ extensionDownloadEnabled } = {}) {
         min-height: 100vh;
         display: grid;
         place-items: center;
-        font: 16px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-        background: radial-gradient(circle at top, #1a2640, var(--bg));
+        font: 16px/1.5 "Avenir Next", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        background:
+          radial-gradient(circle at 8% 0%, #1a2e56 0%, rgba(26, 46, 86, 0) 46%),
+          radial-gradient(circle at 100% 100%, #173058 0%, rgba(23, 48, 88, 0) 44%),
+          linear-gradient(160deg, var(--bg-2), var(--bg-1));
         color: var(--text);
       }
       main {
-        width: min(760px, 92vw);
-        padding: 2rem;
-        border-radius: 1rem;
-        background: color-mix(in srgb, var(--panel) 92%, black 8%);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+        width: min(1080px, 94vw);
+        padding: clamp(1.25rem, 2.6vw, 2.25rem);
+        border-radius: 1.2rem;
+        background: linear-gradient(180deg, rgba(13, 27, 49, 0.95), rgba(9, 20, 39, 0.98));
+        border: 1px solid var(--line);
+        box-shadow: 0 24px 56px rgba(0, 0, 0, 0.36);
       }
-      h1 { margin: 0 0 0.75rem; font-size: clamp(2rem, 7vw, 3rem); }
-      p { margin: 0.7rem 0; color: var(--muted); }
+      h1 { margin: 0; font-size: clamp(2rem, 5.6vw, 3.2rem); line-height: 1.08; }
+      h2 { margin: 0 0 0.45rem; font-size: 1.2rem; }
+      h3 { margin: 0 0 0.35rem; font-size: 1rem; }
+      p { margin: 0; color: var(--muted); }
       a { color: var(--link); text-decoration: none; }
       a:hover { text-decoration: underline; }
+      .hero {
+        display: grid;
+        gap: 1.1rem;
+      }
       .brand {
         display: flex;
         align-items: center;
         gap: 0.75rem;
       }
       .brand svg { flex-shrink: 0; }
-      .links {
+      .intro {
+        max-width: 72ch;
+        font-size: 1.1rem;
+      }
+      .grid {
+        margin-top: 1.4rem;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+      }
+      .panel {
+        background: linear-gradient(180deg, rgba(18, 39, 68, 0.8), rgba(13, 28, 50, 0.82));
+        border: 1px solid var(--line);
+        border-radius: 0.95rem;
+        padding: 1.15rem;
+      }
+      .panel p + p { margin-top: 0.55rem; }
+      .list {
         list-style: none;
-        margin: 1.2rem 0 0;
+        margin: 0.8rem 0 0;
         padding: 0;
       }
-      .links li { margin: 0.55rem 0; }
+      .list li { margin: 0.52rem 0; }
       .row { display: inline-flex; align-items: center; gap: 0.45rem; }
+      .muted { color: var(--muted); }
+      .cta-row {
+        margin-top: 0.8rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+      }
+      .action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.4rem;
+        border-radius: 0.64rem;
+        border: 1px solid transparent;
+        padding: 0.6rem 0.88rem;
+        font-weight: 600;
+        line-height: 1.25;
+      }
+      .action:hover { text-decoration: none; }
+      .action-primary {
+        color: #041523;
+        background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+        box-shadow: 0 8px 20px rgba(17, 173, 105, 0.35);
+      }
+      .action-primary:hover { filter: brightness(1.06); }
+      .action-secondary {
+        color: var(--text);
+        background: rgba(126, 200, 255, 0.12);
+        border-color: rgba(126, 200, 255, 0.4);
+      }
+      .action-secondary:hover {
+        background: rgba(126, 200, 255, 0.2);
+      }
+      .action-bookmarklet {
+        color: #061524;
+        background: linear-gradient(180deg, #8fe8ff, #58c9ff);
+        border-color: rgba(130, 225, 255, 0.9);
+        box-shadow: 0 8px 20px rgba(60, 176, 236, 0.34);
+      }
+      .action-bookmarklet:hover { filter: brightness(1.05); }
+      code {
+        border-radius: 0.4rem;
+        padding: 0.12rem 0.34rem;
+        background: rgba(8, 18, 34, 0.95);
+        border: 1px solid rgba(106, 145, 198, 0.45);
+        color: #dbe9ff;
+      }
+      .bookmarklet-box {
+        margin-top: 1rem;
+        border-radius: 0.82rem;
+        border: 1px solid rgba(87, 202, 255, 0.45);
+        background: linear-gradient(180deg, rgba(23, 56, 90, 0.62), rgba(16, 40, 68, 0.72));
+        padding: 0.85rem;
+      }
+      .bookmarklet-box h3 { color: #ddf3ff; }
+      .bookmarklet-box p + p,
+      .bookmarklet-box p + a,
+      .bookmarklet-box h3 + p { margin-top: 0.4rem; }
+      .eyebrow {
+        margin-bottom: 0.35rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 0.76rem;
+        color: #9ad8ff;
+      }
+      @media (max-width: 860px) {
+        .grid { grid-template-columns: 1fr; }
+        .panel-install { order: -1; }
+      }
     </style>
   </head>
   <body>
     <main>
-      <div class="brand">
-        <svg width="56" height="56" viewBox="0 0 128 128" role="img" aria-label="Vibbit frog icon" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <linearGradient id="frog-gradient" x1="20" y1="22" x2="108" y2="108" gradientUnits="userSpaceOnUse">
-              <stop offset="0" stop-color="#34D399"/>
-              <stop offset="1" stop-color="#16A34A"/>
-            </linearGradient>
-            <mask id="frog-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
-              <rect width="128" height="128" fill="black"/>
-              <g transform="translate(64 64) scale(1.2) translate(-64 -64)">
-                <g fill="white">
-                  <circle cx="64" cy="68" r="36"/>
-                  <circle cx="44" cy="38" r="15.4"/>
-                  <circle cx="84" cy="38" r="15.4"/>
-                  <path d="M25 104C25 90 31 84 40 84C49 84 55 90 55 104Z"/>
-                  <path d="M73 104C73 90 79 84 88 84C97 84 103 90 103 104Z"/>
+      <section class="hero">
+        <div class="brand">
+          <svg width="56" height="56" viewBox="0 0 128 128" role="img" aria-label="Vibbit frog icon" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="frog-gradient" x1="20" y1="22" x2="108" y2="108" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#34D399"/>
+                <stop offset="1" stop-color="#16A34A"/>
+              </linearGradient>
+              <mask id="frog-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+                <rect width="128" height="128" fill="black"/>
+                <g transform="translate(64 64) scale(1.2) translate(-64 -64)">
+                  <g fill="white">
+                    <circle cx="64" cy="68" r="36"/>
+                    <circle cx="44" cy="38" r="15.4"/>
+                    <circle cx="84" cy="38" r="15.4"/>
+                    <path d="M25 104C25 90 31 84 40 84C49 84 55 90 55 104Z"/>
+                    <path d="M73 104C73 90 79 84 88 84C97 84 103 90 103 104Z"/>
+                  </g>
+                  <circle cx="44" cy="38" r="5.5" fill="black"/>
+                  <circle cx="84" cy="38" r="5.5" fill="black"/>
+                  <path d="M55 104C55 98 59 93 64 93C69 93 73 98 73 104Z" fill="black"/>
+                  <path d="M64 44.7L69 55.5L79.8 61.3L69 67.1L64 77.9L59 67.1L48.2 61.3L59 55.5L64 44.7Z" fill="black"/>
                 </g>
-                <circle cx="44" cy="38" r="5.5" fill="black"/>
-                <circle cx="84" cy="38" r="5.5" fill="black"/>
-                <path d="M55 104C55 98 59 93 64 93C69 93 73 98 73 104Z" fill="black"/>
-                <path d="M64 44.7L69 55.5L79.8 61.3L69 67.1L64 77.9L59 67.1L48.2 61.3L59 55.5L64 44.7Z" fill="black"/>
-              </g>
-            </mask>
-          </defs>
-          <rect width="128" height="128" fill="url(#frog-gradient)" mask="url(#frog-mask)"/>
-        </svg>
-        <h1>Vibbit</h1>
-      </div>
+              </mask>
+            </defs>
+            <rect width="128" height="128" fill="url(#frog-gradient)" mask="url(#frog-mask)"/>
+          </svg>
+          <h1>Vibbit</h1>
+        </div>
+        <p class="intro">Vibbit is an AI coding assistant for micro:bit MakeCode, available as a Chrome extension and bookmarklet, with both managed backend mode and BYOK provider support.</p>
+      </section>
 
-      <p>Vibbit is an AI coding assistant for micro:bit MakeCode, available as a Chrome extension and bookmarklet, with both managed backend mode and BYOK provider support.</p>
+      <section class="grid">
+        <article class="panel">
+          <h2>Info and resources</h2>
+          <p class="muted">Key project links and launch materials.</p>
+          <ul class="list">
+            <li>
+              <a class="row" href="${escapeHtml(repoUrl)}" target="_blank" rel="noreferrer">
+                <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.1 0 0 .67-.21 2.2.82a7.49 7.49 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.09.16 1.9.08 2.1.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+                tinkertanker/vibbit on GitHub
+              </a>
+            </li>
+            <li><a href="${escapeHtml(slidesUrl)}" target="_blank" rel="noreferrer">Launch slides (Micro:bit Live 2026)</a></li>
+            <li>A project by <a href="${escapeHtml(tinkercademyUrl)}" target="_blank" rel="noreferrer">Tinkercademy</a> from Singapore.</li>
+          </ul>
+        </article>
 
-      <ul class="links">
-        <li>
-          <a class="row" href="${escapeHtml(repoUrl)}" target="_blank" rel="noreferrer">
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.1 0 0 .67-.21 2.2.82a7.49 7.49 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.09.16 1.9.08 2.1.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-            tinkertanker/vibbit on GitHub
-          </a>
-        </li>
-        <li>A project by <a href="${escapeHtml(tinkercademyUrl)}" target="_blank" rel="noreferrer">Tinkercademy</a> from Singapore.</li>
-        <li><a href="${escapeHtml(slidesUrl)}" target="_blank" rel="noreferrer">Launch slides (Micro:bit Live 2026)</a></li>
-        ${extensionDownloadLink}
-        ${unpackedInstallHint}
-        <li><a href="${escapeHtml(installGuideUrl)}" target="_blank" rel="noreferrer">Unpacked installation instructions</a></li>
-        <li><a href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">GitHub releases</a></li>
-      </ul>
+        <article class="panel panel-install">
+          <h2>Install Vibbit</h2>
+          <p class="muted">Pick the installation path that best fits your classroom setup.</p>
+          <div class="cta-row">
+            ${extensionPrimaryAction}
+          </div>
+          <p>${extensionInstallCopy}</p>
+          <ul class="list">
+            <li><a href="${escapeHtml(installGuideUrl)}" target="_blank" rel="noreferrer">Unpacked installation instructions</a></li>
+            <li><a href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">GitHub releases</a></li>
+          </ul>
+          ${bookmarkletPanel}
+        </article>
+      </section>
     </main>
   </body>
 </html>`;
@@ -1503,8 +1644,19 @@ export function createBackendRuntime(options = {}) {
     }
 
     if (rawPathname === "/" && request.method === "GET") {
+      const publicOrigin = resolvePublicOrigin(request, requestUrl);
+      const runtimeUrl = `${publicOrigin}${BOOKMARKLET_RUNTIME_ROUTE}`;
+      const managedBookmarkletHref = runtimeConfig.bookmarkletEnabled
+        ? buildBookmarkletHref(runtimeUrl, {
+          forceMode: "managed",
+          enableManaged: true,
+          enableByok: false
+        })
+        : "";
       const html = renderLandingPage({
-        extensionDownloadEnabled: Boolean(runtimeConfig.extensionDownloadUrl)
+        extensionDownloadEnabled: Boolean(runtimeConfig.extensionDownloadUrl),
+        bookmarkletEnabled: Boolean(runtimeConfig.bookmarkletEnabled),
+        managedBookmarkletHref
       });
       return respondHtml(200, html, origin, runtimeConfig);
     }
