@@ -8,6 +8,7 @@ RUN cd apps/backend && npm install --omit=dev
 
 COPY apps/backend/ ./apps/backend/
 COPY shared/ ./shared/
+COPY work.js /app/work.js
 
 EXPOSE 8787
 ENV PORT=8787
