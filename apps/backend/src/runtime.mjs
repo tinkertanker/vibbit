@@ -1183,8 +1183,13 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
                 tinkertanker/vibbit on GitHub
               </a>
             </li>
-            <li><a href="${escapeHtml(slidesUrl)}" target="_blank" rel="noreferrer">Launch slides (Micro:bit Live 2026)</a></li>
             <li><a href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">GitHub releases</a></li>
+            <li>
+              <a class="row" href="${escapeHtml(slidesUrl)}" target="_blank" rel="noreferrer">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 3h12a2 2 0 0 1 2 2v2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2 12h10V5H4v10h2Zm2 4h12V9H8v10Zm2-8h8v2h-8v-2Z"/></svg>
+                Launch slides from micro:bit Live Global 2026
+              </a>
+            </li>
           </ul>
         </article>
 
