@@ -1517,11 +1517,12 @@ function buildBookmarkletRuntimeSource(templateSource, backendUrl) {
 }
 
 function buildBookmarkletLoaderSource(runtimeUrl, config) {
+  const bookmarkletConfig = Object.assign({}, config || {}, { __launchPanelOnLoad: true });
   return (
     "(function(){" +
       "try{" +
         "var w=window,d=document;" +
-        "w.__vibbitBookmarkletConfig=Object.assign({},w.__vibbitBookmarkletConfig||{}," + JSON.stringify(config || {}) + ");" +
+        "w.__vibbitBookmarkletConfig=Object.assign({},w.__vibbitBookmarkletConfig||{}," + JSON.stringify(bookmarkletConfig) + ");" +
         "if(w.__vibbit&&typeof w.__vibbit.reinvoke==='function'){" +
           "if(w.__vibbit.reinvoke()!==false)return;" +
         "}" +

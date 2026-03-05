@@ -102,6 +102,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const bookmarkletConfig = window.__vibbitBookmarkletConfig && typeof window.__vibbitBookmarkletConfig === "object"
     ? window.__vibbitBookmarkletConfig
     : {};
+  const launchPanelOnLoad = bookmarkletConfig.__launchPanelOnLoad === true;
   const enableManagedMode = bookmarkletConfig.enableManaged !== false;
   const enableByokMode = bookmarkletConfig.enableByok !== false;
   const configuredForceMode = String(bookmarkletConfig.forceMode || "").trim().toLowerCase();
@@ -435,7 +436,11 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   fab.onclick = openPanel;
-  ensureRuntimeMounted();
+  if (launchPanelOnLoad) {
+    openPanel();
+  } else {
+    ensureRuntimeMounted();
+  }
 
   /* ── backdrop click to close ───────────────────────────── */
   backdrop.addEventListener("mousedown", function (e) {
