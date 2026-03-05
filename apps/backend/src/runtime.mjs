@@ -974,11 +974,9 @@ function escapeHtml(value) {
 function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, managedBookmarkletHref } = {}) {
   const repoUrl = "https://github.com/tinkertanker/vibbit";
   const releasesUrl = "https://github.com/tinkertanker/vibbit/releases";
-  const installGuideUrl = "https://github.com/tinkertanker/vibbit#install-extension-in-chrome-unpacked";
   const tinkercademyUrl = "https://tinkercademy.com";
   const slidesUrl = "https://1drv.ms/p/c/21dfaef5d0fccb4a/IQAKZM4cKK8zRYasGC45G6yvAcUdrDNoPAOGWaeOajftVtA";
   const installUrl = EXTENSION_DOWNLOAD_ROUTE;
-  const bookmarkletInstallUrl = BOOKMARKLET_INSTALL_ROUTE;
   const canDownloadExtension = Boolean(extensionDownloadEnabled);
   const canUseBookmarklet = Boolean(bookmarkletEnabled);
   const canDragInstallBookmarklet = canUseBookmarklet && Boolean(String(managedBookmarkletHref || "").trim());
@@ -990,25 +988,17 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
     : "Direct extension download is not enabled on this server. Use GitHub releases for the latest packaged build.";
   const bookmarkletPanel = canUseBookmarklet
     ? `
-        <div class="bookmarklet-box">
-          <p class="eyebrow">Fastest setup</p>
-          <h3>Bookmarklet install</h3>
-          <p>Drag the button below straight into your bookmarks bar to install Vibbit.</p>
+        <div class="bookmarklet-inline">
+          <h3>Bookmarklet option</h3>
+          <p>Prefer not to install an extension? Drag this into your bookmarks bar:</p>
           <div class="cta-row">
             ${canDragInstallBookmarklet
-              ? `<a class="action action-bookmarklet" href="${escapeHtml(managedBookmarkletHref)}">Drag Vibbit (Managed)</a>`
-              : `<a class="action action-secondary" href="${escapeHtml(bookmarkletInstallUrl)}">Open bookmarklet installer</a>`}
-            <a class="action action-secondary" href="${escapeHtml(bookmarkletInstallUrl)}">Installer page and manual steps</a>
+              ? `<a class="action action-secondary" href="${escapeHtml(managedBookmarkletHref)}">Drag Vibbit (Managed)</a>`
+              : `<a href="${escapeHtml(BOOKMARKLET_INSTALL_ROUTE)}">Open bookmarklet installer</a>`}
           </div>
         </div>
       `
-    : `
-        <div class="bookmarklet-box">
-          <p class="eyebrow">Bookmarklet</p>
-          <h3>Currently unavailable</h3>
-          <p>This server has bookmarklet mode disabled at the moment.</p>
-        </div>
-      `;
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -1023,13 +1013,12 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
         --bg-1: #0b1220;
         --bg-2: #121f38;
         --panel: #0d1b31;
-        --panel-soft: #122744;
         --text: #e8eefc;
         --muted: #b9c9e5;
         --link: #7ec8ff;
         --line: rgba(158, 186, 228, 0.28);
-        --accent: #2ad387;
-        --accent-strong: #15b46d;
+        --accent: #77c7ff;
+        --accent-strong: #59b4ff;
       }
       * { box-sizing: border-box; }
       body {
@@ -1069,7 +1058,7 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
       }
       .brand svg { flex-shrink: 0; }
       .intro {
-        max-width: 72ch;
+        max-width: 100%;
         font-size: 1.1rem;
       }
       .grid {
@@ -1112,26 +1101,19 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
       }
       .action:hover { text-decoration: none; }
       .action-primary {
-        color: #041523;
+        color: #061a30;
         background: linear-gradient(180deg, var(--accent), var(--accent-strong));
-        box-shadow: 0 8px 20px rgba(17, 173, 105, 0.35);
+        border-color: rgba(150, 220, 255, 0.45);
       }
-      .action-primary:hover { filter: brightness(1.06); }
+      .action-primary:hover { filter: brightness(1.04); }
       .action-secondary {
         color: var(--text);
-        background: rgba(126, 200, 255, 0.12);
+        background: rgba(126, 200, 255, 0.16);
         border-color: rgba(126, 200, 255, 0.4);
       }
       .action-secondary:hover {
-        background: rgba(126, 200, 255, 0.2);
+        background: rgba(126, 200, 255, 0.24);
       }
-      .action-bookmarklet {
-        color: #061524;
-        background: linear-gradient(180deg, #8fe8ff, #58c9ff);
-        border-color: rgba(130, 225, 255, 0.9);
-        box-shadow: 0 8px 20px rgba(60, 176, 236, 0.34);
-      }
-      .action-bookmarklet:hover { filter: brightness(1.05); }
       code {
         border-radius: 0.4rem;
         padding: 0.12rem 0.34rem;
@@ -1139,23 +1121,17 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
         border: 1px solid rgba(106, 145, 198, 0.45);
         color: #dbe9ff;
       }
-      .bookmarklet-box {
+      .bookmarklet-inline {
         margin-top: 1rem;
-        border-radius: 0.82rem;
-        border: 1px solid rgba(87, 202, 255, 0.45);
-        background: linear-gradient(180deg, rgba(23, 56, 90, 0.62), rgba(16, 40, 68, 0.72));
-        padding: 0.85rem;
+        border-top: 1px solid rgba(126, 200, 255, 0.28);
+        padding-top: 0.8rem;
       }
-      .bookmarklet-box h3 { color: #ddf3ff; }
-      .bookmarklet-box p + p,
-      .bookmarklet-box p + a,
-      .bookmarklet-box h3 + p { margin-top: 0.4rem; }
-      .eyebrow {
-        margin-bottom: 0.35rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        font-size: 0.76rem;
-        color: #9ad8ff;
+      .bookmarklet-inline p {
+        margin-top: 0.35rem;
+      }
+      .project-note {
+        margin-top: 1rem;
+        color: var(--muted);
       }
       @media (max-width: 860px) {
         .grid { grid-template-columns: 1fr; }
@@ -1200,7 +1176,6 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
       <section class="grid">
         <article class="panel">
           <h2>Info and resources</h2>
-          <p class="muted">Key project links and launch materials.</p>
           <ul class="list">
             <li>
               <a class="row" href="${escapeHtml(repoUrl)}" target="_blank" rel="noreferrer">
@@ -1209,24 +1184,20 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
               </a>
             </li>
             <li><a href="${escapeHtml(slidesUrl)}" target="_blank" rel="noreferrer">Launch slides (Micro:bit Live 2026)</a></li>
-            <li>A project by <a href="${escapeHtml(tinkercademyUrl)}" target="_blank" rel="noreferrer">Tinkercademy</a> from Singapore.</li>
+            <li><a href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">GitHub releases</a></li>
           </ul>
         </article>
 
         <article class="panel panel-install">
           <h2>Install Vibbit</h2>
-          <p class="muted">Pick the installation path that best fits your classroom setup.</p>
           <div class="cta-row">
             ${extensionPrimaryAction}
           </div>
           <p>${extensionInstallCopy}</p>
-          <ul class="list">
-            <li><a href="${escapeHtml(installGuideUrl)}" target="_blank" rel="noreferrer">Unpacked installation instructions</a></li>
-            <li><a href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">GitHub releases</a></li>
-          </ul>
           ${bookmarkletPanel}
         </article>
       </section>
+      <p class="project-note">A project by <a href="${escapeHtml(tinkercademyUrl)}" target="_blank" rel="noreferrer">Tinkercademy</a> from Singapore.</p>
     </main>
   </body>
 </html>`;
