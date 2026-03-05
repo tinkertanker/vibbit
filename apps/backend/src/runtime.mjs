@@ -984,7 +984,7 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
     ? `<a class="action action-primary" href="${escapeHtml(installUrl)}">Download Chrome extension (.zip)</a>`
     : `<a class="action action-primary" href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">Open GitHub releases</a>`;
   const extensionInstallCopy = canDownloadExtension
-    ? "Not on Chrome Web Store yet: unzip the file and load it in Chrome via <code>chrome://extensions</code> with <strong>Developer mode</strong> enabled."
+    ? "Not on Chrome Web Store yet; unzip the file and load it in Chrome via <code>chrome://extensions</code> with <strong>Developer mode</strong> enabled."
     : "Direct extension download is not enabled on this server. Use GitHub releases for the latest packaged build.";
   const bookmarkletPanel = canUseBookmarklet
     ? `
@@ -1084,6 +1084,7 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
       .muted { color: var(--muted); }
       .cta-row {
         margin-top: 0.8rem;
+        margin-bottom: 1rem;
         display: flex;
         flex-wrap: wrap;
         gap: 0.6rem;
@@ -1097,6 +1098,8 @@ function renderLandingPage({ extensionDownloadEnabled, bookmarkletEnabled, manag
         border: 1px solid transparent;
         padding: 0.6rem 0.88rem;
         font-weight: 600;
+        font-family: inherit;
+        font-size: 1rem;
         line-height: 1.25;
       }
       .action:hover { text-decoration: none; }
