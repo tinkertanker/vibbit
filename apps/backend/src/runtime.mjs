@@ -991,7 +991,7 @@ function renderLandingPage({ extensionDownloadEnabled } = {}) {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <title>Vibbit</title>
     <style>
       :root {
@@ -1113,7 +1113,7 @@ function renderBookmarkletInstallPage({ managedHref, byokHref, runtimeUrl, enabl
     "<head>",
     "<meta charset=\"utf-8\">",
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
-    "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\">",
+    "<link rel=\"icon\" type=\"image/svg+xml\" href=\"favicon.svg\">",
     "<title>Vibbit Bookmarklet</title>",
     "<style>",
     "body{margin:0;background:#0b1324;color:#e6edf8;font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}",
@@ -1208,7 +1208,7 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProvider
     "<head>",
     "<meta charset=\"utf-8\">",
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
-    "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\">",
+    "<link rel=\"icon\" type=\"image/svg+xml\" href=\"favicon.svg\">",
     "<title>Vibbit Backend Admin</title>",
     "<style>",
     "body{margin:0;background:#0b1324;color:#e6edf8;font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}",
@@ -1509,7 +1509,18 @@ export function createBackendRuntime(options = {}) {
       return respondHtml(200, html, origin, runtimeConfig);
     }
 
-    if ((rawPathname === "/favicon.svg" || rawPathname === "/favicon.ico") && request.method === "GET") {
+    if ((pathname === "/favicon.svg" || pathname === "/favicon.ico")
+      && (request.method === "GET" || request.method === "HEAD")) {
+      if (pathname === "/favicon.ico") {
+        return new Response(null, {
+          status: 302,
+          headers: {
+            Location: rawPathname.replace(/\.ico$/i, ".svg"),
+            "Cache-Control": "public, max-age=86400",
+            ...buildCorsHeaders(origin, runtimeConfig)
+          }
+        });
+      }
       if (FAVICON_SVG) {
         return respondSvg(200, FAVICON_SVG, origin, runtimeConfig);
       }
