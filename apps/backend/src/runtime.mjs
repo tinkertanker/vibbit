@@ -997,7 +997,7 @@ function renderLandingPage({
     ? `
         <div class="bookmarklet-inline">
           <h3>Bookmarklet option</h3>
-          <p>Prefer not to install an extension? Add Vibbit to your bookmarks bar.</p>
+                <p>Prefer not to install an extension? Drag this to your bookmarks bar and click on it to activate in MakeCode.</p>
           <div class="cta-row">
             ${canDragInstallBookmarklet
               ? `<a class="action action-secondary" href="${escapeHtml(bookmarkletHref)}">Vibbit</a>`
