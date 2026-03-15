@@ -109,6 +109,15 @@ To deploy after any backend changes:
 ./deploy.sh
 ```
 
+## Release runbook
+
+For coordinated release work across the extension zip, bookmarklet artefacts, and backend-hosted site/download routes:
+
+- Source of truth: `docs/release.md`
+- Project-local skill: `skills/vibbit-release/SKILL.md`
+
+If the backend download route should point at `releases/latest`, publish the GitHub release asset before deploying the backend update.
+
 ## Smoke-test checklist
 
 1. Load extension from `dist/`.

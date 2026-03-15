@@ -144,6 +144,12 @@ The managed backend can host bookmarklet assets directly, so you can avoid a sep
 
 After deploying the backend, share `{BACKEND}/bookmarklet` with students who cannot install extensions.
 
+## Release runbook
+
+For coordinated extension, bookmarklet, and backend/site releases, use:
+
+- `docs/release.md`
+
 ## Shared compat core
 
 `work.js` (BYOK runtime) and `apps/backend/src/runtime.mjs` (managed runtime) share generated compat helpers from:

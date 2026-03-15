@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vibbit Release"
+  short_description: "Run Vibbit extension and bookmarklet releases"
+  default_prompt: "Use $vibbit-release to prepare and execute a Vibbit extension, bookmarklet, and backend/site release."
