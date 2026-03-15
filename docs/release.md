@@ -17,11 +17,15 @@ Use this runbook when preparing or executing any Vibbit release that may touch t
    - extension-only release
    - bookmarklet-only release
    - backend/site-only release
-2. Merge releasable work to `main` first.
-3. Pick the version tag up front, for example `v0.2.3`.
-4. Check the worktree:
+2. Pick the next unreleased version tag up front, for example `v0.2.3`.
+3. Increment the shipped extension version before building or tagging:
+   - update `package.json` `version`
+   - update `extension/manifest.json` `version`
+   - keep them in sync
+4. Merge releasable work to `main` first.
+5. Check the worktree:
    - `git status --short`
-5. If the release touches UI/runtime behaviour, plan to run browser validation in MakeCode after building.
+6. If the release touches UI/runtime behaviour, plan to run browser validation in MakeCode after building.
 
 ## Build And Verify
 

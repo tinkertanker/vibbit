@@ -22,10 +22,13 @@ Use this skill for any Vibbit shipping task that spans more than one surface. Th
    - bookmarklet artefacts
    - backend/site deploy
    - full coordinated release
-2. Follow the ordered sequence in [`docs/release.md`](/Users/yingjie/Developer/tt-projects/bitvibe-extension/docs/release.md) instead of improvising.
-3. Treat `work.js` changes as extension plus bookmarklet changes.
-4. Publish GitHub release assets before deploying backend routes that point at `releases/latest`.
-5. Finish with explicit verification and a short release summary.
+2. Pick the next unreleased version and bump the shipped extension version fields before tagging:
+   - `package.json`
+   - `extension/manifest.json`
+3. Follow the ordered sequence in [`docs/release.md`](/Users/yingjie/Developer/tt-projects/bitvibe-extension/docs/release.md) instead of improvising.
+4. Treat `work.js` changes as extension plus bookmarklet changes.
+5. Publish GitHub release assets before deploying backend routes that point at `releases/latest`.
+6. Finish with explicit verification and a short release summary.
 
 ## Output Expectations
 
