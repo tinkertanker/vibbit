@@ -27,11 +27,19 @@ const WORK_JS_APP_TOKEN_CONST_PATTERN = /const APP_TOKEN = ".*?";/;
 
 const runtimeFileDir = dirname(fileURLToPath(import.meta.url));
 const FAVICON_SVG_PATH = resolve(runtimeFileDir, "../../../extension/icons/vibbit-frog.svg");
+const ROOT_PACKAGE_JSON_PATH = resolve(runtimeFileDir, "../../../package.json");
 let FAVICON_SVG = null;
 try {
   FAVICON_SVG = readFileSync(FAVICON_SVG_PATH, "utf8");
 } catch {
   // Extension icons may be missing when backend runs from a different context
+}
+let SHIPPED_EXTENSION_VERSION = "";
+try {
+  const parsedRootPackage = JSON.parse(readFileSync(ROOT_PACKAGE_JSON_PATH, "utf8"));
+  SHIPPED_EXTENSION_VERSION = String(parsedRootPackage && parsedRootPackage.version || "").trim();
+} catch {
+  // Root package metadata may be unavailable in some backend-only contexts.
 }
 const WORK_JS_CANDIDATE_PATHS = [
   resolve(runtimeFileDir, "../../../work.js"),
@@ -1194,6 +1202,9 @@ function renderLandingPage({
               </a>
             </li>
             <li><a href="${escapeHtml(releasesUrl)}" target="_blank" rel="noreferrer">GitHub releases</a></li>
+            ${SHIPPED_EXTENSION_VERSION
+              ? `<li>Current version: <code>v${escapeHtml(SHIPPED_EXTENSION_VERSION)}</code></li>`
+              : ""}
             <li>
               <a class="row" href="${escapeHtml(slidesUrl)}" target="_blank" rel="noreferrer">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 3h12a2 2 0 0 1 2 2v2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2v-2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2 12h10V5H4v10h2Zm2 4h12V9H8v10Zm2-8h8v2h-8v-2Z"/></svg>

@@ -6,6 +6,7 @@ WORKDIR /app
 COPY apps/backend/package*.json apps/backend/
 RUN cd apps/backend && npm install --omit=dev
 
+COPY package.json /app/package.json
 COPY apps/backend/ ./apps/backend/
 COPY shared/ ./shared/
 COPY work.js /app/work.js
