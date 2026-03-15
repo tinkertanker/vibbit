@@ -224,7 +224,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '</div>'
 
     /* ═══ VIEW 2: MAIN (chat layout) ═══ */
-    + '<div id="bv-main" style="display:none;flex-direction:column;height:80vh;max-height:80vh">'
+    + '<div id="bv-main" style="display:none;flex-direction:column;height:80vh;max-height:80vh;min-height:0">'
 
     /* header */
     + '<div id="h-main" style="display:flex;align-items:center;padding:12px 16px;background:#111936;border-bottom:1px solid #21304f;flex-shrink:0">'
@@ -242,7 +242,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '</div>'
 
     /* chat messages area */
-    + '<div id="chat-messages" style="flex:1;overflow-y:auto;padding:20px 18px;display:flex;flex-direction:column;gap:12px"></div>'
+    + '<div id="chat-messages" style="flex:1;min-height:0;min-width:0;overflow-y:auto;overflow-x:hidden;padding:20px 18px"></div>'
 
     /* input area */
     + '<div style="flex-shrink:0;border-top:1px solid #1f2b47;padding:12px 16px;background:#0d1528">'
@@ -363,11 +363,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     "#vibbit-backdrop{opacity:0;transition:opacity .2s ease}",
     "#vibbit-backdrop[data-active='true']{opacity:1}",
     "#vibbit-preview-bar button:hover{filter:brightness(1.15)}",
-    ".vibbit-msg{animation:vibbit-msg-in .25s ease}",
-    ".vibbit-msg-user{display:flex;justify-content:flex-end}",
-    ".vibbit-msg-user>div{max-width:85%;padding:10px 14px;border-radius:14px 14px 4px 14px;background:#3454D1;color:#fff;font-size:13px;line-height:1.5;word-break:break-word}",
-    ".vibbit-msg-assistant{display:flex;justify-content:flex-start}",
-    ".vibbit-msg-assistant>div{max-width:90%;padding:12px 14px;border-radius:14px 14px 14px 4px;background:#141e38;border:1px solid #1f2d4d;color:#e0e6f0;font-size:13px;line-height:1.55;word-break:break-word}",
+    ".vibbit-msg{display:block;min-width:0;width:100%;animation:vibbit-msg-in .25s ease}",
+    ".vibbit-msg + .vibbit-msg{margin-top:12px}",
+    ".vibbit-msg-user{text-align:right}",
+    ".vibbit-msg-assistant{text-align:left}",
+    ".vibbit-msg-bubble{box-sizing:border-box;display:block;min-width:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;text-align:left}",
+    ".vibbit-msg-bubble-user{max-width:85%;margin-left:auto;padding:10px 14px;border-radius:14px 14px 4px 14px;background:#3454D1;color:#fff;font-size:13px;line-height:1.5}",
+    ".vibbit-msg-bubble-assistant{max-width:90%;margin-right:auto;padding:12px 14px;border-radius:14px 14px 14px 4px;background:#141e38;border:1px solid #1f2d4d;color:#e0e6f0;font-size:13px;line-height:1.55}",
     ".vibbit-msg-assistant .vibbit-feedback-line{padding:6px 10px;margin-top:6px;border-left:3px solid #3b82f6;border-radius:4px;background:rgba(59,130,246,0.1);color:#c5d6ff;font-size:12px;line-height:1.4}",
     ".vibbit-msg-assistant .vibbit-msg-status{color:#7088ad;font-size:12px;display:flex;align-items:center;gap:6px}",
     ".vibbit-msg-assistant .vibbit-msg-success{color:#89e6a3;font-size:12px;font-weight:500;margin-top:8px;display:flex;align-items:center;gap:6px}",
@@ -379,7 +381,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     ".vibbit-btn-undo{border:1px solid #29324e;background:transparent;color:#8899bb}",
     ".vibbit-btn-fix{border:1px solid #d97706;background:rgba(217,119,6,0.15);color:#fbbf24}",
     ".vibbit-btn-cancel{border:1px solid #dc2626;background:rgba(220,38,38,0.18);color:#fecaca}",
-    ".vibbit-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:14px;color:#4a5f82;padding:40px 20px;text-align:center;user-select:none}"
+    ".vibbit-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100%;gap:14px;color:#4a5f82;padding:40px 20px;text-align:center;user-select:none}"
   ].join("\n");
   /* ── FAB ─────────────────────────────────────────────────── */
   const fab = document.createElement("div");
@@ -871,6 +873,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     const wrapper = document.createElement("div");
     wrapper.className = "vibbit-msg " + (msg.role === "user" ? "vibbit-msg-user" : "vibbit-msg-assistant");
     const bubble = document.createElement("div");
+    bubble.className = "vibbit-msg-bubble " + (msg.role === "user" ? "vibbit-msg-bubble-user" : "vibbit-msg-bubble-assistant");
     if (msg.role === "user") {
       bubble.textContent = msg.content;
     } else {
@@ -909,7 +912,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     Object.assign(msg, updates);
     const wrapper = chatMessageEls[idx];
     if (!wrapper) return;
-    const bubble = wrapper.firstChild;
+    const bubble = wrapper.firstElementChild;
     if (bubble) bubble.innerHTML = buildAssistantHTML(msg);
     scrollChatToBottom();
     if (shouldPersist) persistChatState();
@@ -978,7 +981,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       if (msg.actionsHidden) continue;
       msg.actionsHidden = true;
       const wrapper = chatMessageEls[i];
-      const bubble = wrapper && wrapper.firstChild;
+      const bubble = wrapper && wrapper.firstElementChild;
       if (bubble) bubble.innerHTML = buildAssistantHTML(msg);
       changed = true;
     }
