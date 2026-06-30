@@ -1895,6 +1895,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     parseModelOutput,
     validateBlocksCompatibility,
     buildTargetPromptExtras,
+    buildSystemPrompt,
+    buildCorrectionInstruction,
     stubForTarget,
     extractGeminiText,
   } = (() => {
@@ -2685,6 +2687,181 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       ];
     }
 
+    // Per-target grounding shared by Managed and BYOK system prompts. Each entry
+    // carries the API cheat sheet plus a worked request -> response example so the
+    // model sees both the supported surface and the exact output contract.
+    const TARGET_API_CATALOG = {
+      microbit: {
+        name: "micro:bit",
+        apis: [
+          "basic: showNumber(n), showString(s), showIcon(IconNames), showLeds(`...`), showArrow(ArrowNames), clearScreen(), forever(handler), onStart(handler), pause(ms)",
+          "input: onButtonPressed(Button.A/B/AB, handler), onGesture(Gesture.Shake/Tilt/..., handler), onPinPressed(TouchPin.P0/P1/P2, handler), buttonIsPressed(Button), temperature(), lightLevel(), acceleration(Dimension.X/Y/Z), compassHeading(), rotation(Rotation), magneticForce(Dimension), runningTime()",
+          "music: playTone(Note, BeatFraction), ringTone(freq), rest(BeatFraction), beat(BeatFraction), tempo(), setTempo(bpm), changeTempoBy(delta)",
+          "led: plot(x,y), unplot(x,y), toggle(x,y), point(x,y), brightness(), setBrightness(n), plotBarGraph(value, high), enable(on)",
+          "radio: sendNumber(n), sendString(s), sendValue(name, n), onReceivedNumber(handler), onReceivedString(handler), setGroup(id), setTransmitPower(n), setTransmitSerialNumber(on)",
+          "game: createSprite(x,y), .move(n), .turn(Direction,degrees), .ifOnEdgeBounce(), .isTouching(other), .isTouchingEdge(), addScore(n), score(), setScore(n), setLife(n), addLife(n), removeLife(n), gameOver(), startCountdown(ms)",
+          "pins: digitalReadPin(DigitalPin), digitalWritePin(DigitalPin,value), analogReadPin(AnalogPin), analogWritePin(AnalogPin,value), servoWritePin(AnalogPin,value), map(value,fromLow,fromHigh,toLow,toHigh), onPulsed(DigitalPin,PulseValue,handler), analogSetPitchPin(AnalogPin), analogPitch(freq,ms)",
+          "images: createImage(`...`), createBigImage(`...`), arrowImage(ArrowNames), iconImage(IconNames)",
+          "serial: writeLine(s), writeNumber(n), writeValue(name,value), readLine(), onDataReceived(delimiter,handler), redirect(tx,rx,rate)",
+          "control: inBackground(handler), reset(), waitMicros(us)",
+          "loops, logic, variables, math, functions, arrays, text (standard language built-ins)"
+        ].join("\n"),
+        request: "count up each time I press button A and show the number",
+        feedback: ["Press A to add one and show the running count."],
+        example: [
+          "let count = 0",
+          "input.onButtonPressed(Button.A, function () {",
+          "    count += 1",
+          "    basic.showNumber(count)",
+          "})"
+        ].join("\n")
+      },
+      arcade: {
+        name: "Arcade",
+        apis: [
+          "sprites: create(img, SpriteKind), createProjectileFromSprite(img, sprite, vx, vy), onCreated(SpriteKind, handler), onDestroyed(SpriteKind, handler), onOverlap(SpriteKind, SpriteKind, handler), allOfKind(SpriteKind)",
+          "controller: moveSprite(sprite, vx, vy), controller.A.onEvent(ControllerButtonEvent, handler), controller.B.onEvent(ControllerButtonEvent, handler), dx(), dy()",
+          "scene: setBackgroundColor(color), setBackgroundImage(img), cameraFollowSprite(sprite), setTileMapLevel(tilemap), onHitWall(SpriteKind, handler), onOverlapTile(SpriteKind, tile, handler)",
+          "game: onUpdate(handler), onUpdateInterval(ms, handler), splash(title, subtitle?), over(win), reset()",
+          "info: score(), setScore(n), changeScoreBy(n), life(), setLife(n), changeLifeBy(n), startCountdown(s), onCountdownEnd(handler), onLifeZero(handler)",
+          "music: playTone(freq, ms), playMelody(melody, tempo), setVolume(vol)",
+          "effects: spray, fire, warm radial, cool radial, halo, fountain (applied via sprite.startEffect())",
+          "animation: runImageAnimation(sprite, frames, interval, loop), runMovementAnimation(sprite, path, interval, loop)"
+        ].join("\n"),
+        request: "make a player sprite I can move with the controller",
+        feedback: ["Created a player sprite you can move with the D-pad."],
+        example: [
+          "let mySprite = sprites.create(img`",
+          "    . . . . . . . . . . . . . . . .",
+          "    . . . . . . . . . . . . . . . .",
+          "    . . . . . 7 7 7 7 7 . . . . . .",
+          "    . . . . 7 7 7 7 7 7 7 . . . . .",
+          "    . . . 7 7 7 7 7 7 7 7 7 . . . .",
+          "    . . . . 7 7 7 7 7 7 7 . . . . .",
+          "    . . . . . 7 7 7 7 7 . . . . . .",
+          "    . . . . . . . . . . . . . . . .",
+          "`, SpriteKind.Player)",
+          "controller.moveSprite(mySprite)",
+          "mySprite.setStayInScreen(true)"
+        ].join("\n")
+      },
+      maker: {
+        name: "Maker",
+        apis: [
+          "pins: digitalReadPin(DigitalPin), digitalWritePin(DigitalPin, value), analogReadPin(AnalogPin), analogWritePin(AnalogPin, value), servoWritePin(AnalogPin, value), map(value, fromLow, fromHigh, toLow, toHigh)",
+          "input: onButtonPressed(handler), buttonIsPressed(), temperature(), lightLevel()",
+          "loops: forever(handler), pause(ms)",
+          "music: playTone(freq, ms), ringTone(freq), rest(ms), setTempo(bpm)"
+        ].join("\n"),
+        request: "blink the LED on pin P0 on and off",
+        feedback: ["Toggles P0 every half second so the LED blinks."],
+        example: [
+          "let on = false",
+          "loops.forever(function () {",
+          "    on = !(on)",
+          "    if (on) {",
+          "        pins.digitalWritePin(DigitalPin.P0, 1)",
+          "    } else {",
+          "        pins.digitalWritePin(DigitalPin.P0, 0)",
+          "    }",
+          "    loops.pause(500)",
+          "})"
+        ].join("\n")
+      }
+    };
+
+    function resolveTargetConfig(target) {
+      return TARGET_API_CATALOG[target] || TARGET_API_CATALOG.microbit;
+    }
+
+    // Positive, affirmative guidance ("do this") attended first; the model anchors
+    // on the patterns it should imitate before reading the forbidden list.
+    const BLOCK_SAFE_DO_RULES = [
+      "Use event handlers and loops, e.g. input.onButtonPressed(Button.A, function () { }), basic.forever(function () { }), game.onUpdate(function () { }).",
+      "Declare every variable with let and an initial value, e.g. let score = 0.",
+      "Write for loops exactly as for (let i = 0; i < limit; i++) or for (let i = 0; i <= limit; i++); walk a list with for (let item of list).",
+      "Keep event registrations and function declarations at the top level, never nested inside another handler.",
+      "Pick a random item with options._pickRandom() from an array of choices.",
+      "Join strings with \"text\" + value, and pass function () { } for every handler.",
+      "Match each block's exact argument count and use only valid enum members (e.g. Button.A, IconNames.Heart)."
+    ];
+
+    // Hard exclusions: each line removes a construct the MakeCode decompiler cannot
+    // represent as a block. Kept tight so the list stays load-bearing, not decorative.
+    const BLOCK_UNSAFE_RULES = [
+      "Arrow functions (=>), ternary (? :), destructuring, spread/rest (...).",
+      "const or var (always use let).",
+      "Template-string interpolation (`${ }`). Backtick image literals img`...`, showLeds(`...`) and createImage(`...`) ARE allowed: they are a MakeCode compiler feature, not string templates.",
+      "Optional chaining (?.), nullish coalescing (??), for...in loops.",
+      "import/export, async/await/Promise, yield, eval, classes, interfaces, type aliases, enums, generics.",
+      "Higher-order array methods (map/filter/reduce/forEach/find/some/every).",
+      "randint(...) (use options._pickRandom() instead).",
+      "null, undefined, casts (as), and bitwise operators (| & ^ << >> >>>) with their compound assignments.",
+      "setTimeout, setInterval, console, comments, markdown fences, or any prose outside the JSON.",
+      "Returning a value from a callback/handler, optional or default parameters in your own functions, and assignment operators other than =, +=, -=."
+    ];
+
+    const OUTPUT_FORMAT_RULES = [
+      "Return ONLY one compact JSON object: {\"feedback\":[\"short note\"],\"code\":\"MakeCode Static TypeScript with \\\\n escapes\"}.",
+      "feedback is an array of one or more short, friendly strings.",
+      "code is MakeCode Static TypeScript encoded as a JSON string: newlines as escaped \\n, straight quotes, ASCII only, no markdown fences, no comments.",
+      "If PAGE_ERRORS are provided, treat them as failing diagnostics and fix every one of them.",
+      "If CONVERSION_DIALOG is provided, rewrite the code so MakeCode can convert it back to Blocks."
+    ];
+
+    function buildFewShotExample(config) {
+      const response = JSON.stringify({
+        feedback: Array.isArray(config.feedback) ? config.feedback : [],
+        code: config.example || ""
+      });
+      return "USER_REQUEST: " + String(config.request || "") + "\nRESPONSE: " + response;
+    }
+
+    // Shared system-prompt builder for both Managed and BYOK paths. Structured as
+    // Identity -> Capabilities -> Constraints -> Format with the prime directive at
+    // the top and a single load-bearing rule repeated at the very end, because
+    // models attend most strongly to the first and last lines of a long prompt.
+    function buildSystemPrompt(target, options = {}) {
+      const { conversational = false } = options;
+      const targetKey = TARGET_API_CATALOG[target] ? target : "microbit";
+      const config = TARGET_API_CATALOG[targetKey];
+      const targetPromptExtras = buildTargetPromptExtras(targetKey);
+
+      const lines = [];
+
+      // 1. Identity + prime directive (front anchor)
+      lines.push(conversational
+        ? "ROLE: You are a friendly Microsoft MakeCode assistant helping a student build a " + config.name + " project. Be encouraging, brief, and conversational."
+        : "ROLE: You are a Microsoft MakeCode assistant for " + config.name + ".");
+      lines.push("PRIME DIRECTIVE: Output ONLY MakeCode Static TypeScript that the MakeCode decompiler converts to BLOCKS for " + config.name + " with ZERO errors. Every line must map to a block; if a feature has no block equivalent, do not use it.");
+
+      // 2. Capabilities (grounding)
+      lines.push("", "AVAILABLE APIS (use " + config.name + " APIs only, never mix in another target's APIs):", config.apis);
+      if (targetPromptExtras.length) lines.push(...targetPromptExtras);
+
+      // 3. Constraints (positive guidance first, then forbidden constructs)
+      lines.push("", "WRITE BLOCK-SAFE CODE:");
+      lines.push(...BLOCK_SAFE_DO_RULES.map((rule) => "- " + rule));
+      lines.push("", "NEVER USE (these break Blocks conversion):");
+      lines.push(...BLOCK_UNSAFE_RULES.map((rule) => "- " + rule));
+
+      if (conversational) {
+        lines.push("", "CONVERSATION: If RECENT_CHAT is provided, use only that recent context. Treat CURRENT_CODE as the source of truth for project state. If CURRENT_CODE is truncated, make conservative edits and preserve existing patterns.");
+      }
+
+      // 4. Output contract
+      lines.push("", "OUTPUT FORMAT:");
+      lines.push(...OUTPUT_FORMAT_RULES.map((rule) => "- " + rule));
+
+      // Few-shot demonstration of the full request -> response contract
+      lines.push("", "EXAMPLE (" + config.name + " request -> response):", buildFewShotExample(config));
+
+      // End anchor (recency): repeat the single rule that must always hold
+      lines.push("", "FINAL RULE: Reply with only the JSON object {\"feedback\":[...],\"code\":\"...\"} and no other text. If unsure, return a minimal program guaranteed to decompile to Blocks for " + config.name + ".");
+
+      return lines.join("\n");
+    }
+
     function validateBlocksCompatibility(code, target) {
       const rules = [
         { re: /=>/g, why: "arrow functions" },
@@ -2810,6 +2987,56 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       ].join("\n");
     }
 
+    // Maps validator findings to concrete, positively-framed corrective actions so a
+    // retry tells the model how to fix the code rather than only what was wrong.
+    const VIOLATION_FIX_HINTS = [
+      { match: /arrow function/i, hint: "replace => callbacks with function () { } handlers" },
+      { match: /template string/i, hint: "build strings with \"text\" + value instead of `${ }`" },
+      { match: /higher-order array/i, hint: "loop with for (let item of list) instead of map/filter/forEach" },
+      { match: /for-loop|for\.\.\.in/i, hint: "use for (let i = 0; i < limit; i++)" },
+      { match: /randint/i, hint: "use options._pickRandom() for random choices" },
+      { match: /without initializer/i, hint: "give every let an initial value, e.g. let x = 0" },
+      { match: /nested event|non-top-level/i, hint: "move event handlers and functions to the top level" },
+      { match: /enum member/i, hint: "use only valid enum members such as Button.A or IconNames.Heart" },
+      { match: /arity/i, hint: "match each block's exact argument count" },
+      { match: /Arcade APIs|micro:bit APIs|other target/i, hint: "use only APIs for the selected target" },
+      { match: /optional\/default parameters/i, hint: "remove optional or default parameters from your functions" },
+      { match: /assignment operators/i, hint: "use only =, += or -= in statements" },
+      { match: /bitwise/i, hint: "avoid bitwise operators (| & ^ << >>)" },
+      { match: /class|interface|type|generic/i, hint: "remove TypeScript classes, interfaces, types and generics" },
+      { match: /comment/i, hint: "remove all comments" },
+      { match: /non-ASCII/i, hint: "use plain ASCII characters and straight quotes" }
+    ];
+
+    function buildCorrectionInstruction(violations, target, options = {}) {
+      const { strict = false } = options;
+      const list = (Array.isArray(violations) ? violations : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+      const targetName = resolveTargetConfig(target).name;
+
+      const hints = [];
+      const seenHints = new Set();
+      for (const violation of list) {
+        for (const { match, hint } of VIOLATION_FIX_HINTS) {
+          if (match.test(violation) && !seenHints.has(hint)) {
+            seenHints.add(hint);
+            hints.push(hint);
+          }
+        }
+      }
+
+      const parts = [strict
+        ? "STRICT MODE: your previous code still will not decompile to Blocks for " + targetName + "."
+        : "Your previous code will not decompile to Blocks for " + targetName + "."];
+      if (list.length) parts.push("Problems: " + list.join(", ") + ".");
+      if (hints.length) parts.push("Fix by: " + hints.join("; ") + ".");
+      parts.push(strict
+        ? "Return a smaller program that uses only block-safe " + targetName + " constructs, as JSON only."
+        : "Return corrected, fully block-safe " + targetName + " code as JSON only.");
+      return parts.join(" ");
+    }
+
     function extractGeminiText(response) {
       try {
         if (!response) return "";
@@ -2839,6 +3066,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       parseModelOutput,
       validateBlocksCompatibility,
       buildTargetPromptExtras,
+      buildSystemPrompt,
+      buildCorrectionInstruction,
       stubForTarget,
       extractGeminiText,
     };
@@ -2848,31 +3077,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   let BASE_TEMP = 0.1;
   let MAXTOK = 3072;
 
-  const sysFor = (target) => {
-    const { namespaceList, targetName } = resolvePromptTargetContext(target);
-    const targetPromptExtras = buildTargetPromptExtras(target);
-    return [
-      "ROLE: You are a friendly Microsoft MakeCode assistant helping a student build a " + targetName + " project. You are having a conversation – be helpful, brief, and encouraging.",
-      "HARD REQUIREMENT: Return ONLY Microsoft MakeCode Static JavaScript that the MakeCode decompiler can convert to BLOCKS for " + targetName + " with ZERO errors.",
-      "CONVERSATION CONTEXT: If RECENT_CHAT is provided, use only that recent context. Treat CURRENT_CODE as the source of truth for project state.",
-      "CONTEXT LIMITS: CURRENT_CODE may include a truncation note if the project is large. When truncated, make conservative edits and preserve existing patterns.",
-      "RESPONSE FORMAT (required): Return ONLY compact JSON with keys feedback and code.",
-      "FORMAT DETAILS: {\"feedback\":[\"short note\"],\"code\":\"MakeCode Static TypeScript with \\\\n escapes\"}.",
-      "FEEDBACK RULE: feedback must be an array with at least one short string.",
-      "CODE RULE: code must be MakeCode Static TypeScript encoded as a JSON string (use escaped \\n for new lines, no markdown fences).",
-      "NO COMMENTS inside the code.",
-      "ERROR FIXING: If PAGE_ERRORS are provided, treat them as failing diagnostics and prioritise resolving all of them in your output.",
-      "BLOCKS CONVERSION: If CONVERSION_DIALOG is provided, ensure the output can be converted from JavaScript back to Blocks in MakeCode.",
-      "ALLOWED APIS: " + namespaceList + ". Prefer event handlers and forever/update loops.",
-      ...targetPromptExtras,
-      "RANDOMNESS: For random choices, prefer list._pickRandom() from an array of options. Do NOT use randint(...).",
-      "BLOCK-SAFE REQUIREMENTS (hard): no grey JavaScript blocks; every variable declaration must have an initializer; for loops must be exactly for (let i = 0; i < limit; i++) or for (let i = 0; i <= limit; i++); event registrations and function declarations must be top-level; no optional/default params in user-defined functions; callbacks/event handlers must not return a value; do not pass more arguments than block signatures support; statement assignment operators are limited to =, +=, -=.",
-      "FORBIDDEN IN OUTPUT: arrow functions (=>), classes, new constructors, async/await/Promise, import/export, template strings (`), higher-order array methods (map/filter/reduce/forEach/find/some/every), namespaces/modules, enums, interfaces, type aliases, generics, timers (setTimeout/setInterval), console calls, markdown, onstart functions, null, undefined, as-casts, bitwise operators (| & ^ << >> >>>) and bitwise compound assignments.",
-      "TARGET-SCOPE: Use ONLY APIs valid for " + targetName + ". Never mix Arcade APIs into micro:bit/Maker or vice versa.",
-      "STYLE: Straight quotes, ASCII only, use function () { } handlers.",
-      "IF UNSURE: Return a minimal program that is guaranteed to decompile to BLOCKS for " + targetName + ". Code only."
-    ].join("\n");
-  };
+  const sysFor = (target) => buildSystemPrompt(target, { conversational: true });
 
   const MAX_CURRENT_CODE_PROMPT_CHARS = 12000;
   const CURRENT_CODE_TRUNCATION_MARKER = "\n// ... CURRENT_CODE_TRUNCATED ...\n";
@@ -3059,12 +3264,12 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         if (!firstPass.code || !firstPass.code.trim()) return firstPass;
         if (firstPass.validation && firstPass.validation.ok) return firstPass;
         const violations = (firstPass.validation && firstPass.validation.violations) || [];
-        const extra = "Previous code used: " + violations.join(", ") + ". Remove ALL forbidden constructs. Use only " + (target === "arcade" ? "Arcade" : "micro:bit/Maker") + " APIs.";
+        const extra = buildCorrectionInstruction(violations, target, { strict: false });
         return oneAttempt(extra, true).then((secondPass) => {
           throwIfAborted(signal);
           if (secondPass.validation && secondPass.validation.ok) return secondPass;
           const secondViolations = (secondPass.validation && secondPass.validation.violations) || [];
-          const strictExtra = "STRICT MODE: Output a smaller program that fully decompiles to Blocks. Absolutely no: " + secondViolations.join(", ") + ".";
+          const strictExtra = buildCorrectionInstruction(secondViolations, target, { strict: true });
           return oneAttempt(strictExtra, true);
         });
       })
