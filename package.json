@@ -10,6 +10,7 @@
     "build:bookmarklet:byok": "npm run check:compat-core && npm --prefix apps/bookmarklet run build -- --enable-byok",
     "sync:compat-core": "node scripts/sync-compat-core.mjs",
     "check:compat-core": "node scripts/sync-compat-core.mjs --check",
+    "test": "node --test",
     "dev:watch-reload": "node scripts/dev/watch-build-reload.mjs",
     "package": "npm run check:compat-core && npm run build && node scripts/package.mjs",
     "backend:start": "node apps/backend/src/server.mjs",
