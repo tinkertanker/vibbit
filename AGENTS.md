@@ -174,3 +174,14 @@ Secrets for live audits:
 
 - keep in `.env.audit` (gitignored) or process environment variables.
 - template: `.env.audit.example`.
+
+## Cursor Cloud specific instructions
+
+The cloud VM is headless Linux (no GUI Chrome). Dependencies are pre-installed by the startup update script (`npm install`); the `canvas` native dependency installs from a prebuilt binary, so no system libraries are required. Build/test commands are documented above and run as-is.
+
+Service/runtime notes for this environment:
+
+- **Managed backend** (`npm run backend:start`) does NOT auto-load `apps/backend/.env`; it reads only `process.env`. It works with zero config because classroom mode and auto class-code generation are on by default. On startup it logs the student share line (URL + class code) and the admin URL with token — read those from stdout to drive `POST /vibbit/connect` and `/admin`.
+- **Real LLM generation** (managed `/vibbit/generate` or BYOK) needs provider API keys (OpenAI/Gemini/OpenRouter), set via env vars or the `/admin` panel. Without keys you can still verify the full UI flow with `npm run audit:smoke`, which mocks the LLM responses.
+- **Playwright smoke audit** (`npm run audit:smoke`) needs Chromium first: run `npx playwright install chromium` (i.e. `npm run audit:install`). It loads the live `https://makecode.microbit.org/`, so it requires outbound internet. It is the best headless end-to-end check since GUI Chrome / the unpacked-extension and `dev:watch-reload` loops described above are not usable in the cloud VM.
+- Known pre-existing audit gap: smoke check `03b Backend prompt micro:bit guardrails` currently FAILs because `apps/backend/src/runtime.mjs` lacks the `MICRO:BIT BUILT-IN ICON/ENUM RULES` / `MICRO:BIT BLOCKS-TEST STYLE EXAMPLES` strings that `work.js` has. All UI generation checks pass — do not assume a code change broke the audit if only `03b` fails.
