@@ -174,3 +174,53 @@ Secrets for live audits:
 
 - keep in `.env.audit` (gitignored) or process environment variables.
 - template: `.env.audit.example`.
+
+## Cursor Cloud specific instructions
+
+Cloud agent environment configuration lives in `.cursor/environment.json` and `.cursor/Dockerfile`. On startup, Cursor runs `npm ci && npm run audit:install` to hydrate Node dependencies and Playwright Chromium.
+
+### Quick verification after changes
+
+```bash
+npm run check:compat-core
+npm run build
+npm run package
+npm run audit:smoke
+```
+
+Expected artefacts:
+
+- `dist/content-script.js`
+- `dist/manifest.json`
+- `artifacts/vibbit-extension.zip`
+- `output/playwright/audits/<run>/REPORT.md` plus screenshots
+
+### Backend smoke checks
+
+The managed backend starts without a checked-in `.env` file:
+
+```bash
+npm run backend:start
+curl http://localhost:8787/healthz
+```
+
+Use a tmux session for long-running processes such as the backend dev server.
+
+### Cloud vs local browser validation
+
+Playwright smoke audits are the primary automated verification path in cloud agents. They inject the runtime into MakeCode and exercise managed/BYOK UI flows without a full Chrome extension install.
+
+The DevTools MCP + unpacked-extension loop in the sections above is for local desktop testing. In cloud agents, prefer `npm run audit:smoke` (and `npm run audit:live` when secrets are configured) instead of loading `dist/` in Chrome.
+
+### Secrets for live audits
+
+Add these as Cursor Cloud secrets (or export them in the agent shell) when running `npm run audit:live`:
+
+- `AUDIT_BYOK_OPENAI_KEY` / `AUDIT_BYOK_GEMINI_KEY` / `AUDIT_BYOK_OPENROUTER_KEY` (as needed)
+- `AUDIT_MANAGED_BACKEND` / `AUDIT_MANAGED_APP_TOKEN` (for managed live checks)
+
+See `.env.audit.example` for the full list.
+
+### Provider keys for backend live tests
+
+For end-to-end managed generation against a local backend, configure provider keys via `apps/backend/.env` (copy from `apps/backend/.env.example`) or the `/admin` panel after start.
