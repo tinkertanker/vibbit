@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  buildTargetPromptExtras,
+  buildCorrectionInstruction,
+  buildSystemPrompt,
   buildUserPrompt,
   extractGeminiText,
   normaliseFeedback,
@@ -546,147 +547,6 @@ function withTimeout(promise, timeoutMs) {
   return wrapped;
 }
 
-const TARGET_CONFIGS = {
-  microbit: {
-    name: "micro:bit",
-    apis: [
-      "basic: showNumber(n), showString(s), showIcon(IconNames), showLeds(`...`), showArrow(ArrowNames), clearScreen(), forever(handler), pause(ms)",
-      "input: onButtonPressed(Button.A/B/AB, handler), onGesture(Gesture.Shake/Tilt/..., handler), onPinPressed(TouchPin.P0/P1/P2, handler), buttonIsPressed(Button), temperature(), lightLevel(), acceleration(Dimension.X/Y/Z), compassHeading(), rotation(Rotation), magneticForce(Dimension), runningTime()",
-      "music: playTone(Note, BeatFraction), ringTone(freq), rest(BeatFraction), beat(BeatFraction), tempo(), setTempo(bpm), changeTempoBy(delta)",
-      "led: plot(x,y), unplot(x,y), toggle(x,y), point(x,y), brightness(), setBrightness(n), plotBarGraph(value, high), enable(on)",
-      "radio: sendNumber(n), sendString(s), sendValue(name, n), onReceivedNumber(handler), onReceivedString(handler), setGroup(id), setTransmitPower(n), setTransmitSerialNumber(on)",
-      "game: createSprite(x,y), .move(n), .turn(Direction,degrees), .ifOnEdgeBounce(), .isTouching(other), .isTouchingEdge(), addScore(n), score(), setScore(n), setLife(n), addLife(n), removeLife(n), gameOver(), startCountdown(ms)",
-      "pins: digitalReadPin(DigitalPin), digitalWritePin(DigitalPin,value), analogReadPin(AnalogPin), analogWritePin(AnalogPin,value), servoWritePin(AnalogPin,value), map(value,fromLow,fromHigh,toLow,toHigh), onPulsed(DigitalPin,PulseValue,handler), analogSetPitchPin(AnalogPin), analogPitch(freq,ms)",
-      "images: createImage(`...`), createBigImage(`...`), arrowImage(ArrowNames), iconImage(IconNames)",
-      "serial: writeLine(s), writeNumber(n), writeValue(name,value), readLine(), onDataReceived(delimiter,handler), redirect(tx,rx,rate)",
-      "control: inBackground(handler), reset(), waitMicros(us)",
-      "loops, logic, variables, math, functions, arrays, text (standard language built-ins)"
-    ].join("\n"),
-    example: [
-      "input.onButtonPressed(Button.A, function () {",
-      "    basic.showString(\"Hello\")",
-      "})",
-      "let count = 0",
-      "basic.forever(function () {",
-      "    count += 1",
-      "    basic.showNumber(count)",
-      "    basic.pause(1000)",
-      "})"
-    ].join("\n")
-  },
-  arcade: {
-    name: "Arcade",
-    apis: [
-      "sprites: create(img, SpriteKind), createProjectileFromSprite(img, sprite, vx, vy), onCreated(SpriteKind, handler), onDestroyed(SpriteKind, handler), onOverlap(SpriteKind, SpriteKind, handler), allOfKind(SpriteKind)",
-      "controller: moveSprite(sprite, vx, vy), controller.A.onEvent(ControllerButtonEvent, handler), controller.B.onEvent(ControllerButtonEvent, handler), dx(), dy()",
-      "scene: setBackgroundColor(color), setBackgroundImage(img), cameraFollowSprite(sprite), setTileMapLevel(tilemap), onHitWall(SpriteKind, handler), onOverlapTile(SpriteKind, tile, handler)",
-      "game: onUpdate(handler), onUpdateInterval(ms, handler), splash(title, subtitle?), over(win), reset()",
-      "info: score(), setScore(n), changeScoreBy(n), life(), setLife(n), changeLifeBy(n), startCountdown(s), onCountdownEnd(handler), onLifeZero(handler)",
-      "music: playTone(freq, ms), playMelody(melody, tempo), setVolume(vol)",
-      "effects: spray, fire, warm radial, cool radial, halo, fountain (applied via sprite.startEffect())",
-      "animation: runImageAnimation(sprite, frames, interval, loop), runMovementAnimation(sprite, path, interval, loop)"
-    ].join("\n"),
-    example: [
-      "let mySprite = sprites.create(img`",
-      "    . . . . . . . . . . . . . . . .",
-      "    . . . . . . . . . . . . . . . .",
-      "    . . . . . 7 7 7 7 7 . . . . . .",
-      "    . . . . 7 7 7 7 7 7 7 . . . . .",
-      "    . . . 7 7 7 7 7 7 7 7 7 . . . .",
-      "    . . . . 7 7 7 7 7 7 7 . . . . .",
-      "    . . . . . 7 7 7 7 7 . . . . . .",
-      "    . . . . . . . . . . . . . . . .",
-      "`, SpriteKind.Player)",
-      "controller.moveSprite(mySprite)",
-      "mySprite.setStayInScreen(true)"
-    ].join("\n")
-  },
-  maker: {
-    name: "Maker",
-    apis: [
-      "pins: digitalReadPin(DigitalPin), digitalWritePin(DigitalPin, value), analogReadPin(AnalogPin), analogWritePin(AnalogPin, value), servoWritePin(AnalogPin, value), map(value, fromLow, fromHigh, toLow, toHigh)",
-      "input: onButtonPressed(handler), buttonIsPressed(), temperature(), lightLevel()",
-      "loops: forever(handler), pause(ms)",
-      "music: playTone(freq, ms), ringTone(freq), rest(ms), setTempo(bpm)"
-    ].join("\n"),
-    example: [
-      "let on = false",
-      "loops.forever(function () {",
-      "    on = !(on)",
-      "    if (on) {",
-      "        pins.digitalWritePin(DigitalPin.P0, 1)",
-      "    } else {",
-      "        pins.digitalWritePin(DigitalPin.P0, 0)",
-      "    }",
-      "    loops.pause(500)",
-      "})"
-    ].join("\n")
-  }
-};
-
-function systemPromptFor(target) {
-  const targetKey = TARGET_CONFIGS[target] ? target : "microbit";
-  const config = TARGET_CONFIGS[targetKey];
-  const targetPromptExtras = buildTargetPromptExtras(targetKey);
-
-  return [
-    `You are a Microsoft MakeCode assistant for ${config.name}.`,
-    `Your ONLY job is to produce MakeCode Static TypeScript that the MakeCode editor can decompile into visual BLOCKS for ${config.name}. Every line you output must be representable as a block. If a language feature has no block equivalent, do not use it.`,
-    "",
-    "AVAILABLE APIs:",
-    config.apis,
-    ...targetPromptExtras,
-    "",
-    "BLOCK-COMPATIBLE PATTERNS (use these):",
-    "- Event handlers: input.onButtonPressed(Button.A, function () { })",
-    "- Forever loops: basic.forever(function () { })",
-    "- Variables with let: let x = 0",
-    "- Control flow: if/else, while, for (let i = 0; i < n; i++), for (let v of list)",
-    "- Random choice from a list: options._pickRandom()",
-    "- Named functions: function doSomething() { }",
-    "",
-    "BLOCK-SAFE REQUIREMENTS (hard):",
-    "- No grey JavaScript blocks: every line must map to editable blocks",
-    "- Every variable declaration must have an initializer (let x = ...)",
-    "- For loops must be exactly: for (let i = 0; i < limit; i++) or for (let i = 0; i <= limit; i++)",
-    "- Event registrations and function declarations must be top-level",
-    "- Do not use optional/default parameters in user-defined functions",
-    "- Do not return a value inside callbacks/event handlers",
-    "- Do not pass more arguments than a block signature supports",
-    "- In statements, assignment operators are limited to =, +=, -=",
-    "",
-    "AVOID (these won't decompile to blocks):",
-    "- Arrow functions (=>), ternary (? :), destructuring, spread/rest (...)",
-    "- const, var (use let for all variables)",
-    "- Template literals for strings (use \"string\" + variable, not `${}`). Exception: backtick image literals like img`...` and showLeds(`...`) ARE allowed — these are a special MakeCode compiler feature, not string templates.",
-    "- Optional chaining (?.), nullish coalescing (??)",
-    "- for...in loops",
-    "- import/export, async/await, yield, eval",
-    "- Classes, interfaces, type aliases, enums, generics in user code",
-    "- Higher-order array methods (map/filter/reduce/forEach)",
-    "- randint(...) (use list._pickRandom() for random selections)",
-    "- null, undefined, casts (as), bitwise operators (| & ^ << >> >>>), bitwise compound assignments",
-    "- setTimeout, setInterval, console, Promise",
-    "- Comments, markdown fences, prose after code",
-    "",
-    "RESPONSE FORMAT:",
-    "- Return ONLY a JSON object with this exact shape:",
-    "- {\"feedback\":[\"short note\"],\"code\":\"MakeCode Static TypeScript with \\\\n escapes\"}",
-    "- feedback must be an array of one or more short strings",
-    "- code must be MakeCode Static TypeScript encoded as a JSON string (use escaped \\n for new lines, no markdown fences)",
-    "- Straight quotes, ASCII only, function () { } handlers",
-    "- If PAGE_ERRORS are provided, treat them as failing diagnostics and prioritise resolving all of them",
-    "- If CONVERSION_DIALOG is provided, ensure the output converts from JavaScript back to Blocks in MakeCode",
-    "",
-    `TARGET SCOPE: Use ONLY ${config.name} APIs listed above. Never mix APIs from other targets.`,
-    "",
-    "EXAMPLE:",
-    config.example,
-    "",
-    `If unsure about an API, return a minimal working program for ${config.name}.`
-  ].join("\n");
-}
-
 function userPromptFor(request, currentCode, pageErrors, conversionDialog) {
   return buildUserPrompt({
     request,
@@ -776,7 +636,7 @@ async function callGemini(key, model, system, user, signal) {
 async function generateManaged({ target, request, currentCode, pageErrors, conversionDialog, provider, model }, runtimeConfig, providerConfig) {
   const selected = resolveProviderSelection(providerConfig || runtimeConfig.providerConfig, provider, model);
 
-  const system = systemPromptFor(target);
+  const system = buildSystemPrompt(target);
   const user = userPromptFor(request, currentCode || "", pageErrors || [], conversionDialog || null);
   const callProvider = async (systemPrompt) => withTimeout(async (signal) => {
     if (selected.provider === "openai") return callOpenAI(selected.key, selected.model, systemPrompt, user, signal);
@@ -804,9 +664,7 @@ async function generateManaged({ target, request, currentCode, pageErrors, conve
 
   for (let i = 0; i < runtimeConfig.validationRetries && result.code && result.code.trim() && result.validation && !result.validation.ok; i++) {
     const violations = result.validation.violations || [];
-    const extra = i === 0
-      ? ("Previous code used: " + violations.join(", ") + ". Remove ALL forbidden constructs and return fully Blocks-compatible code.")
-      : ("STRICT MODE: Output a smaller program that fully decompiles to Blocks. Absolutely no: " + violations.join(", ") + ".");
+    const extra = buildCorrectionInstruction(violations, target, { strict: i > 0 });
     result = await oneAttempt(extra, true);
   }
 
