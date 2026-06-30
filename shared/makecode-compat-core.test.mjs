@@ -38,6 +38,26 @@ test("system prompt grounds the model in target-specific APIs only", () => {
   assert.ok(!/onstart functions/i.test(microbit));
 });
 
+test("block-safe examples stay within each target's API surface", () => {
+  const microbit = buildSystemPrompt("microbit");
+  const arcade = buildSystemPrompt("arcade");
+  const maker = buildSystemPrompt("maker");
+  const blockSafe = (prompt) => {
+    const start = prompt.indexOf("WRITE BLOCK-SAFE CODE:");
+    const end = prompt.indexOf("NEVER USE");
+    return prompt.slice(start, end);
+  };
+  assert.ok(blockSafe(microbit).includes("input.onButtonPressed"));
+  assert.ok(blockSafe(microbit).includes("basic.onStart"));
+  assert.ok(!blockSafe(microbit).includes("game.onUpdate"));
+  assert.ok(blockSafe(arcade).includes("game.onUpdate"));
+  assert.ok(!blockSafe(arcade).includes("input.onButtonPressed"));
+  assert.ok(!blockSafe(arcade).includes("basic.forever"));
+  assert.ok(blockSafe(maker).includes("loops.forever"));
+  assert.ok(!blockSafe(maker).includes("game.onUpdate"));
+  assert.ok(!blockSafe(maker).includes("basic.forever"));
+});
+
 test("conversational option toggles chat guidance without changing the contract", () => {
   const managed = buildSystemPrompt("microbit");
   const byok = buildSystemPrompt("microbit", { conversational: true });
@@ -78,6 +98,19 @@ test("fallback stub is block-safe for its target", () => {
     const result = validateBlocksCompatibility(stubForTarget(target), target);
     assert.ok(result.ok, `${target} stub violations: ${result.violations.join(", ")}`);
   }
+});
+
+test("basic.onStart must be top-level on micro:bit", () => {
+  const nested = [
+    "input.onButtonPressed(Button.A, function () {",
+    "    basic.onStart(function () {",
+    "        basic.showString(\"Hi\")",
+    "    })",
+    "})"
+  ].join("\n");
+  const result = validateBlocksCompatibility(nested, "microbit");
+  assert.equal(result.ok, false);
+  assert.ok(result.violations.includes("nested event registration"));
 });
 
 test("correction instruction turns violations into actionable fixes", () => {

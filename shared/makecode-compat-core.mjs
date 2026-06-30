@@ -337,6 +337,7 @@ const MICROBIT_CALL_SIGNATURES = [
   { call: "basic.showArrow", minArgs: 1, maxArgs: 2 },
   { call: "basic.clearScreen", minArgs: 0, maxArgs: 0 },
   { call: "basic.forever", minArgs: 1, maxArgs: 1 },
+  { call: "basic.onStart", minArgs: 1, maxArgs: 1 },
   { call: "basic.pause", minArgs: 1, maxArgs: 1 },
   { call: "input.onButtonPressed", minArgs: 2, maxArgs: 2 },
   { call: "input.onGesture", minArgs: 2, maxArgs: 2 },
@@ -887,17 +888,37 @@ function resolveTargetConfig(target) {
   return TARGET_API_CATALOG[target] || TARGET_API_CATALOG.microbit;
 }
 
-// Positive, affirmative guidance ("do this") attended first; the model anchors
-// on the patterns it should imitate before reading the forbidden list.
-const BLOCK_SAFE_DO_RULES = [
-  "Use event handlers and loops, e.g. input.onButtonPressed(Button.A, function () { }), basic.forever(function () { }), game.onUpdate(function () { }).",
-  "Declare every variable with let and an initial value, e.g. let score = 0.",
-  "Write for loops exactly as for (let i = 0; i < limit; i++) or for (let i = 0; i <= limit; i++); walk a list with for (let item of list).",
-  "Keep event registrations and function declarations at the top level, never nested inside another handler.",
-  "Pick a random item with options._pickRandom() from an array of choices.",
-  "Join strings with \"text\" + value, and pass function () { } for every handler.",
-  "Match each block's exact argument count and use only valid enum members (e.g. Button.A, IconNames.Heart)."
-];
+// Target-specific positive examples so each prompt never cites APIs from another
+// platform (e.g. Arcade must not see basic.forever or input.onButtonPressed).
+function buildBlockSafeDoRules(target) {
+  const targetKey = TARGET_API_CATALOG[target] ? target : "microbit";
+  const common = [
+    "Declare every variable with let and an initial value, e.g. let score = 0.",
+    "Write for loops exactly as for (let i = 0; i < limit; i++) or for (let i = 0; i <= limit; i++); walk a list with for (let item of list).",
+    "Keep event registrations and function declarations at the top level, never nested inside another handler.",
+    "Pick a random item with options._pickRandom() from an array of choices.",
+    "Join strings with \"text\" + value, and pass function () { } for every handler."
+  ];
+  if (targetKey === "arcade") {
+    return [
+      "Use event handlers and loops, e.g. controller.A.onEvent(ControllerButtonEvent.Pressed, function () { }), game.onUpdate(function () { }).",
+      "Match each block's exact argument count and use only valid Arcade enums (e.g. SpriteKind.Player, ControllerButtonEvent.Pressed).",
+      ...common
+    ];
+  }
+  if (targetKey === "maker") {
+    return [
+      "Use event handlers and loops, e.g. input.onButtonPressed(function () { }), loops.forever(function () { }).",
+      "Match each block's exact argument count and use only valid Maker enums (e.g. DigitalPin.P0).",
+      ...common
+    ];
+  }
+  return [
+    "Use event handlers and loops, e.g. input.onButtonPressed(Button.A, function () { }), basic.forever(function () { }), basic.onStart(function () { }).",
+    "Match each block's exact argument count and use only valid enum members (e.g. Button.A, IconNames.Heart).",
+    ...common
+  ];
+}
 
 // Hard exclusions: each line removes a construct the MakeCode decompiler cannot
 // represent as a block. Kept tight so the list stays load-bearing, not decorative.
@@ -954,7 +975,7 @@ export function buildSystemPrompt(target, options = {}) {
 
   // 3. Constraints (positive guidance first, then forbidden constructs)
   lines.push("", "WRITE BLOCK-SAFE CODE:");
-  lines.push(...BLOCK_SAFE_DO_RULES.map((rule) => "- " + rule));
+  lines.push(...buildBlockSafeDoRules(targetKey).map((rule) => "- " + rule));
   lines.push("", "NEVER USE (these break Blocks conversion):");
   lines.push(...BLOCK_UNSAFE_RULES.map((rule) => "- " + rule));
 
@@ -1000,7 +1021,7 @@ export function validateBlocksCompatibility(code, target) {
     /(^|[^|])\|([^|=]|$)/m,
     /(^|[^&])&([^&=]|$)/m
   ];
-  const eventRegistrationRe = /\b(?:basic\.forever|loops\.forever|input\.on[A-Z_a-z0-9_]*|radio\.on[A-Z_a-z0-9_]*|pins\.on[A-Z_a-z0-9_]*|controller\.[A-Z_a-z0-9_]*\.onEvent|controller\.on[A-Z_a-z0-9_]*|sprites\.on[A-Z_a-z0-9_]*|scene\.on[A-Z_a-z0-9_]*|game\.on[A-Z_a-z0-9_]*|info\.on[A-Z_a-z0-9_]*|control\.inBackground)\s*\(/;
+  const eventRegistrationRe = /\b(?:basic\.forever|basic\.onStart|loops\.forever|input\.on[A-Z_a-z0-9_]*|radio\.on[A-Z_a-z0-9_]*|pins\.on[A-Z_a-z0-9_]*|controller\.[A-Z_a-z0-9_]*\.onEvent|controller\.on[A-Z_a-z0-9_]*|sprites\.on[A-Z_a-z0-9_]*|scene\.on[A-Z_a-z0-9_]*|game\.on[A-Z_a-z0-9_]*|info\.on[A-Z_a-z0-9_]*|control\.inBackground)\s*\(/;
 
   if ((target === "microbit" || target === "maker") && /sprites\.|controller\.|scene\.|game\.onUpdate/i.test(code)) {
     return { ok: false, violations: ["Arcade APIs in micro:bit/Maker"] };
