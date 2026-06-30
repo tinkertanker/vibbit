@@ -1,0 +1,10 @@
+{
+  "$schema": "https://cursor.com/schemas/environment.schema.json",
+  "name": "Vibbit",
+  "user": "ubuntu",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "install": "npm ci && npm run audit:install"
+}
