@@ -7,6 +7,14 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
+import { detectRequiredExtensions, extensionDependencies } from "./makecode-compat-core.mjs";
+
+// Extension packages are resolved over the network by the pxt service. When a
+// classroom is offline (or a package is unreachable) we must degrade to a probe
+// without them rather than fail every extension program. Set
+// VIBBIT_DECOMPILE_EXTENSIONS=0 to disable extension resolution entirely.
+const EXTENSIONS_ENABLED = String(process.env.VIBBIT_DECOMPILE_EXTENSIONS || "1") !== "0";
+
 const PINS = JSON.parse(
   readFileSync(new URL("./makecode-pins.json", import.meta.url), "utf8")
 );
@@ -178,11 +186,11 @@ async function serviceFor(target) {
   return packed;
 }
 
-function projectFiles(pin, code, blocksXml) {
+function projectFiles(pin, code, blocksXml, extraDependencies) {
   return {
     "pxt.json": JSON.stringify({
       name: "vibbit-decompile",
-      dependencies: pin.dependencies,
+      dependencies: Object.assign({}, pin.dependencies, extraDependencies || {}),
       files: ["main.ts", "main.blocks"]
     }),
     "main.ts": String(code || ""),
@@ -215,9 +223,15 @@ function failReason({ compileOk, decompileOk, greyBlocks, blocksXml }) {
   return "MakeCode validation failed.";
 }
 
-async function compileAndDecompileUnlocked({ code, target }) {
+async function compileAndDecompileUnlocked({ code, target, extensions }) {
   const { ls, pin } = await serviceFor(target);
-  const files = projectFiles(pin, code, EMPTY_BLOCKS);
+  // Without the package in pxt.json, neopixel/sonar/blehid code fails to
+  // compile and every extension program would be rejected by our own probe.
+  const extensionIds = EXTENSIONS_ENABLED
+    ? (Array.isArray(extensions) ? extensions : detectRequiredExtensions(code, "", target))
+    : [];
+  const extraDependencies = extensionDependencies(extensionIds);
+  const files = projectFiles(pin, code, EMPTY_BLOCKS, extraDependencies);
   await ls.setProjectTextAsync(files);
   const opts = await compileOptions(ls, pin, files);
   const compile = ls.performOperationAsync("compile", { options: opts });
@@ -241,7 +255,7 @@ async function compileAndDecompileUnlocked({ code, target }) {
   let roundTripOk = null;
   if (decompileOk && blocksXml) {
     try {
-      const roundFiles = projectFiles(pin, code, blocksXml);
+      const roundFiles = projectFiles(pin, code, blocksXml, extraDependencies);
       await ls.setProjectTextAsync(roundFiles);
       const roundOpts = await compileOptions(ls, pin, roundFiles);
       const roundCompile = ls.performOperationAsync("compile", { options: roundOpts });
@@ -276,6 +290,7 @@ async function compileAndDecompileUnlocked({ code, target }) {
       compileJsSha256: compileJs ? sha256(compileJs) : null
     },
     roundTripOk,
+    extensions: extensionIds,
     reason: ok ? "" : failReason({ compileOk, decompileOk, greyBlocks, blocksXml })
   };
 }

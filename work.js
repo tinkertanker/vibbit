@@ -2067,6 +2067,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     parseModelOutput,
     validateBlocksCompatibility,
     buildTargetPromptExtras,
+    MICROBIT_EXTENSIONS,
+    detectRequiredExtensions,
+    extensionDependencies,
+    buildExtensionPromptExtras,
     buildSystemPrompt,
     buildCorrectionInstruction,
     stubForTarget,
@@ -2876,6 +2880,223 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       return violations;
     }
 
+
+    // ── micro:bit extension registry ──────────────────────────────────────────
+    // Each entry describes a MakeCode package that is NOT part of the core target.
+    // Code using these APIs will not compile unless the package is a project
+    // dependency, so the registry drives three things at once: prompt grounding,
+    // static validation, and the dependency set used by the live decompile probe.
+    //
+    // `pkg` is what goes into pxt.json dependencies. Third-party packages use the
+    // github:owner/repo#tag form and MUST be pinned to a tag, never to a branch.
+    const MICROBIT_EXTENSIONS = Object.freeze({
+      neopixel: {
+        id: "neopixel",
+        label: "NeoPixel",
+        pkg: "neopixel",
+        docs: "https://makecode.microbit.org/pkg/microsoft/pxt-neopixel",
+        // Detects use in generated code.
+        detect: /\bneopixel\s*\./,
+        // Detects intent in a natural-language request (prompt injection trigger).
+        intent: /\b(neo\s?pixel|ws2812|led strip|light strip|addressable led|rgb strip)\b/i,
+        apis: [
+          "neopixel.create(DigitalPin, numLeds, NeoPixelMode) -> Strip",
+          "strip.show(), strip.clear(), strip.setBrightness(0-255), strip.rotate(offset)",
+          "strip.setPixelColor(index, rgb), strip.showColor(rgb), strip.showRainbow(low, high)",
+          "neopixel.colors(NeoPixelColors.Red), neopixel.rgb(r, g, b), neopixel.hsl(h, s, l)",
+          "strip.range(start, length) -> Strip, strip.length()"
+        ],
+        enums: {
+          NeoPixelColors: ["Red", "Orange", "Yellow", "Green", "Blue", "Indigo", "Violet", "Purple", "White", "Black"],
+          NeoPixelMode: ["RGB", "RGBW", "RGB_RGB"]
+        },
+        signatures: [
+          { call: "neopixel.create", minArgs: 3, maxArgs: 3 },
+          { call: "neopixel.colors", minArgs: 1, maxArgs: 1 },
+          { call: "neopixel.rgb", minArgs: 3, maxArgs: 3 },
+          { call: "neopixel.hsl", minArgs: 3, maxArgs: 3 }
+        ],
+        rules: [
+          "Create the strip once as a top-level variable: let strip = neopixel.create(DigitalPin.P1, 8, NeoPixelMode.RGB). Never create it inside a handler or a loop.",
+          "Colour changes are not visible until strip.show() is called.",
+          "Pixel indexes start at 0 and stop at numLeds - 1."
+        ],
+        example: [
+          "let strip = neopixel.create(DigitalPin.P1, 8, NeoPixelMode.RGB)",
+          "input.onButtonPressed(Button.A, function () {",
+          "    strip.showColor(neopixel.colors(NeoPixelColors.Red))",
+          "    strip.show()",
+          "})"
+        ].join("\n")
+      },
+      sonar: {
+        id: "sonar",
+        label: "Sonar (HC-SR04)",
+        pkg: "sonar",
+        docs: "https://makecode.microbit.org/pkg/microsoft/pxt-sonar",
+        detect: /\bsonar\s*\./,
+        intent: /\b(sonar|ultrasonic|hc-?sr04|distance sensor|range finder|rangefinder)\b/i,
+        apis: [
+          "sonar.ping(trig: DigitalPin, echo: DigitalPin, unit: PingUnit) -> number",
+          "sonar.ping(trig, echo, unit, maxCmDistance) -> number"
+        ],
+        enums: { PingUnit: ["Centimeters", "Inches", "MicroSeconds"] },
+        signatures: [{ call: "sonar.ping", minArgs: 3, maxArgs: 4 }],
+        rules: [
+          "trig and echo must be two DIFFERENT pins.",
+          "sonar.ping returns 0 when nothing is in range. Guard readings with if (d > 0).",
+          "Poll inside basic.forever with a pause of at least 50 ms between pings."
+        ],
+        example: [
+          "basic.forever(function () {",
+          "    let d = sonar.ping(DigitalPin.P1, DigitalPin.P2, PingUnit.Centimeters)",
+          "    if (d > 0 && d < 10) {",
+          "        basic.showIcon(IconNames.Heart)",
+          "    } else {",
+          "        basic.clearScreen()",
+          "    }",
+          "    basic.pause(100)",
+          "})"
+        ].join("\n")
+      },
+      blehid: {
+        id: "blehid",
+        label: "Bluetooth HID (keyboard/mouse)",
+        // Pinned to a tag on purpose: a maintainer push to main must not break class.
+        pkg: "github:bsiever/microbit-pxt-blehid#v0.3.4",
+        docs: "https://makecode.microbit.org/pkg/bsiever/microbit-pxt-blehid",
+        detect: /\b(keyboard|mouse|media|absmouse)\s*\./,
+        intent: /\b(ble ?hid|bluetooth keyboard|bluetooth mouse|hid|act as a keyboard|control my computer|keypress|send keystrokes)\b/i,
+        apis: [
+          "keyboard.startKeyboardService(), keyboard.sendString(text), keyboard.sendSimultaneousKeys(keys, isDown)",
+          "mouse.startMouseService(), mouse.movePointer(dx, dy), mouse.setButton(MouseButton, isDown)",
+          "media.startMediaService(), media.keyCommand(MediaKey)"
+        ],
+        enums: {},
+        signatures: [
+          { call: "keyboard.startKeyboardService", minArgs: 0, maxArgs: 0 },
+          { call: "keyboard.sendString", minArgs: 1, maxArgs: 1 },
+          { call: "mouse.startMouseService", minArgs: 0, maxArgs: 0 },
+          { call: "mouse.movePointer", minArgs: 2, maxArgs: 2 }
+        ],
+        rules: [
+          "micro:bit V2 only. Say so in the feedback so the student checks their board.",
+          "The project must be built with Project Settings > No Pairing Required: Anyone can connect via Bluetooth. Say this in the feedback.",
+          "Call the start...Service() function ONCE as a top-level statement, then basic.pause(500) before sending anything.",
+          "The host computer must pair with the micro:bit before keystrokes arrive."
+        ],
+        example: [
+          "keyboard.startKeyboardService()",
+          "basic.pause(500)",
+          "input.onButtonPressed(Button.A, function () {",
+          "    keyboard.sendString(\"hello\")",
+          "})"
+        ].join("\n")
+      }
+    });
+
+    // Servo is deliberately absent: pins.servoWritePin is core micro:bit and needs
+    // no package. Its guidance lives in SERVO_RULES and is injected on intent only.
+    const SERVO_INTENT = /\b(servo|sg90|micro servo|steering|arm|gate|barrier)\b/i;
+    const SERVO_RULES = [
+      "Servos are built in. Use pins.servoWritePin(AnalogPin.P0, angle) with angle between 0 and 180. Do NOT add an extension.",
+      "Continuous rotation servos use pins.servoSetPulse(AnalogPin, micros) instead.",
+      "Give a servo at least 300 ms to reach a position before writing the next angle."
+    ];
+
+    // Hardware rules that produce warnings rather than hard validation failures.
+    // These are the mistakes that actually waste classroom time.
+    const HARDWARE_WARNINGS = [
+      {
+        when: (code) => /neopixel\.create\s*\(\s*DigitalPin\.P0\b/.test(code),
+        warn: "NeoPixel on P0 clashes with the built-in speaker on micro:bit V2. Prefer P1 or P2."
+      },
+      {
+        when: (code) => /pins\.servoWritePin\s*\(\s*AnalogPin\.P0\b/.test(code),
+        warn: "Servo on P0 clashes with the built-in speaker on micro:bit V2. Prefer P1 or P2."
+      },
+      {
+        when: (code) => /\bradio\./.test(code) && !/radio\.setGroup\s*\(/.test(code),
+        warn: "radio is used but radio.setGroup(n) is never called. Every board in the class will hear every message."
+      },
+      {
+        when: (code) => {
+          const calls = code.match(/pins\.servoWritePin\s*\([^,]+,\s*(-?\d+)\s*\)/g) || [];
+          return calls.some((call) => {
+            const value = Number((call.match(/,\s*(-?\d+)\s*\)$/) || [])[1]);
+            return Number.isFinite(value) && (value < 0 || value > 180);
+          });
+        },
+        warn: "Servo angle is outside 0-180. The servo will stall or buzz."
+      },
+      {
+        when: (code) => {
+          const match = code.match(/sonar\.ping\s*\(\s*DigitalPin\.(P\d+)\s*,\s*DigitalPin\.(P\d+)/);
+          return Boolean(match) && match[1] === match[2];
+        },
+        warn: "sonar.ping trig and echo are on the same pin. They must be two different pins."
+      },
+      {
+        when: (code) => /function\s*\([^)]*\)\s*\{[\s\S]*?neopixel\.create\s*\(/.test(code),
+        warn: "neopixel.create looks like it is inside a handler. Create the strip once at the top level."
+      }
+    ];
+
+    function extensionEntries() {
+      return Object.keys(MICROBIT_EXTENSIONS).map((key) => MICROBIT_EXTENSIONS[key]);
+    }
+
+    // Returns the extension ids a piece of code (and/or a request) needs.
+    // `code` is authoritative; `request` only adds intent-based hints so the system
+    // prompt can be primed before any code exists.
+    function detectRequiredExtensions(code, request = "", target = "microbit") {
+      if (target !== "microbit") return [];
+      const codeView = stripNonCodeSegments(String(code || ""));
+      const requestText = String(request || "");
+      const found = new Set();
+      for (const entry of extensionEntries()) {
+        if (entry.detect && entry.detect.test(codeView)) found.add(entry.id);
+        else if (requestText && entry.intent && entry.intent.test(requestText)) found.add(entry.id);
+      }
+      return [...found];
+    }
+
+    // pxt.json dependency fragment for a detected extension set.
+    function extensionDependencies(ids) {
+      const deps = {};
+      for (const id of ids || []) {
+        const entry = MICROBIT_EXTENSIONS[id];
+        if (entry) deps[entry.id] = entry.pkg === entry.id ? "*" : entry.pkg;
+      }
+      return deps;
+    }
+
+    // Prompt grounding for the detected extensions only. Injecting all of them on
+    // every request wastes context and biases the model towards reaching for a
+    // strip when led.plot would do.
+    function buildExtensionPromptExtras(target, requestHint = "", code = "") {
+      if (target !== "microbit") return [];
+      const ids = detectRequiredExtensions(code, requestHint, target);
+      const lines = [];
+      for (const id of ids) {
+        const entry = MICROBIT_EXTENSIONS[id];
+        if (!entry) continue;
+        lines.push("", "EXTENSION - " + entry.label + " (MakeCode package: " + entry.pkg + "):");
+        lines.push("The student MUST add this extension to the project before the code will run. State that in the first feedback line.");
+        lines.push(...entry.apis.map((api) => "- " + api));
+        for (const enumName of Object.keys(entry.enums || {})) {
+          lines.push("- Valid " + enumName + ": " + entry.enums[enumName].map((m) => enumName + "." + m).join(", "));
+        }
+        lines.push(...entry.rules.map((rule) => "- " + rule));
+        lines.push("Worked example:", entry.example);
+      }
+      if (SERVO_INTENT.test(String(requestHint || "")) || /pins\.servo/.test(String(code || ""))) {
+        lines.push("", "SERVO (built into micro:bit, no extension needed):");
+        lines.push(...SERVO_RULES.map((rule) => "- " + rule));
+      }
+      return lines;
+    }
+
     function buildTargetPromptExtras(target) {
       if (target !== "microbit") return [];
       return [
@@ -3050,7 +3271,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     // the top and a single load-bearing rule repeated at the very end, because
     // models attend most strongly to the first and last lines of a long prompt.
     function buildSystemPrompt(target, options = {}) {
-      const { conversational = false } = options;
+      const { conversational = false, requestHint = "", currentCode = "" } = options;
       const targetKey = TARGET_API_CATALOG[target] ? target : "microbit";
       const config = TARGET_API_CATALOG[targetKey];
       const targetPromptExtras = buildTargetPromptExtras(targetKey);
@@ -3066,6 +3287,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       // 2. Capabilities (grounding)
       lines.push("", "AVAILABLE APIS (use " + config.name + " APIs only, never mix in another target's APIs):", config.apis);
       if (targetPromptExtras.length) lines.push(...targetPromptExtras);
+      const extensionExtras = buildExtensionPromptExtras(targetKey, requestHint, currentCode);
+      if (extensionExtras.length) lines.push(...extensionExtras);
 
       // 3. Constraints (positive guidance first, then forbidden constructs)
       lines.push("", "WRITE BLOCK-SAFE CODE:");
@@ -3124,10 +3347,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       );
 
       if ((target === "microbit" || target === "maker") && /sprites\.|controller\.|scene\.|game\.onUpdate/i.test(codeView)) {
-        return { ok: false, violations: ["Arcade APIs in micro:bit/Maker"] };
+        return { ok: false, violations: ["Arcade APIs in micro:bit/Maker"], warnings: [], extensions: [] };
       }
       if (target === "arcade" && (/led\./i.test(codeView) || /radio\./i.test(codeView))) {
-        return { ok: false, violations: ["micro:bit APIs in Arcade"] };
+        return { ok: false, violations: ["micro:bit APIs in Arcade"], warnings: [], extensions: [] };
       }
 
       const violations = [];
@@ -3202,13 +3425,41 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           depth = Math.max(0, depth + opens - closes);
       }
 
+      const warnings = [];
+      const extensions = detectRequiredExtensions(code, "", target);
+
       if (target === "microbit") {
-        violations.push(...validateKnownEnumMembers(code, MICROBIT_ENUM_MEMBER_SETS));
-        violations.push(...validateCallSignatures(code, MICROBIT_CALL_SIGNATURES));
+        // Extension enums and signatures are merged in only when the extension is
+        // actually used, so an unused NeoPixelColors.* elsewhere still fails.
+        const enumSets = Object.assign({}, MICROBIT_ENUM_MEMBER_SETS);
+        const signatures = [...MICROBIT_CALL_SIGNATURES];
+        for (const id of extensions) {
+          const entry = MICROBIT_EXTENSIONS[id];
+          if (!entry) continue;
+          for (const enumName of Object.keys(entry.enums || {})) {
+            enumSets[enumName] = new Set(entry.enums[enumName]);
+          }
+          signatures.push(...(entry.signatures || []));
+        }
+        violations.push(...validateKnownEnumMembers(code, enumSets));
+        violations.push(...validateCallSignatures(code, signatures));
+
+        for (const rule of HARDWARE_WARNINGS) {
+          try {
+            if (rule.when(codeView)) warnings.push(rule.warn);
+          } catch {
+            // A warning heuristic must never take down validation.
+          }
+        }
       }
 
       if (/[^\x09\x0A\x0D\x20-\x7E]/.test(code)) violations.push("non-ASCII characters");
-      return { ok: violations.length === 0, violations: [...new Set(violations)] };
+      return {
+        ok: violations.length === 0,
+        violations: [...new Set(violations)],
+        warnings: [...new Set(warnings)],
+        extensions
+      };
     }
 
     function stubForTarget(target) {
@@ -3544,6 +3795,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       parseModelOutput,
       validateBlocksCompatibility,
       buildTargetPromptExtras,
+      MICROBIT_EXTENSIONS,
+      detectRequiredExtensions,
+      extensionDependencies,
+      buildExtensionPromptExtras,
       buildSystemPrompt,
       buildCorrectionInstruction,
       stubForTarget,
