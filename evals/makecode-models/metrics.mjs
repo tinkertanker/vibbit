@@ -28,12 +28,13 @@ export function wilsonInterval(successes, total, z = 1.96) {
 }
 
 function rate(records, field) {
-  const successes = records.filter((record) => record.evaluation?.[field] === true).length;
+  const measured = records.filter((record) => typeof record.evaluation?.[field] === "boolean");
+  const successes = measured.filter((record) => record.evaluation[field] === true).length;
   return {
     successes,
-    total: records.length,
-    rate: records.length ? successes / records.length : null,
-    wilson95: wilsonInterval(successes, records.length)
+    total: measured.length,
+    rate: measured.length ? successes / measured.length : null,
+    wilson95: wilsonInterval(successes, measured.length)
   };
 }
 
@@ -45,11 +46,19 @@ function summarizeGroup(records) {
     const failureClass = record.evaluation?.failureClass;
     if (failureClass) failureClasses[failureClass] = (failureClasses[failureClass] || 0) + 1;
   }
+  const strictPasses = records.filter((record) => record.evaluation?.strictAutomatedProxyPass === true).length;
+  const knownCosts = finiteValues(cost);
+  const usage = records.map((record) => record.normalizedUsage)
+    .filter((item) => item && Number(item.attemptsWithUsage) > 0);
+  const sumUsage = (field) => usage.reduce((sum, item) => (
+    sum + (Number.isFinite(item[field]) ? item[field] : 0)
+  ), 0);
   return {
     count: records.length,
-    hardPass: rate(records, "hardPass"),
-    harnessPass: rate(records, "harnessPass"),
-    firstAttemptPass: rate(records, "firstAttemptPass"),
+    staticPolicyPass: rate(records, "staticPolicyPass"),
+    automatedProxyPass: rate(records, "automatedProxyPass"),
+    strictAutomatedProxyPass: rate(records, "strictAutomatedProxyPass"),
+    firstAttemptProxyPass: rate(records, "firstAttemptProxyPass"),
     passWithinBudget: rate(records, "passWithinBudget"),
     conditionalRepairSuccess: rate(records.filter((record) => record.evaluation?.repairEligible), "repaired"),
     fallback: rate(records, "fallback"),
@@ -60,7 +69,21 @@ function summarizeGroup(records) {
     },
     costUsd: {
       median: quantile(cost, 0.5),
-      p95: quantile(cost, 0.95)
+      p95: quantile(cost, 0.95),
+      totalKnown: knownCosts.reduce((sum, value) => sum + value, 0),
+      knownRows: knownCosts.length,
+      unknownRows: records.length - knownCosts.length,
+      costPerStrictAutomatedProxyPass: strictPasses > 0 && knownCosts.length === records.length
+        ? knownCosts.reduce((sum, value) => sum + value, 0) / strictPasses
+        : null
+    },
+    tokens: {
+      input: sumUsage("inputTokens"),
+      output: sumUsage("outputTokens"),
+      reasoning: sumUsage("reasoningTokens"),
+      cachedInput: sumUsage("cachedInputTokens"),
+      rowsWithUsage: usage.length,
+      rowsWithoutUsage: records.length - usage.length
     },
     failureClasses
   };
@@ -96,7 +119,7 @@ export function pairedBootstrap(records, iterations = 2000) {
         if (record.model !== left && record.model !== right) continue;
         const key = `${record.caseId || record.case?.id || "unknown"}:${record.repetition || 0}`;
         if (!byPair.has(key)) byPair.set(key, {});
-        byPair.get(key)[record.model] = record.evaluation?.hardPass === true ? 1 : 0;
+        byPair.get(key)[record.model] = record.evaluation?.strictAutomatedProxyPass === true ? 1 : 0;
       }
       const differences = [...byPair.values()]
         .filter((pair) => Number.isFinite(pair[left]) && Number.isFinite(pair[right]))
@@ -115,7 +138,7 @@ export function pairedBootstrap(records, iterations = 2000) {
         left,
         right,
         pairedCases: differences.length,
-        hardPassRateDelta: differences.reduce((sum, value) => sum + value, 0) / differences.length,
+        strictAutomatedProxyPassRateDelta: differences.reduce((sum, value) => sum + value, 0) / differences.length,
         bootstrap95: {
           low: quantile(samples, 0.025),
           high: quantile(samples, 0.975)

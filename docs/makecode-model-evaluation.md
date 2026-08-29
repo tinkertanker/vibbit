@@ -7,7 +7,8 @@ The model sampler and corpus are available now:
 - `evals/makecode-models/corpus.json`: 24 cases across micro:bit, Arcade, and Maker and across eight task categories. Micro:bit is the primary screening target; Arcade and Maker remain cross-target regression checks.
 - `evals/makecode-models/corpus-adversarial.json`: separate source-hierarchy cases with instructions embedded in current code, diagnostics, conversion dialogs, stale chat, and different context positions. Do not mix these into the ordinary quality score.
 - `evals/makecode-models/run.mjs`: exact Vibbit prompt construction, raw one-shot and production `runGenerationLoop` policies, immutable request/candidate/retry trajectories, pinned validation, context/retry ablations, latency, usage, and cost capture.
-- `evals/makecode-models/metrics.mjs`: hard/Harness/first-attempt/budget pass rates, conditional repair, fallback and false-success rates, failure classes, latency/cost quantiles, Wilson intervals, and paired bootstrap model comparisons.
+- `evals/makecode-models/metrics.mjs`: static-policy/automated-proxy/first-attempt/budget pass rates, conditional repair, fallback and false-success rates, failure classes, token/cost totals, latency/cost quantiles, Wilson intervals, and paired bootstrap model comparisons.
+- `evals/makecode-models/compare.mjs`: paired comparison of two completed policy/context/window runs by provider, model, case, and repetition.
 
 The sampler awards 40 contract and prefilter points in `results.jsonl`. A regex cannot establish whether an API exists or code decompiles. The remaining 60 points come from the pinned MakeCode compiler and decompiler in `shared/makecode-decompile.mjs`. Those scores are written to `makecode-validation.jsonl` beside the raw JSONL. The raw file stays immutable.
 
@@ -47,13 +48,13 @@ Each case has conservative required and forbidden patterns. They test explicit s
 
 - **micro:bit:** use the target's `basic`, `input`, and optional `radio` packages, exact enum members, block signatures, and top-level event registrations. A compile fixture that uses radio must include the radio dependency.
 - **Arcade:** use Arcade sprite/controller/scene/game/info APIs and image literals. Accept canonical decompiler normalization, such as a sprite flag replacing a compatibility convenience method; score semantics or Blocks XML rather than textual round-trip identity.
-- **Maker:** pin a board because Maker is a family of hardware packages, not one uniform API. The corpus uses **Adafruit Circuit Playground Express**. Canonical Maker code uses fixed pin objects (`pins.LED.digitalWrite(true)`, `pins.A3.analogRead()`, `pins.A1.servoWrite(90)`), fixed button objects (`input.buttonA.onEvent(ButtonEvent.Click, ...)`), and global `forever`/`pause`. Temperature requires `TemperatureUnit.Celsius`. Pin capabilities and sensor/button packages differ by board.
+- **Maker:** pin a board because Maker is a family of hardware packages, not one uniform API. The corpus uses **Adafruit Circuit Playground Express**. Canonical Maker code uses fixed button objects (`input.buttonA.onEvent(ButtonEvent.Click, ...)`) and global `forever`/`pause`. `pins.LED` and A0–A7 support digital read/write; A0–A2 support analogue output; A1–A7 support analogue input; A1–A2 support servo output. Temperature requires `TemperatureUnit.Celsius`. Pin capabilities and sensor/button packages differ by board.
 
 Vibbit's Maker catalog now uses this same fixed Circuit Playground Express surface. Keep reporting Maker separately because it remains board-specific, not because its prompt is quarantined.
 
 ## Scoring
 
-Score every response out of 100. Use micro:bit results as the primary ranking because that is Vibbit's main target, while retaining separate Arcade and Maker results as regression signals rather than folding them into an equally weighted product decision:
+Score a response out of 100 only when pinned validation is available. Provider/transport failures count as zero; compiler/decompiler infrastructure outages are unmeasured rather than model failures. Macro-average by case so repeated successes or failures do not change case weighting. Use micro:bit results as the primary product signal while retaining separate Arcade and Maker regressions:
 
 | Dimension | Points | Rule |
 |---|---:|---|
@@ -62,32 +63,32 @@ Score every response out of 100. Use micro:bit results as the primary ranking be
 | Prompt/repair adherence | 20 | Pro-rate the case's required and forbidden semantic checks. Review failures before changing patterns. |
 | Target compile | 20 | Pinned target compilation succeeds with no error diagnostics. |
 | TypeScript-to-Blocks decompile | 25 | Decompiler succeeds, emits non-empty `main.blocks`, and has no error diagnostics. |
-| Native Blocks only | 10 | No `typescript_statement` XML and no grey blocks. |
+| Native Blocks only | 10 | No `typescript_statement` or `typescript_expression` XML. |
 | Blocks round trip | 5 | Recompile the emitted Blocks/derived TypeScript successfully without errors. |
 
 The first three dimensions are the harness's **40-point provisional score**. Never rank production candidates on that score alone.
 
-A **hard pass** requires all of the following, regardless of weighted score:
+An **automated proxy pass** requires all of the following, regardless of weighted score:
 
 - successful provider request and non-empty code;
 - strict JSON contract;
 - target compilation;
 - successful decompilation;
-- zero grey/TypeScript-statement blocks;
+- zero grey TypeScript statement/expression blocks;
 - all required and forbidden case criteria;
 - for repair cases, the reported bad construct is absent and intended behaviour remains.
 
 Report:
 
-- macro-average score (each of 24 cases equal weight), overall hard-pass rate, and hard-pass rate by target and category;
+- macro-average score (each of 24 cases equal weight), automated-proxy pass rate, and pass rate by target and category;
 - JSON, compile, decompile, grey-block, unsupported-API, and adherence failure rates separately;
-- median and p95 latency, mean input/output/reasoning tokens, total cost, and cost per hard pass;
+- median and p95 latency, input/output/reasoning token totals, known/unknown cost counts, total known cost, and cost per strict automated-proxy pass when accounting is complete;
 - 95% Wilson intervals for pass rates and paired bootstrap confidence intervals for score/pass-rate differences, resampling by case and repetition;
 - worst-case results. Do not let strong micro:bit results hide a Maker or repair failure.
 
-`summary.json` calculates these policy metrics overall and by model, provider, target, and category. A **Harness pass** follows the permissive production parser and full bounded policy; a **hard pass** additionally requires the strict two-key JSON contract. Keeping both prevents a recoverable formatting miss from being confused with either production failure or perfect model compliance.
+`summary.json` calculates these policy metrics overall and by model, provider, target, and category. `staticPolicyPass` reports the bounded policy and regex checks. `automatedProxyPass` additionally requires pinned compile/decompile/native Blocks. `strictAutomatedProxyPass` additionally requires the strict two-key JSON contract. These names are deliberate: corpus regexes are proxies and can pass semantically wrong programmes (for example, incrementing a counter outside an empty button handler).
 
-Recommended release gate: at least 95% overall hard pass, at least 90% for every target and category, zero JSON-contract failures in the finalist run, and no statistically or practically meaningful regression versus the incumbent. Adjust thresholds only before seeing candidate labels.
+An automated threshold is not a release gate by itself. Pre-register thresholds before unblinding, require no statistically or practically meaningful regression versus the incumbent, and perform blinded semantic review of finalist outputs—especially state/event relationships and adversarial cases—before a model or prompt change can ship.
 
 ## Sampling strategy
 
@@ -101,10 +102,19 @@ Keep system/user prompts, max tokens, temperature, target versions, board, and r
 
 For evidence-gated context changes, compare one variable at a time:
 
-- `--context full|no-recent-chat|no-current-code|no-page-errors`;
-- `--max-current-code-chars N` and `--current-code-window head|middle|tail`;
+- `--context full|no-recent-chat|no-current-code|no-page-errors|no-conversion-dialog` (the two diagnostic ablations are independent);
+- `--max-current-code-chars N` and `--current-code-window production|head|middle|tail`; all strategies use the shared prompt-boundary implementation, and `production` is the 65/35 head+tail policy;
 - `--max-empty-retries N`, `--max-validation-retries N`, and `--max-attempts N`;
-- `--validation pinned|static-only` to quantify what the cheaper static policy misses.
+- `--validation pinned|static-only` controls whether pinned validation participates in Harness retries. Final scoring still runs the pinned oracle once, so static-policy false successes can be measured without enabling that policy in production.
+
+Compare two completed runs without conflating models or cases:
+
+```bash
+node evals/makecode-models/compare.mjs \
+  --left output/model-evals/raw/results.jsonl \
+  --right output/model-evals/harness/results.jsonl \
+  --out comparison.json
+```
 
 Run the adversarial corpus under both raw and Harness policies before adding stronger source-hierarchy prompt language. It is a comparison path, not an automatic production rule stack or prompt-injection classifier.
 
@@ -182,7 +192,7 @@ Results go to ignored `output/model-evals/<provider>-<timestamp>/`:
 
 `--dry-run` still validates the matrix without API calls and without loading a compiler worker.
 
-Secrets are read only from the named environment variable and are never written. `results.jsonl` does contain prompts, current code, diagnostics, recent chat, and raw model output so that trajectories are reproducible; treat it as potentially sensitive local evaluation data and do not use it as production telemetry. OpenRouter currently returns native token accounting and cost in `usage`; for endpoints that omit billed cost, retain token counts and apply a frozen price snapshot during analysis rather than silently using today's price later.
+Secrets are read only from the named environment variable and are never written. Provider failures are persisted only as structured code/status fields; response bodies are not written because an endpoint could echo credentials. `results.jsonl` does contain prompts, current code, diagnostics, recent chat, and successful raw model output so that trajectories are reproducible; treat it as potentially sensitive local evaluation data and do not use it as production telemetry. Both Chat and Responses token schemas are normalized. Missing or null cost remains unknown rather than becoming zero; use a frozen price snapshot when estimating omitted cost.
 
 ## True MakeCode validation
 
@@ -193,7 +203,7 @@ For each JSONL response with code:
 1. Build an isolated in-memory project with `main.ts`, `main.blocks`, and target-specific `pxt.json`. Maker also sets the Circuit Playground Express hardware variant.
 2. Compile through the pinned worker. Require `success` and no error diagnostics.
 3. Decompile `main.ts` with `ast = true` and `errorOnGreyBlocks = true`. Require `success`, no error diagnostics, and non-empty `outfiles["main.blocks"]`.
-4. Independently reject XML containing `<block type="typescript_statement">`.
+4. Independently reject XML containing `typescript_statement` or `typescript_expression` blocks.
 5. Recompile the emitted Blocks when the decompile step succeeded, and record `roundTripOk`. If that step throws, store `null` and award no round-trip points.
 6. Write target/PXT release IDs, diagnostics, output hashes, and grey-block count into `makecode-validation.jsonl`. Leave `results.jsonl` unchanged.
 
@@ -209,7 +219,7 @@ Where direct compiler-worker integration is unavailable, Playwright can load eac
 - `https://arcade.makecode.com/`;
 - `https://maker.makecode.com/` with the pinned board.
 
-Run `npm run audit:editor` for this validation. Its default released-editor fixtures prove native micro:bit, Arcade, and Circuit Playground Express programmes are accepted, a compile-invalid programme is rejected, and grey JavaScript blocks are detected. Pass evaluator JSONL through `--input PATH` (and optionally `--target`) to validate sampled candidates. The existing `npm run audit:smoke` still stubs Monaco/provider calls and is not released-editor evidence.
+Run `npm run audit:editor` for this validation. Each fixture gets a fresh browser context. The audit verifies the submitted `main.ts` model and compile markers, then inspects `getAllBlocks(false)` from the active Blockly workspace—not toolbox/flyout SVG nodes—and rejects both grey block types. Its default fixtures cover native micro:bit, Arcade, the exact Maker fallback, compile rejection, and statement/expression conversion rejection. Pass evaluator JSONL through `--input PATH` (and optionally `--target`) to validate sampled candidates. The existing `npm run audit:smoke` still stubs Monaco/provider calls and is not released-editor evidence.
 
 ## What is automated now vs. deferred
 
@@ -221,12 +231,12 @@ Automated now:
 - Vibbit compatibility prefilter and case criteria;
 - repeated, interleaved sampling for OpenRouter and chat-compatible OpenCode Go/Zen models;
 - separate raw one-shot and exact production Harness-policy runs with complete retry trajectories;
-- context, retry-budget, validation-policy, and head/middle/tail current-code comparison flags;
+- independent context, retry-budget, validation-policy, and production/head/middle/tail current-code comparison flags plus a cross-run paired comparator;
 - an adversarial source-hierarchy corpus kept separate from the ordinary score;
-- hard/Harness/first-attempt/budget pass, conditional repair, fallback, false-success, failure-class, Wilson, and paired-bootstrap metrics;
+- static-policy/automated-proxy/first-attempt/budget pass, conditional repair, fallback, false-success, failure-class, Wilson, and paired-bootstrap metrics;
 - latency, resolved model, token usage, provider cost where supplied, prompt hashes, and model metadata snapshots;
 - pinned target compile and TypeScript-to-Blocks decompile through `shared/makecode-decompile.mjs`;
-- grey-block/`typescript_statement` rejection and optional Blocks round-trip compilation.
+- grey-block statement/expression rejection and optional Blocks round-trip compilation.
 - released-editor conversion checks through `npm run audit:editor`;
 - unpacked-extension credential/arming boundary canaries through `npm run audit:extension`.
 

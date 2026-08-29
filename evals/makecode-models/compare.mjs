@@ -1,0 +1,104 @@
+#!/usr/bin/env node
+
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { quantile } from "./metrics.mjs";
+
+function pairKey(record) {
+  return [
+    record.provider || "unknown",
+    record.model || record.requestedModel || "unknown",
+    record.caseId || "unknown",
+    Number(record.repetition) || 0
+  ].join("\u0000");
+}
+
+function seededRandom(seed = 0x43ab91) {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 0x100000000;
+  };
+}
+
+function bootstrapInterval(deltas, iterations = 2000) {
+  if (!deltas.length) return null;
+  const random = seededRandom();
+  const means = [];
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    let sum = 0;
+    for (let index = 0; index < deltas.length; index += 1) {
+      sum += deltas[Math.floor(random() * deltas.length)];
+    }
+    means.push(sum / deltas.length);
+  }
+  return { low: quantile(means, 0.025), high: quantile(means, 0.975) };
+}
+
+function metric(deltas) {
+  return {
+    pairs: deltas.length,
+    rightMinusLeft: deltas.length
+      ? deltas.reduce((sum, value) => sum + value, 0) / deltas.length
+      : null,
+    bootstrap95: bootstrapInterval(deltas)
+  };
+}
+
+export function compareRuns(leftRecords, rightRecords) {
+  const leftByKey = new Map(leftRecords.map((record) => [pairKey(record), record]));
+  const pairs = rightRecords.map((right) => ({ left: leftByKey.get(pairKey(right)), right }))
+    .filter((pair) => pair.left);
+  const passDeltas = pairs.map(({ left, right }) => (
+    Number(right.evaluation?.strictAutomatedProxyPass === true)
+      - Number(left.evaluation?.strictAutomatedProxyPass === true)
+  ));
+  const scoreDeltas = pairs
+    .filter(({ left, right }) => Number.isFinite(left.totalScore) && Number.isFinite(right.totalScore))
+    .map(({ left, right }) => right.totalScore - left.totalScore);
+  return {
+    schemaVersion: 1,
+    leftRows: leftRecords.length,
+    rightRows: rightRecords.length,
+    pairedRows: pairs.length,
+    strictAutomatedProxyPass: metric(passDeltas),
+    totalScore: metric(scoreDeltas)
+  };
+}
+
+async function readJsonl(filePath) {
+  return (await readFile(path.resolve(filePath), "utf8"))
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+function parseArgs(argv) {
+  const options = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--left") options.left = argv[++index];
+    else if (arg === "--right") options.right = argv[++index];
+    else if (arg === "--out") options.out = argv[++index];
+    else throw new Error(`Unknown argument: ${arg}`);
+  }
+  if (!options.left || !options.right) throw new Error("--left and --right results.jsonl paths are required");
+  return options;
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const comparison = compareRuns(await readJsonl(options.left), await readJsonl(options.right));
+  const output = JSON.stringify(comparison, null, 2) + "\n";
+  if (options.out) await writeFile(path.resolve(options.out), output);
+  else process.stdout.write(output);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}
