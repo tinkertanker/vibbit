@@ -7,12 +7,15 @@ import { pathToFileURL } from "node:url";
 import { quantile } from "./metrics.mjs";
 
 function pairKey(record) {
-  return [
-    record.provider || "unknown",
-    record.model || record.requestedModel || "unknown",
-    record.caseId || "unknown",
-    Number(record.repetition) || 0
-  ].join("\u0000");
+  const provider = typeof record?.provider === "string" ? record.provider.trim() : "";
+  const modelValue = record?.model || record?.requestedModel;
+  const model = typeof modelValue === "string" ? modelValue.trim() : "";
+  const caseId = typeof record?.caseId === "string" ? record.caseId.trim() : "";
+  const repetition = record?.repetition;
+  if (!provider || !model || !caseId || !Number.isInteger(repetition) || repetition < 0) {
+    throw new Error("Comparison rows require provider, model, caseId, and a non-negative integer repetition");
+  }
+  return [provider, model, caseId, repetition].join("\u0000");
 }
 
 function seededRandom(seed = 0x43ab91) {
@@ -62,10 +65,15 @@ export function compareRuns(leftRecords, rightRecords) {
   const rightByKey = indexUnique(rightRecords, "right");
   const pairs = [...rightByKey.entries()].map(([key, right]) => ({ left: leftByKey.get(key), right }))
     .filter(({ left }) => left);
-  const passDeltas = pairs.map(({ left, right }) => (
-    Number(right.evaluation?.strictAutomatedProxyPass === true)
-      - Number(left.evaluation?.strictAutomatedProxyPass === true)
-  ));
+  const passDeltas = pairs
+    .filter(({ left, right }) => (
+      typeof left.evaluation?.strictAutomatedProxyPass === "boolean"
+        && typeof right.evaluation?.strictAutomatedProxyPass === "boolean"
+    ))
+    .map(({ left, right }) => (
+      Number(right.evaluation.strictAutomatedProxyPass)
+        - Number(left.evaluation.strictAutomatedProxyPass)
+    ));
   const scoreDeltas = pairs
     .filter(({ left, right }) => Number.isFinite(left.totalScore) && Number.isFinite(right.totalScore))
     .map(({ left, right }) => right.totalScore - left.totalScore);

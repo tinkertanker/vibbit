@@ -726,19 +726,21 @@ async function main() {
       const provisional = provisionalScore(contract, compatibility, criteria);
       const fallback = String(policyResult.outcome).startsWith("stub-");
       const pinnedAvailable = Boolean(pinned?.report);
-      const makeCodeOk = Boolean(pinned?.report?.ok);
+      const makeCodeOk = pinnedAvailable ? Boolean(pinned.report.ok) : null;
       const staticPolicyPass = !fallback && compatibility.ok && criteria.ok;
-      const automatedProxyPass = staticPolicyPass && makeCodeOk;
-      const strictAutomatedProxyPass = automatedProxyPass && contract.ok;
+      const automatedProxyPass = pinnedAvailable ? staticPolicyPass && makeCodeOk : null;
+      const strictAutomatedProxyPass = pinnedAvailable ? automatedProxyPass && contract.ok : null;
       const firstAttempt = policyResult.attempts[0] || null;
       const firstCriteria = criteriaResult(firstAttempt?.code || "", testCase);
       const firstAttemptProxyPass = firstAttempt?.decompile && !firstAttempt.decompile.skipped
         ? Boolean(firstAttempt.reason === "ok" && firstCriteria.ok && firstAttempt.decompile.ok)
         : null;
       const repairEligible = Boolean(firstAttempt && firstAttempt.reason !== "ok");
-      const repaired = repairEligible && automatedProxyPass;
+      const repaired = repairEligible
+        ? (pinnedAvailable ? automatedProxyPass : null)
+        : false;
       const finalReason = policyResult.attempts[policyResult.attempts.length - 1]?.reason || null;
-      const failureClass = automatedProxyPass
+      const failureClass = automatedProxyPass === true
         ? (contract.ok ? null : "response-contract")
         : (fallback ? `fallback-${finalReason || "unknown"}`
           : (!compatibility.ok ? "compatibility"
@@ -778,7 +780,7 @@ async function main() {
           automatedProxyPass,
           strictAutomatedProxyPass,
           firstAttemptProxyPass,
-          passWithinBudget: automatedProxyPass,
+          passWithinBudget: pinnedAvailable ? automatedProxyPass : null,
           repairEligible,
           repaired,
           fallback,
@@ -804,9 +806,9 @@ async function main() {
         evaluation: record.evaluation,
         error: pinned?.error || null
       });
-      const verdict = strictAutomatedProxyPass
+      const verdict = strictAutomatedProxyPass === true
         ? "STRICT AUTOMATED PROXY PASS"
-        : (automatedProxyPass ? `AUTOMATED PROXY PASS (${failureClass})` : failureClass);
+        : (automatedProxyPass === true ? `AUTOMATED PROXY PASS (${failureClass})` : failureClass);
       console.log(`${policyResult.outcome}, ${policyResult.upstreamAttempts} attempt(s), ${verdict}, ${totals.latencyMs}ms`);
     } catch (error) {
       const totals = providerAttemptTotals(providerAttempts);
@@ -858,6 +860,12 @@ async function main() {
   const validationPath = path.join(runDir, "makecode-validation.jsonl");
   await writeFile(validationPath, validationRecords.map((item) => JSON.stringify(item)).join("\n") + "\n");
   const metrics = summarizeRecords(records);
+  const macroMeanTotalScoreByCandidate = Object.fromEntries(
+    Object.entries(metrics.byCandidate).map(([candidate, candidateMetrics]) => [
+      candidate,
+      candidateMetrics.macroMeanTotalScore
+    ])
+  );
   const summary = {
     schemaVersion: 3,
     createdAt: new Date().toISOString(),
@@ -883,6 +891,7 @@ async function main() {
     successfulRequests: records.filter((item) => item.status === "ok").length,
     errors: records.filter((item) => item.status === "error").length,
     macroMeanTotalScore: metrics.overall.macroMeanTotalScore,
+    macroMeanTotalScoreByCandidate,
     metrics,
     note: "results.jsonl is a local, immutable evaluation capture containing raw prompts, candidates, and retry trajectories; review it as potentially sensitive. Pinned compile/decompile results live in makecode-validation.jsonl.",
     results: "results.jsonl",

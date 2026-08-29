@@ -2,6 +2,7 @@ const BACKEND = "https://vibbit.tk.sg";
 const HOSTED_MANAGED = false;
 const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 const EXTENSION_BUILD = false;
+const EXTENSION_RUNTIME_REVISION = "source";
 
 (function () {
   const existingRuntime = window.__vibbit;
@@ -50,8 +51,7 @@ const EXTENSION_BUILD = false;
   const STORAGE_MANAGED_SESSION = "__vibbit_managed_session";
   const STORAGE_MANAGED_SESSION_EXPIRES = "__vibbit_managed_session_expires";
   const CLASS_CODE_LENGTH = 10;
-  const EXTENSION_REQUEST_EVENT_PREFIX = "__vibbit_extension_request_v2_";
-  const EXTENSION_RESPONSE_EVENT_PREFIX = "__vibbit_extension_response_v2_";
+  // BEGIN_PAGE_BYOK_CONFIG
   const memoryProviderKeys = Object.create(null);
 
   const MODEL_PRESETS = {
@@ -101,6 +101,7 @@ const EXTENSION_BUILD = false;
     if (provider === "opencode") return OPENCODE_THINK_MODELS.has(model);
     return false;
   };
+  // END_PAGE_BYOK_CONFIG
 
   const storageGet = (key) => {
     try {
@@ -125,6 +126,7 @@ const EXTENSION_BUILD = false;
     }
   };
 
+  // BEGIN_PAGE_BYOK_KEY_STATE
   const keyStorageForProvider = (provider) => STORAGE_KEY_PREFIX + (provider || "openai");
 
   const getStoredProviderKey = (provider) => memoryProviderKeys[provider || "openai"] || "";
@@ -140,7 +142,11 @@ const EXTENSION_BUILD = false;
     const legacyKey = keyStorageForProvider(providerName);
     storageRemove(legacyKey);
   }
+  // END_PAGE_BYOK_KEY_STATE
 
+  // BEGIN_EXTENSION_BYOK_BRIDGE
+  const EXTENSION_REQUEST_EVENT_PREFIX = "__vibbit_extension_request_v2_";
+  const EXTENSION_RESPONSE_EVENT_PREFIX = "__vibbit_extension_response_v2_";
   const extensionRequest = (type, payload, signal) => {
     if (!EXTENSION_BUILD) return Promise.reject(new Error("extension_bridge_unavailable"));
     const bridgeToken = String(document.documentElement?.dataset?.vibbitBridgeToken || "");
@@ -207,6 +213,7 @@ const EXTENSION_BUILD = false;
       }));
     });
   };
+  // END_EXTENSION_BYOK_BRIDGE
 
   const bookmarkletConfig = window.__vibbitBookmarkletConfig && typeof window.__vibbitBookmarkletConfig === "object"
     ? window.__vibbitBookmarkletConfig
@@ -289,7 +296,7 @@ const EXTENSION_BUILD = false;
 
     /* mode */
     + '  <div id="setup-mode-row" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Mode</div>'
+    + '    <label for="setup-mode" style="' + S_LABEL + '">Mode</label>'
     + '    <select id="setup-mode" style="' + S_SELECT + '">'
     + '      <option value="byok">Bring your own key</option>'
     + '      <option value="managed">Managed (school account)</option>'
@@ -298,7 +305,7 @@ const EXTENSION_BUILD = false;
 
     /* BYOK: provider */
     + '  <div id="setup-byok-provider" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Provider</div>'
+    + '    <label for="setup-prov" style="' + S_LABEL + '">Provider</label>'
     + '    <select id="setup-prov" style="' + S_SELECT + '">'
     + '      <option value="openai">OpenAI</option>'
     + '      <option value="gemini">Gemini</option>'
@@ -309,13 +316,13 @@ const EXTENSION_BUILD = false;
 
     /* BYOK: model */
     + '  <div id="setup-byok-model" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Model</div>'
+    + '    <label for="setup-model" style="' + S_LABEL + '">Model</label>'
     + '    <select id="setup-model" style="' + S_SELECT + '"></select>'
     + '  </div>'
 
     /* BYOK: API key */
     + '  <div id="setup-byok-key" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">API Key</div>'
+    + '    <label for="setup-key" style="' + S_LABEL + '">API Key</label>'
     + '    <input id="setup-key" type="password" placeholder="Paste your API key" style="' + S_INPUT + '">'
     + '    <div id="setup-key-note" style="font-size:11px;color:#9bb1dd">Kept in memory only; page scripts can observe bookmarklet inputs.</div>'
     + '  </div>'
@@ -323,11 +330,11 @@ const EXTENSION_BUILD = false;
     /* Managed: server URL */
     + '  <div id="setup-managed-server" style="display:none">'
     + '    <div id="setup-managed-server-url" style="display:grid;gap:4px">'
-    + '      <div style="' + S_LABEL + '">Server URL</div>'
+    + '      <label for="setup-server" style="' + S_LABEL + '">Server URL</label>'
     + '      <input id="setup-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
     + '    <div style="display:grid;gap:4px;margin-top:8px">'
-    + '      <div style="' + S_LABEL + '">Classroom code</div>'
+    + '      <label for="setup-class-code" style="' + S_LABEL + '">Classroom code</label>'
     + '      <input id="setup-class-code" placeholder="ABCDE-FGHIJ from your teacher" style="' + S_INPUT + '" autocomplete="off" spellcheck="false">'
     + '    </div>'
     + '  </div>'
@@ -397,7 +404,7 @@ const EXTENSION_BUILD = false;
 
     /* mode */
     + '  <div id="set-mode-row" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Mode</div>'
+    + '    <label for="set-mode" style="' + S_LABEL + '">Mode</label>'
     + '    <select id="set-mode" style="' + S_SELECT + '">'
     + '      <option value="byok">Bring your own key</option>'
     + '      <option value="managed">Managed (school account)</option>'
@@ -406,7 +413,7 @@ const EXTENSION_BUILD = false;
 
     /* BYOK: provider */
     + '  <div id="set-byok-provider" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Provider</div>'
+    + '    <label for="set-prov" style="' + S_LABEL + '">Provider</label>'
     + '    <select id="set-prov" style="' + S_SELECT + '">'
     + '      <option value="openai">OpenAI</option>'
     + '      <option value="gemini">Gemini</option>'
@@ -417,13 +424,13 @@ const EXTENSION_BUILD = false;
 
     /* BYOK: model */
     + '  <div id="set-byok-model" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Model</div>'
+    + '    <label for="set-model" style="' + S_LABEL + '">Model</label>'
     + '    <select id="set-model" style="' + S_SELECT + '"></select>'
     + '  </div>'
 
     /* BYOK: API key */
     + '  <div id="set-byok-key" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">API Key</div>'
+    + '    <label for="set-key" style="' + S_LABEL + '">API Key</label>'
     + '    <div style="display:flex;gap:8px">'
     + '      <input id="set-key" type="password" placeholder="API key" style="flex:1;padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef">'
     + '      <button id="save" style="padding:8px 12px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:600;cursor:pointer;white-space:nowrap">Save Key</button>'
@@ -434,11 +441,11 @@ const EXTENSION_BUILD = false;
     /* Managed: server URL */
     + '  <div id="set-managed-server" style="display:none">'
     + '    <div id="set-managed-server-url" style="display:grid;gap:4px">'
-    + '      <div style="' + S_LABEL + '">Server URL</div>'
+    + '      <label for="set-server" style="' + S_LABEL + '">Server URL</label>'
     + '      <input id="set-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
     + '    <div style="display:grid;gap:4px;margin-top:8px">'
-    + '      <div style="' + S_LABEL + '">Classroom code</div>'
+    + '      <label for="set-class-code" style="' + S_LABEL + '">Classroom code</label>'
     + '      <input id="set-class-code" placeholder="ABCDE-FGHIJ from your teacher" style="' + S_INPUT + '" autocomplete="off" spellcheck="false">'
     + '    </div>'
     + '  </div>'
@@ -447,7 +454,7 @@ const EXTENSION_BUILD = false;
     + '  <details id="set-advanced">'
     + '    <summary style="cursor:pointer;font-size:12px;color:#9eb2ff;font-weight:500;user-select:none">Advanced</summary>'
     + '    <div style="display:grid;gap:4px;margin-top:8px">'
-    + '      <div style="' + S_LABEL + '">Target</div>'
+    + '      <label for="set-target" style="' + S_LABEL + '">Target</label>'
     + '      <select id="set-target" style="' + S_SELECT + '">'
     + '        <option value="microbit">micro:bit</option>'
     + '        <option value="arcade">Arcade</option>'
@@ -526,9 +533,50 @@ const EXTENSION_BUILD = false;
 
   let busy = false;
   let generationController = null;
+  let closeTimer = 0;
+  let focusBeforeOpen = null;
+  let inertedPageNodes = [];
+
+  const visibleFocusableElements = () => [...ui.querySelectorAll(
+    'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])'
+  )].filter((node) => Boolean(node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+
+  const focusPanelControl = () => {
+    const focusable = visibleFocusableElements();
+    const preferred = focusable.find((node) => node.id === "p")
+      || focusable.find((node) => /^(INPUT|SELECT|TEXTAREA)$/.test(node.tagName))
+      || focusable[0];
+    try { preferred?.focus({ preventScroll: true }); } catch (error) {}
+  };
+
+  const isolatePageForModal = () => {
+    if (inertedPageNodes.length || !document.body) return;
+    inertedPageNodes = [...document.body.children]
+      .filter((node) => node !== backdrop && node !== previewBar)
+      .map((node) => ({ node, inert: Boolean(node.inert) }));
+    inertedPageNodes.forEach(({ node }) => { node.inert = true; });
+  };
+
+  const restorePageAfterModal = () => {
+    inertedPageNodes.forEach(({ node, inert }) => {
+      if (node?.isConnected) node.inert = inert;
+    });
+    inertedPageNodes = [];
+  };
+
+  const restorePageFocus = () => {
+    const target = focusBeforeOpen;
+    focusBeforeOpen = null;
+    if (!target?.isConnected || typeof target.focus !== "function") return;
+    try { target.focus({ preventScroll: true }); } catch (error) {}
+  };
 
   const openPanel = function () {
     if (!ensureRuntimeMounted()) return;
+    clearTimeout(closeTimer);
+    const active = document.activeElement;
+    if (active && !ui.contains(active) && !previewBar.contains(active)) focusBeforeOpen = active;
+    isolatePageForModal();
     fab.style.display = "none";
     previewBar.style.display = "none";
     backdrop.style.display = "flex";
@@ -536,7 +584,7 @@ const EXTENSION_BUILD = false;
       backdrop.dataset.active = "true";
     });
     requestAnimationFrame(function () {
-      try { promptEl && promptEl.focus({ preventScroll: true }); } catch (e) {}
+      focusPanelControl();
     });
   };
 
@@ -545,17 +593,21 @@ const EXTENSION_BUILD = false;
     if (generationController && !generationController.signal.aborted) generationController.abort();
     backdrop.dataset.active = "";
     previewBar.style.display = "none";
-    setTimeout(function () {
+    closeTimer = setTimeout(function () {
       backdrop.style.display = "none";
       fab.style.display = EXTENSION_BUILD ? "none" : "flex";
+      restorePageAfterModal();
+      restorePageFocus();
     }, 200);
   };
 
   const enterPreview = function () {
     backdrop.dataset.active = "";
-    setTimeout(function () {
+    closeTimer = setTimeout(function () {
       backdrop.style.display = "none";
       previewBar.style.display = "flex";
+      restorePageAfterModal();
+      try { previewReturnBtn?.focus({ preventScroll: true }); } catch (error) {}
     }, 200);
   };
 
@@ -658,6 +710,7 @@ const EXTENSION_BUILD = false;
     Object.keys(views).forEach((key) => {
       views[key].style.display = key === name ? "flex" : "none";
     });
+    if (backdrop.dataset.active === "true") requestAnimationFrame(focusPanelControl);
   };
 
   /* ── model preset population ─────────────────────────────── */
@@ -1369,6 +1422,24 @@ const EXTENSION_BUILD = false;
 
   /* Escape to close */
   const handleDocumentKeydown = (e) => {
+    if (e.key === "Tab" && backdrop.dataset.active === "true") {
+      const focusable = visibleFocusableElements();
+      if (!focusable.length) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !ui.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !ui.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
+      return;
+    }
     if (e.key === "Escape" && backdrop.style.display !== "none" && !busy) {
       closePanel();
     }
@@ -1722,6 +1793,7 @@ const EXTENSION_BUILD = false;
   };
   const destroyRuntime = () => {
     if (generationController && !generationController.signal.aborted) generationController.abort();
+    clearTimeout(closeTimer);
     document.removeEventListener("keydown", handleDocumentKeydown);
     try {
       if (fab && fab.parentNode) fab.parentNode.removeChild(fab);
@@ -1730,6 +1802,8 @@ const EXTENSION_BUILD = false;
       if (runtimeStyle && runtimeStyle.parentNode) runtimeStyle.parentNode.removeChild(runtimeStyle);
     } catch (error) {
     }
+    restorePageAfterModal();
+    restorePageFocus();
     if (window.__vibbit === runtimeApi) {
       delete window.__vibbit;
     }
@@ -1738,6 +1812,7 @@ const EXTENSION_BUILD = false;
   };
   const runtimeApi = {
     version: "2",
+    revision: EXTENSION_RUNTIME_REVISION,
     open: openPanel,
     close: closePanel,
     toggle: togglePanel,

@@ -86,7 +86,7 @@ Report:
 - 95% Wilson intervals for pass rates and paired bootstrap confidence intervals for score/pass-rate differences, resampling by case and repetition;
 - worst-case results. Do not let strong micro:bit results hide a Maker or repair failure.
 
-`summary.json` calculates these policy metrics overall and by model-plus-route candidate, model, provider, target, and category. `staticPolicyPass` reports the bounded policy and regex checks. `automatedProxyPass` additionally requires pinned compile/decompile/native Blocks. `strictAutomatedProxyPass` additionally requires the strict two-key JSON contract. These names are deliberate: corpus regexes are proxies and can pass semantically wrong programmes (for example, incrementing a counter outside an empty button handler).
+`summary.json` calculates these policy metrics overall and by model-plus-route candidate, model, provider, target, and category. `macroMeanTotalScoreByCandidate` is the ranking surface; the singular `macroMeanTotalScore` is populated only for one-candidate runs so routes with different repetition counts are never blended into one headline. `staticPolicyPass` reports the bounded policy and regex checks. `automatedProxyPass` additionally requires pinned compile/decompile/native Blocks and is unmeasured (`null`) during compiler/decompiler outages. `strictAutomatedProxyPass` additionally requires the strict two-key JSON contract. These names are deliberate: corpus regexes are proxies and can pass semantically wrong programmes (for example, incrementing a counter outside an empty button handler).
 
 An automated threshold is not a release gate by itself. Pre-register thresholds before unblinding, require no statistically or practically meaningful regression versus the incumbent, and perform blinded semantic review of finalist outputs—especially state/event relationships and adversarial cases—before a model or prompt change can ship.
 
@@ -219,7 +219,7 @@ Where direct compiler-worker integration is unavailable, Playwright can load eac
 - `https://arcade.makecode.com/`;
 - `https://maker.makecode.com/` with the pinned board.
 
-Run `npm run audit:editor` for this validation. Each fixture gets a fresh browser context. The audit verifies the submitted `main.ts` model and compile markers, then inspects `getAllBlocks(false)` from the active Blockly workspace—not toolbox/flyout SVG nodes—and rejects both grey block types. Its default fixtures cover native micro:bit, Arcade, the exact Maker fallback, compile rejection, and statement/expression conversion rejection. Pass evaluator JSONL through `--input PATH` (and optionally `--target`) to validate sampled candidates. The existing `npm run audit:smoke` still stubs Monaco/provider calls and is not released-editor evidence.
+Run `npm run audit:editor` for this validation. Each fixture gets a fresh browser context. The audit verifies the submitted `main.ts` model and compile markers, then requires exactly one visible workspace owned by the released editor's active Blocks component before inspecting `getAllBlocks(false)`—never toolbox/flyout SVG nodes—and rejects ambiguity or either grey block type. Its default fixtures cover native micro:bit, Arcade, the exact Maker fallback, compile rejection, and statement/expression conversion rejection. Pass evaluator JSONL through `--input PATH` (and optionally `--target`) to validate sampled candidates. The existing `npm run audit:smoke` still stubs Monaco/provider calls and is not released-editor evidence.
 
 ## What is automated now vs. deferred
 

@@ -433,8 +433,10 @@ try {
   for (let attempt = 0; attempt < 50 && slowProviderCalls < 1; attempt += 1) {
     await page.waitForTimeout(100);
   }
-  await page.reload({ waitUntil: "domcontentloaded", timeout: 120000 });
-  await page.waitForTimeout(500);
+  await page.evaluate(() => {
+    location.hash = "#different-project";
+  });
+  await page.waitForTimeout(1000);
   const armAfterNavigation = await optionsPage.evaluate(async (key) => (
     (await chrome.storage.session.get(key))[key] || null
   ), lifecycleArms[0].key);
@@ -452,12 +454,12 @@ try {
     (await chrome.storage.session.get(key))[key] || null
   ), lifecycleArms[1].key);
   check(
-    "Navigation and tab-close cancellation",
+    "Same-document navigation and tab-close cancellation",
     slowProviderCalls === 2
       && abortedSlowProviderCalls === 2
       && armAfterNavigation === null
       && armAfterClose === null,
-    `In-flight provider work was bound to the document lifecycle and each tab capability was removed (started=${slowProviderCalls}, aborted=${abortedSlowProviderCalls}).`
+    `In-flight provider work was aborted on a MakeCode hash URL change and tab close, and each tab capability was removed (started=${slowProviderCalls}, aborted=${abortedSlowProviderCalls}).`
   );
 
   const recoveryPage = await context.newPage();
@@ -468,7 +470,7 @@ try {
   });
   await recoveryPage.waitForTimeout(3000);
   const recoveryEventsBefore = await recoveryPage.evaluate(() => {
-    window.__vibbit.version = "1";
+    window.__vibbit.revision = "previous-build";
     return window.__vibbitBoundaryEvents.length;
   });
   const extensionsPage = await context.newPage();
@@ -513,11 +515,17 @@ try {
     ({ requestId, start }) => window.__vibbitBoundaryEvents.slice(start).filter((item) => item.includes(requestId)).length,
     { requestId: reloadProbeId, start: recoveryEventsBefore }
   );
-  const recoveredRuntimeVersion = await recoveryPage.evaluate(() => String(window.__vibbit?.version || ""));
+  const recoveredRuntime = await recoveryPage.evaluate(() => ({
+    version: String(window.__vibbit?.version || ""),
+    revision: String(window.__vibbit?.revision || "")
+  }));
   check(
     "Toolbar recovery after extension reload",
-    toolbarRecovered === true && recoveredRuntimeVersion === "2" && reloadProbeCount === 1,
-    `The exact toolbar UI helper replaced stale runtime/bridge contexts without reloading MakeCode (toolbar=${toolbarRecovered}, runtime=${recoveredRuntimeVersion}, responses=${reloadProbeCount}).`
+    toolbarRecovered === true
+      && recoveredRuntime.version === "2"
+      && recoveredRuntime.revision !== "previous-build"
+      && reloadProbeCount === 1,
+    `The exact toolbar UI helper replaced a prior build revision and stale bridge context without reloading MakeCode (toolbar=${toolbarRecovered}, runtime=${recoveredRuntime.version}, revision=${recoveredRuntime.revision}, responses=${reloadProbeCount}).`
   );
   await replacementExtensionPage.close();
   await extensionsPage.close();
@@ -574,15 +582,27 @@ try {
       throw error;
     }
   }))).every(Boolean);
+  const hostedRuntime = await readFile(path.join(extensionPath, "content-script.js"), "utf8");
+  const hostedRuntimeHasByokCapability = [
+    "__vibbit_extension_request_v2_",
+    "vibbit:byok:",
+    "memoryProviderKeys",
+    "gpt-5.6-luna",
+    "gemini-3-flash-preview",
+    "deepseek/deepseek-v4-flash-0731",
+    "go/responses/gpt-5.6-luna"
+  ].some((item) => hostedRuntime.includes(item));
   check(
     "Hosted-managed broker denial",
     hostedDenial?.ok === false
       && hostedDenial.error?.code === "managed_only_build"
       && hostedProviderCalls === 0
       && !hostedManifest.options_page
+      && !(hostedManifest.permissions || []).includes("storage")
       && !(hostedManifest.content_scripts || []).some((entry) => entry.js.includes("page-bridge.js"))
+      && !hostedRuntimeHasByokCapability
       && hostedFilesMissing,
-    "The hosted profile strips BYOK modules/assets and its service worker rejects direct broker access."
+    "The hosted profile strips provider models, bridge/key capability code, modules/assets, and storage permission; its service worker rejects direct broker access."
   );
   await hostedProbe.close();
 } catch (error) {

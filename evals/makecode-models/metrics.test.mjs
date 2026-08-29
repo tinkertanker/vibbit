@@ -92,10 +92,10 @@ test("macro score weights cases within each candidate rather than repetitions or
   assert.equal(macroMeanTotalScore(candidateA), 50);
   assert.equal(summary.byCandidate["test-provider/a"].macroMeanTotalScore, 50);
   assert.equal(summary.byCandidate["test-provider/b"].macroMeanTotalScore, 20);
-  assert.equal(summary.overall.macroMeanTotalScore, 45);
+  assert.equal(summary.overall.macroMeanTotalScore, null);
 });
 
-test("pairedBootstrap compares matched cases rather than unpaired totals", () => {
+test("pairedBootstrap compares matched provider/model candidates rather than unpaired totals", () => {
   const records = [
     record("a", "one", true),
     record("b", "one", false),
@@ -108,4 +108,33 @@ test("pairedBootstrap compares matched cases rather than unpaired totals", () =>
   assert.equal(comparison.strictAutomatedProxyPassRateDelta, 0.5);
   assert(comparison.bootstrap95.low >= 0);
   assert(comparison.bootstrap95.high <= 1);
+});
+
+test("pairedBootstrap keeps identical model IDs on different providers distinct", () => {
+  const records = [
+    record("same", "one", true),
+    { ...record("same", "one", false), provider: "other-provider" }
+  ];
+  const [comparison] = pairedBootstrap(records, 20);
+  assert.equal(comparison.left, "other-provider/same");
+  assert.equal(comparison.right, "test-provider/same");
+  assert.equal(comparison.pairedCases, 1);
+  assert.equal(comparison.strictAutomatedProxyPassRateDelta, -1);
+});
+
+test("unmeasured oracle rows stay out of pass-rate and cost denominators", () => {
+  const measured = record("a", "one", true);
+  const unmeasured = record("a", "two", false, {
+    automatedProxyPass: null,
+    strictAutomatedProxyPass: null,
+    passWithinBudget: null,
+    costUsd: null
+  });
+  unmeasured.costUsd = null;
+  const summary = summarizeRecords([measured, unmeasured]).overall;
+  assert.equal(summary.strictAutomatedProxyPass.total, 1);
+  assert.equal(summary.strictAutomatedProxyPass.rate, 1);
+  assert.equal(summary.costUsd.knownRows, 1);
+  assert.equal(summary.costUsd.unknownRows, 1);
+  assert.equal(summarizeRecords([{ ...unmeasured, normalizedUsage: null }]).overall.costUsd.totalKnown, null);
 });

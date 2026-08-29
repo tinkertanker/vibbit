@@ -36,3 +36,20 @@ test("compareRuns rejects duplicate pairing keys", () => {
     /right run contains duplicate/
   );
 });
+
+test("compareRuns rejects incomplete identities and excludes unmeasured pass pairs", () => {
+  assert.throws(
+    () => compareRuns([{ ...row("one", true, 100), provider: "" }], [row("one", true, 100)]),
+    /require provider, model, caseId/
+  );
+  assert.throws(
+    () => compareRuns([{ ...row("one", true, 100), repetition: 0.5 }], [row("one", true, 100)]),
+    /non-negative integer repetition/
+  );
+  const unmeasured = row("one", false, null);
+  unmeasured.evaluation.strictAutomatedProxyPass = null;
+  const result = compareRuns([unmeasured], [row("one", true, 100)]);
+  assert.equal(result.pairedRows, 1);
+  assert.equal(result.strictAutomatedProxyPass.pairs, 0);
+  assert.equal(result.totalScore.pairs, 0);
+});

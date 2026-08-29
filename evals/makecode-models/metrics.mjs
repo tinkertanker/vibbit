@@ -87,7 +87,9 @@ function summarizeGroup(records) {
     costUsd: {
       median: quantile(cost, 0.5),
       p95: quantile(cost, 0.95),
-      totalKnown: knownCosts.reduce((sum, value) => sum + value, 0),
+      totalKnown: knownCosts.length
+        ? knownCosts.reduce((sum, value) => sum + value, 0)
+        : null,
       knownRows: knownCosts.length,
       unknownRows: records.length - knownCosts.length,
       costPerStrictAutomatedProxyPass: strictPasses > 0 && knownCosts.length === records.length
@@ -125,18 +127,33 @@ function seededRandom(seed = 0x51f15e) {
 }
 
 export function pairedBootstrap(records, iterations = 2000) {
-  const models = [...new Set(records.map((record) => record.model).filter(Boolean))].sort();
+  const candidateKey = (record) => {
+    const provider = record.provider || "unknown";
+    const model = record.model || record.requestedModel || "unknown";
+    return `${provider}\u0000${model}`;
+  };
+  const candidateLabel = (key) => key.replace("\u0000", "/");
+  const candidates = [...new Set(records.map(candidateKey))].sort();
   const comparisons = [];
-  for (let leftIndex = 0; leftIndex < models.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < models.length; rightIndex += 1) {
-      const left = models[leftIndex];
-      const right = models[rightIndex];
+  for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
+      const left = candidates[leftIndex];
+      const right = candidates[rightIndex];
       const byPair = new Map();
       for (const record of records) {
-        if (record.model !== left && record.model !== right) continue;
-        const key = `${record.caseId || record.case?.id || "unknown"}:${record.repetition || 0}`;
+        const candidate = candidateKey(record);
+        if (candidate !== left && candidate !== right) continue;
+        const caseId = record.caseId || record.case?.id || "unknown";
+        const repetition = Number.isInteger(record.repetition) ? record.repetition : 0;
+        const key = `${caseId}\u0000${repetition}`;
         if (!byPair.has(key)) byPair.set(key, {});
-        byPair.get(key)[record.model] = record.evaluation?.strictAutomatedProxyPass === true ? 1 : 0;
+        const pair = byPair.get(key);
+        if (Object.hasOwn(pair, candidate)) {
+          throw new Error("Paired comparison contains duplicate candidate/case/repetition rows");
+        }
+        if (typeof record.evaluation?.strictAutomatedProxyPass === "boolean") {
+          pair[candidate] = record.evaluation.strictAutomatedProxyPass ? 1 : 0;
+        }
       }
       const differences = [...byPair.values()]
         .filter((pair) => Number.isFinite(pair[left]) && Number.isFinite(pair[right]))
@@ -152,8 +169,8 @@ export function pairedBootstrap(records, iterations = 2000) {
         samples.push(total / differences.length);
       }
       comparisons.push({
-        left,
-        right,
+        left: candidateLabel(left),
+        right: candidateLabel(right),
         pairedCases: differences.length,
         strictAutomatedProxyPassRateDelta: differences.reduce((sum, value) => sum + value, 0) / differences.length,
         bootstrap95: {
@@ -167,9 +184,15 @@ export function pairedBootstrap(records, iterations = 2000) {
 }
 
 export function summarizeRecords(records) {
+  const byCandidate = groupBy(records, (record) => `${record.provider || "unknown"}/${record.model || record.requestedModel || "unknown"}`);
+  const candidateMacros = Object.values(byCandidate)
+    .map((summary) => summary.macroMeanTotalScore)
+    .filter(Number.isFinite);
+  const overall = summarizeGroup(records);
+  overall.macroMeanTotalScore = candidateMacros.length === 1 ? candidateMacros[0] : null;
   return {
-    overall: summarizeGroup(records),
-    byCandidate: groupBy(records, (record) => `${record.provider || "unknown"}/${record.model || record.requestedModel || "unknown"}`),
+    overall,
+    byCandidate,
     byModel: groupBy(records, (record) => record.model),
     byProvider: groupBy(records, (record) => record.provider),
     byTarget: groupBy(records, (record) => record.target || record.case?.target),

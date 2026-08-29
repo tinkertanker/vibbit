@@ -215,18 +215,29 @@ async function runBuildAndPackage() {
     || item.includes("openrouter.ai")
     || item.includes("opencode.ai")
   ));
+  const hostedRuntimeHasByokCapability = [
+    "__vibbit_extension_request_v2_",
+    "vibbit:byok:",
+    "memoryProviderKeys",
+    "gpt-5.6-luna",
+    "gemini-3-flash-preview",
+    "deepseek/deepseek-v4-flash-0731",
+    "go/responses/gpt-5.6-luna"
+  ].some((item) => hostedScript.includes(item));
   pushCheck(
     "Hosted package is code-only Managed",
     /const HOSTED_MANAGED = true;/.test(hostedScript)
       && /const BACKEND = "https:\/\/vibbit\.tk\.sg";/.test(hostedScript)
       && /const HOSTED_MANAGED = true;/.test(hostedBackground)
       && !hostedHasByokPerms
+      && !hostedRuntimeHasByokCapability
+      && !(hostedManifest.permissions || []).includes("storage")
       && !hostedManifest.options_page
       && !(hostedManifest.content_scripts || []).some((entry) => entry.js.includes("page-bridge.js"))
       && hostedFilesMissing
       && hostedZipStripped
       && (hostedManifest.host_permissions || []).includes("https://vibbit.tk.sg/*"),
-    `hostedManaged=${/const HOSTED_MANAGED = true;/.test(hostedScript)}, brokerDenied=${/const HOSTED_MANAGED = true;/.test(hostedBackground)}, byokPermsRemoved=${!hostedHasByokPerms}, byokFilesRemoved=${hostedFilesMissing && hostedZipStripped}.`
+    `hostedManaged=${/const HOSTED_MANAGED = true;/.test(hostedScript)}, brokerDenied=${/const HOSTED_MANAGED = true;/.test(hostedBackground)}, byokPermsRemoved=${!hostedHasByokPerms}, byokRuntimeRemoved=${!hostedRuntimeHasByokCapability}, byokFilesRemoved=${hostedFilesMissing && hostedZipStripped}.`
   );
   pushCheck("Build + package", true, "`npm run build` (neutral) and `npm run package` (hosted) succeeded.");
 }
@@ -272,6 +283,60 @@ async function runNeutralUiSmoke(page) {
     panelVisible
       ? `Panel rendered and screenshot saved at \`${screenshots.panel}\`.`
       : "Panel controls were not visible after injecting `work.js`."
+  );
+
+  const modalAccessibility = await page.evaluate(() => {
+    const panel = document.querySelector("#vibbit-panel");
+    const backdrop = document.querySelector("#vibbit-backdrop");
+    const controls = [...(panel?.querySelectorAll("input,select,textarea") || [])];
+    const unnamed = controls.filter((control) => (
+      !control.labels?.length && !String(control.getAttribute("aria-label") || "").trim()
+    )).map((control) => control.id || control.tagName);
+    const outside = [...document.body.children].filter((node) => (
+      node !== backdrop && node.id !== "vibbit-preview-bar"
+    ));
+    const focusable = [...(panel?.querySelectorAll(
+      'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])'
+    ) || [])].filter((node) => Boolean(node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+    focusable.at(-1)?.focus();
+    return {
+      unnamed,
+      outsideInert: outside.length > 0 && outside.every((node) => node.inert === true),
+      firstId: focusable[0]?.id || ""
+    };
+  });
+  await page.keyboard.press("Tab");
+  const focusTrapped = await page.evaluate((firstId) => (
+    document.activeElement?.id === firstId
+      && document.querySelector("#vibbit-panel")?.contains(document.activeElement)
+  ), modalAccessibility.firstId);
+  await page.click("#x-setup");
+  await page.waitForFunction(() => document.querySelector("#vibbit-backdrop")?.style.display === "none");
+  await page.evaluate(() => {
+    const probe = document.createElement("button");
+    probe.id = "smoke-focus-restore";
+    probe.textContent = "Focus probe";
+    document.body.appendChild(probe);
+    probe.focus();
+    window.__vibbit.open();
+  });
+  await page.waitForFunction(() => document.querySelector("#vibbit-backdrop")?.dataset.active === "true");
+  await page.click("#x-setup");
+  await page.waitForFunction(() => document.querySelector("#vibbit-backdrop")?.style.display === "none");
+  const focusRestored = await page.evaluate(() => {
+    const restored = document.activeElement?.id === "smoke-focus-restore";
+    document.querySelector("#smoke-focus-restore")?.remove();
+    window.__vibbit.open();
+    return restored;
+  });
+  await page.waitForFunction(() => document.querySelector("#vibbit-backdrop")?.dataset.active === "true");
+  pushCheck(
+    "04b Modal keyboard and screen-reader contract",
+    modalAccessibility.unnamed.length === 0
+      && modalAccessibility.outsideInert
+      && focusTrapped
+      && focusRestored,
+    `unnamedControls=${modalAccessibility.unnamed.join(",") || "none"}, outsideInert=${modalAccessibility.outsideInert}, focusTrapped=${focusTrapped}, focusRestored=${focusRestored}.`
   );
 
   const setupDefault = await page.evaluate(() => {

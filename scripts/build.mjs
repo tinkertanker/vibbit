@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile, copyFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,6 +80,34 @@ function stripPageByokTransport(source) {
   return source.slice(0, start) + disabled + source.slice(end + endToken.length);
 }
 
+function replaceMarkedSection(source, name, replacement) {
+  const startToken = `  // BEGIN_${name}`;
+  const endToken = `  // END_${name}`;
+  const start = source.indexOf(startToken);
+  const end = source.indexOf(endToken);
+  if (start < 0 || end <= start) throw new Error(`Could not find ${name} markers in work.js`);
+  return source.slice(0, start)
+    + replacement
+    + source.slice(end + endToken.length);
+}
+
+function stripHostedPageByokInternals(source) {
+  let hosted = replaceMarkedSection(source, "PAGE_BYOK_CONFIG", [
+    "  const MODEL_PRESETS = { openai: [], gemini: [], openrouter: [], opencode: [] };",
+    "  const supportsThinkHarder = () => false;"
+  ].join("\n"));
+  hosted = replaceMarkedSection(hosted, "PAGE_BYOK_KEY_STATE", [
+    "  const getStoredProviderKey = () => \"\";",
+    "  const setStoredProviderKey = () => {};"
+  ].join("\n"));
+  hosted = replaceMarkedSection(
+    hosted,
+    "EXTENSION_BYOK_BRIDGE",
+    "  const extensionRequest = () => Promise.reject(new Error(\"managed_only_build\"));"
+  );
+  return hosted.replace(/"vibbit:byok:[^"]+"/g, '"managed_only_build"');
+}
+
 function assertExtensionCredentialBoundary(source) {
   const forbidden = [
     "https://api.openai.com/v1/responses",
@@ -98,16 +127,33 @@ function assertExtensionCredentialBoundary(source) {
   }
 }
 
+function assertHostedManagedRuntimeBoundary(source) {
+  const forbidden = [
+    "__vibbit_extension_request_v2_",
+    "vibbit:byok:",
+    "memoryProviderKeys",
+    "gpt-5.6-luna",
+    "gemini-3-flash-preview",
+    "deepseek/deepseek-v4-flash-0731",
+    "go/responses/gpt-5.6-luna"
+  ];
+  const found = forbidden.filter((item) => source.includes(item));
+  if (found.length) {
+    throw new Error(`Hosted Managed runtime contains BYOK capability code: ${found.join(", ")}`);
+  }
+}
+
 function wrapExtensionRuntime(source) {
   return `(() => {\n${source}\n})();\n`;
 }
 
 async function build() {
-  const [rawClient, rawManifest, rawBackground, rawManagedBackground, frogSvgMarkup] = await Promise.all([
+  const [rawClient, rawManifest, rawBackground, rawManagedBackground, rawToolbar, frogSvgMarkup] = await Promise.all([
     readFile(sourcePath, "utf8"),
     readFile(manifestPath, "utf8"),
     readFile(path.join(root, "extension", "background.js"), "utf8"),
     readFile(path.join(root, "extension", "background-managed.js"), "utf8"),
+    readFile(path.join(root, "extension", "toolbar.mjs"), "utf8"),
     readFile(frogSvgPath, "utf8")
   ]);
 
@@ -139,13 +185,16 @@ async function build() {
   builtClient = overrideConst(builtClient, "HOSTED_MANAGED", hostedManagedEnabled);
   builtClient = overrideConst(builtClient, "EXTENSION_BUILD", true);
   builtClient = stripPageByokTransport(builtClient);
+  if (hostedManagedEnabled) builtClient = stripHostedPageByokInternals(builtClient);
   assertExtensionCredentialBoundary(builtClient);
+  if (hostedManagedEnabled) assertHostedManagedRuntimeBoundary(builtClient);
   const builtBackground = hostedManagedEnabled
     ? rawManagedBackground
     : overrideConst(rawBackground, "HOSTED_MANAGED", false);
 
   if (hostedManagedEnabled) {
     delete manifest.options_page;
+    manifest.permissions = manifest.permissions.filter((permission) => permission !== "storage");
     manifest.content_scripts = manifest.content_scripts.filter((entry) => (
       !entry.js.includes("page-bridge.js")
     ));
@@ -171,6 +220,9 @@ async function build() {
       ...optionalByokPermissions
     ])];
   }
+  const runtimeRevision = createHash("sha256").update(builtClient).digest("hex").slice(0, 16);
+  builtClient = overrideConst(builtClient, "EXTENSION_RUNTIME_REVISION", runtimeRevision);
+  const builtToolbar = rawToolbar.replaceAll("__VIBBIT_RUNTIME_REVISION__", runtimeRevision);
   builtClient = wrapExtensionRuntime(builtClient);
 
   await rm(distDir, { recursive: true, force: true });
@@ -179,9 +231,7 @@ async function build() {
   const extensionModuleDir = path.join(distDir, "extension");
   const sharedModuleDir = path.join(distDir, "shared");
   await mkdir(extensionModuleDir, { recursive: true });
-  const supportCopies = [
-    copyFile(path.join(root, "extension", "toolbar.mjs"), path.join(extensionModuleDir, "toolbar.mjs"))
-  ];
+  const supportCopies = [];
   if (!hostedManagedEnabled) {
     await mkdir(sharedModuleDir, { recursive: true });
     supportCopies.push(
@@ -210,6 +260,7 @@ async function build() {
   await Promise.all([
     writeFile(path.join(distDir, "content-script.js"), builtClient, "utf8"),
     writeFile(path.join(extensionModuleDir, "background.js"), builtBackground, "utf8"),
+    writeFile(path.join(extensionModuleDir, "toolbar.mjs"), builtToolbar, "utf8"),
     writeFile(path.join(distDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
   ]);
 

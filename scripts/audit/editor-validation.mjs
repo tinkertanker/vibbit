@@ -187,29 +187,31 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
     const dialogs = await visibleText(page, "[role='dialog'],.ReactModal__Content");
     const conversionDialog = dialogs.find((text) => /problem converting|unable to convert|grey javascript/i.test(text)) || "";
     const blockState = await page.evaluate(() => {
-      const selectedBlocks = [...document.querySelectorAll(".blocks-menuitem")]
-        .some((node) => /selected|active/.test(node.className));
-      const workspaces = [];
+      const candidates = [];
       const queue = [window];
       const seenWindows = new Set();
       const seenWorkspaces = new Set();
-      const addWorkspace = (workspace) => {
+      const addEditorWorkspace = (project, ownerWindow) => {
+        if (!project?.isBlocksActive?.()
+          || project.editor !== project.blocksEditor
+          || project.editorFile?.name !== "main.blocks") return;
+        const workspace = project.blocksEditor?.editor;
         if (!workspace || seenWorkspaces.has(workspace) || typeof workspace.getAllBlocks !== "function") return;
+        if (workspace.isFlyout || workspace.isDisposed?.()) return;
         seenWorkspaces.add(workspace);
-        workspaces.push(workspace);
+        const selectedBlocks = [...(ownerWindow.document?.querySelectorAll?.(".blocks-menuitem") || [])]
+          .some((node) => /selected|active/.test(String(node.className || "")));
+        const parentSvg = workspace.getParentSvg?.();
+        const bounds = parentSvg?.getBoundingClientRect?.();
+        const visible = Boolean(bounds && bounds.width > 0 && bounds.height > 0);
+        candidates.push({ workspace, selectedBlocks, visible });
       };
       while (queue.length) {
         const current = queue.shift();
         if (!current || seenWindows.has(current)) continue;
         seenWindows.add(current);
         try {
-          const blockly = current.Blockly;
-          addWorkspace(blockly && (typeof blockly.getMainWorkspace === "function"
-            ? blockly.getMainWorkspace()
-            : blockly.mainWorkspace));
-          const editor = current.E?.getEditor?.();
-          addWorkspace(editor?.blocksEditor?.editor);
-          addWorkspace(current.blocksEditor?.editor);
+          addEditorWorkspace(current.E?.getEditor?.(), current);
         } catch {
           // Cross-origin or editor-version differences are expected while walking frames.
         }
@@ -221,7 +223,10 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
           // Ignore cross-origin frames; the active editor workspace is same-origin.
         }
       }
-      const candidates = workspaces.map((workspace) => {
+      const activeCandidates = candidates.filter((candidate) => candidate.selectedBlocks && candidate.visible);
+      const active = activeCandidates.length === 1 ? activeCandidates[0] : null;
+      const details = active ? (() => {
+        const workspace = active.workspace;
         const blocks = workspace.getAllBlocks(false) || [];
         const blockTypes = blocks.map((block) => String(block?.type || "")).filter(Boolean);
         const greyTypes = blockTypes.filter((type) => (
@@ -234,14 +239,15 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
           return !shadow && type !== "typescript_statement" && type !== "typescript_expression";
         }).length;
         return { blockTypes, greyTypes, nativeBlocks };
-      });
-      candidates.sort((left, right) => right.blockTypes.length - left.blockTypes.length);
+      })() : { blockTypes: [], greyTypes: [], nativeBlocks: 0 };
       return {
-        selectedBlocks,
-        workspaceFound: candidates.length > 0,
-        greyTypes: candidates[0]?.greyTypes || [],
-        nativeBlocks: candidates[0]?.nativeBlocks || 0,
-        blockTypes: candidates[0]?.blockTypes || []
+        selectedBlocks: activeCandidates.length > 0,
+        workspaceFound: Boolean(active),
+        workspaceCandidates: candidates.length,
+        activeWorkspaceCandidates: activeCandidates.length,
+        greyTypes: details.greyTypes,
+        nativeBlocks: details.nativeBlocks,
+        blockTypes: details.blockTypes
       };
     });
     const releasedEditorAccepted = blockState.selectedBlocks
@@ -272,6 +278,8 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
       greyTypes: blockState.greyTypes,
       nativeBlocks: blockState.nativeBlocks,
       blockTypes: blockState.blockTypes,
+      workspaceCandidates: blockState.workspaceCandidates,
+      activeWorkspaceCandidates: blockState.activeWorkspaceCandidates,
       conversionDialog,
       finalUrl: page.url(),
       latencyMs: Math.round(performance.now() - started),
@@ -328,7 +336,7 @@ await writeFile(path.join(runDir, "results.json"), JSON.stringify({
 const report = [
   "# Released MakeCode editor validation",
   "",
-  "This audit writes each fixture into the real released Monaco editor, verifies the submitted `main.ts` model and compile markers, switches to Blocks, and inspects only the active Blockly workspace model. Passing fixtures require native non-shadow blocks and no `typescript_statement` or `typescript_expression` grey blocks; rejection fixtures require a conversion dialog, compile error, or grey workspace block.",
+  "This audit writes each fixture into the real released Monaco editor, verifies the submitted `main.ts` model and compile markers, switches to Blocks, and requires exactly one visible workspace owned by the released editor's active Blocks component. Passing fixtures require native non-shadow blocks and no `typescript_statement` or `typescript_expression` grey blocks; rejection fixtures require a conversion dialog, compile error, or grey workspace block.",
   "",
   buildMarkdownTable(results.map((result) => ({
     step: `${result.target}/${result.id} (${result.expect})`,

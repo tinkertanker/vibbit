@@ -4,6 +4,7 @@ const MAKECODE_HOSTS = new Set([
   "maker.makecode.com"
 ]);
 const RUNTIME_API_VERSION = "2";
+const RUNTIME_REVISION = "__VIBBIT_RUNTIME_REVISION__";
 
 export function isMakeCodeUrl(value) {
   try {
@@ -37,10 +38,12 @@ export async function togglePageUi(tabId, { includeBridge = true } = {}) {
     world: "MAIN",
     func: () => ({
       panel: Boolean(document.getElementById("vibbit-panel")),
-      runtimeVersion: String(window.__vibbit?.version || "")
+      runtimeVersion: String(window.__vibbit?.version || ""),
+      runtimeRevision: String(window.__vibbit?.revision || "")
     })
   });
-  const staleRuntime = state?.result?.runtimeVersion !== RUNTIME_API_VERSION;
+  const staleRuntime = state?.result?.runtimeVersion !== RUNTIME_API_VERSION
+    || state?.result?.runtimeRevision !== RUNTIME_REVISION;
   if (staleRuntime) {
     await chrome.scripting.executeScript({
       target: { tabId },
@@ -68,13 +71,15 @@ export async function togglePageUi(tabId, { includeBridge = true } = {}) {
   const [toggled] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: (expectedVersion) => {
+    func: (expectedVersion, expectedRevision) => {
       const runtime = window.__vibbit;
-      if (String(runtime?.version || "") !== expectedVersion || typeof runtime.toggle !== "function") return false;
+      if (String(runtime?.version || "") !== expectedVersion
+        || String(runtime?.revision || "") !== expectedRevision
+        || typeof runtime.toggle !== "function") return false;
       runtime.toggle();
       return true;
     },
-    args: [RUNTIME_API_VERSION]
+    args: [RUNTIME_API_VERSION, RUNTIME_REVISION]
   });
   return toggled?.result === true;
 }
