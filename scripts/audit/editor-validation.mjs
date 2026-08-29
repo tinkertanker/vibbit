@@ -160,6 +160,7 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
       if (!project
         || typeof project.saveCurrentSourceAsync !== "function"
         || typeof project.typecheckDebouncer?.func !== "function"
+        || typeof project.editor?.snapshotState !== "function"
         || typeof project.editor?.setDiagnostics !== "function") {
         throw new Error("Released editor typecheck API is unavailable");
       }
@@ -176,42 +177,68 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
       }
       const sourceFile = project.editorFile;
       const diagnosticsEditor = project.editor;
+      const originalSnapshotState = diagnosticsEditor.snapshotState;
       const originalSetDiagnostics = diagnosticsEditor.setDiagnostics;
+      const invocationSnapshots = new WeakSet();
+      let wrappedSnapshotState;
       let wrappedSetDiagnostics;
       try {
         await new Promise((resolve, reject) => {
           const timeout = setTimeout(() => reject(new Error("Released editor typecheck timed out")), 30000);
-          wrappedSetDiagnostics = function (file, ...args) {
+          wrappedSnapshotState = function (...args) {
+            const snapshot = originalSnapshotState.apply(this, args);
+            if (snapshot && (typeof snapshot === "object" || typeof snapshot === "function")) {
+              invocationSnapshots.add(snapshot);
+            }
+            return snapshot;
+          };
+          wrappedSetDiagnostics = function (file, snapshot, ...args) {
             let result;
             try {
-              result = originalSetDiagnostics.call(this, file, ...args);
+              result = originalSetDiagnostics.call(this, file, snapshot, ...args);
             } catch (error) {
               clearTimeout(timeout);
               reject(error);
               throw error;
             }
-            if (file === sourceFile) {
+            if (file === sourceFile
+              && snapshot
+              && (typeof snapshot === "object" || typeof snapshot === "function")
+              && invocationSnapshots.has(snapshot)) {
               clearTimeout(timeout);
               resolve();
             }
             return result;
           };
+          diagnosticsEditor.snapshotState = wrappedSnapshotState;
           diagnosticsEditor.setDiagnostics = wrappedSetDiagnostics;
           clearTimeout(project.typecheckDebouncer.timeout);
           project.typecheckDebouncer.timeout = null;
-          project.typecheckDebouncer.func();
+          try {
+            project.typecheckDebouncer.func();
+          } finally {
+            if (diagnosticsEditor.snapshotState === wrappedSnapshotState) {
+              diagnosticsEditor.snapshotState = originalSnapshotState;
+            }
+          }
         });
       } finally {
+        if (diagnosticsEditor.snapshotState === wrappedSnapshotState) {
+          diagnosticsEditor.snapshotState = originalSnapshotState;
+        }
         if (diagnosticsEditor.setDiagnostics === wrappedSetDiagnostics) {
           diagnosticsEditor.setDiagnostics = originalSetDiagnostics;
         }
       }
       const value = String(model.getValue() || "").replace(/\r\n/g, "\n");
       if (window.monaco.editor.getModels().filter((item) => item === submittedModel).length !== 1
+        || window.E?.getEditor?.() !== project
         || model.getVersionId() !== submittedVersion
         || String(model.uri?.toString?.() || "") !== submittedUri
         || String(project.state?.header?.id || "") !== submittedHeader
+        || project.editorFile !== sourceFile
         || project.editorFile?.name !== "main.ts"
+        || String(sourceFile.content || "").replace(/\r\n/g, "\n") !== expected
         || value !== expected) {
         throw new Error("Compile result no longer matches the submitted main.ts revision");
       }
@@ -397,7 +424,7 @@ await writeFile(path.join(runDir, "results.json"), JSON.stringify({
 const report = [
   "# Released MakeCode editor validation",
   "",
-  "This audit writes each fixture into the real released Monaco editor, binds PXT typecheck diagnostics to the submitted `main.ts` revision, switches to Blocks, and requires exactly one visible workspace owned by the released editor's active Blocks component. Passing fixtures require native non-shadow blocks and no `typescript_statement` or `typescript_expression` grey blocks; rejection fixtures require a conversion dialog, compile error, or grey workspace block.",
+  "This audit writes each fixture into the real released Monaco editor, binds PXT typecheck diagnostics to the unique snapshot object from the submitted `main.ts` invocation, switches to Blocks, and requires exactly one visible workspace owned by the released editor's active Blocks component. Passing fixtures require native non-shadow blocks and no `typescript_statement` or `typescript_expression` grey blocks; rejection fixtures require a conversion dialog, compile error, or grey workspace block.",
   "",
   buildMarkdownTable(results.map((result) => ({
     step: `${result.target}/${result.id} (${result.expect})`,
