@@ -479,6 +479,13 @@ const EXTENSION_RUNTIME_REVISION = "source";
     + '</button>'
     + '<button id="preview-new" aria-label="Start a new chat" style="padding:6px 14px;border:1px solid #29324e;border-radius:999px;background:transparent;color:#8899bb;font-size:12px;font-weight:500;cursor:pointer">New Chat</button>';
 
+  const liveStatus = document.createElement("div");
+  liveStatus.id = "vibbit-live-status";
+  liveStatus.setAttribute("role", "status");
+  liveStatus.setAttribute("aria-live", "polite");
+  liveStatus.setAttribute("aria-atomic", "true");
+  liveStatus.style.cssText = "position:fixed;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0";
+
   /* hidden elements for backwards-compat refs */
   const hiddenCompat = document.createElement("div");
   hiddenCompat.style.display = "none";
@@ -527,6 +534,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
     if (!document.head.contains(runtimeStyle)) document.head.appendChild(runtimeStyle);
     if (!document.body.contains(backdrop)) document.body.appendChild(backdrop);
     if (!document.body.contains(previewBar)) document.body.appendChild(previewBar);
+    if (!document.body.contains(liveStatus)) document.body.appendChild(liveStatus);
     if (!EXTENSION_BUILD && !document.body.contains(fab)) document.body.appendChild(fab);
     return true;
   };
@@ -536,6 +544,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
   let closeTimer = 0;
   let focusBeforeOpen = null;
   let inertedPageNodes = [];
+  let modalIsolationObserver = null;
 
   const visibleFocusableElements = () => [...ui.querySelectorAll(
     'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])'
@@ -550,14 +559,26 @@ const EXTENSION_RUNTIME_REVISION = "source";
   };
 
   const isolatePageForModal = () => {
-    if (inertedPageNodes.length || !document.body) return;
-    inertedPageNodes = [...document.body.children]
-      .filter((node) => node !== backdrop && node !== previewBar)
-      .map((node) => ({ node, inert: Boolean(node.inert) }));
-    inertedPageNodes.forEach(({ node }) => { node.inert = true; });
+    if (modalIsolationObserver || inertedPageNodes.length || !document.body) return;
+    const inertNode = (node) => {
+      if (!(node instanceof HTMLElement)
+        || node === backdrop
+        || node === previewBar
+        || node === liveStatus
+        || inertedPageNodes.some((entry) => entry.node === node)) return;
+      inertedPageNodes.push({ node, inert: Boolean(node.inert) });
+      node.inert = true;
+    };
+    [...document.body.children].forEach(inertNode);
+    modalIsolationObserver = new MutationObserver((records) => {
+      records.forEach((record) => [...record.addedNodes].forEach(inertNode));
+    });
+    modalIsolationObserver.observe(document.body, { childList: true });
   };
 
   const restorePageAfterModal = () => {
+    modalIsolationObserver?.disconnect();
+    modalIsolationObserver = null;
     inertedPageNodes.forEach(({ node, inert }) => {
       if (node?.isConnected) node.inert = inert;
     });
@@ -832,11 +853,30 @@ const EXTENSION_RUNTIME_REVISION = "source";
   let loadingTick = 0;
   let loadingAssistantIdx = -1;
   let loadingVerbPhase = "model";
+  let statusAnnouncementVersion = 0;
+
+  const terminalStatuses = new Set([
+    "Done",
+    "Applied, unverified",
+    "Fallback applied",
+    "Cancelled",
+    "Error",
+    "No code",
+    "Needs fix",
+    "Reverted"
+  ]);
 
   const setStatus = (value) => {
     const next = value || "";
     statusEl.textContent = next;
     ui.dataset.status = next;
+    const announcementVersion = ++statusAnnouncementVersion;
+    liveStatus.textContent = "";
+    if (terminalStatuses.has(next)) {
+      setTimeout(() => {
+        if (announcementVersion === statusAnnouncementVersion) liveStatus.textContent = next;
+      }, 0);
+    }
   };
 
   const setBusyIndicator = (on) => {
@@ -1798,6 +1838,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
     try {
       if (fab && fab.parentNode) fab.parentNode.removeChild(fab);
       if (previewBar && previewBar.parentNode) previewBar.parentNode.removeChild(previewBar);
+      if (liveStatus && liveStatus.parentNode) liveStatus.parentNode.removeChild(liveStatus);
       if (backdrop && backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
       if (runtimeStyle && runtimeStyle.parentNode) runtimeStyle.parentNode.removeChild(runtimeStyle);
     } catch (error) {
@@ -4664,11 +4705,13 @@ const EXTENSION_RUNTIME_REVISION = "source";
     revertEditor()
       .then(() => {
         logLine("Revert complete.");
+        setStatus("Reverted");
         /* add a system message to chat */
         addChatMessage({ role: "assistant", content: "Reverted to previous code.", status: "cancelled" });
       })
       .catch((error) => {
         logLine("Revert failed: " + (error && error.message ? error.message : String(error)));
+        setStatus("Error");
       })
       .finally(() => {
         busy = false;

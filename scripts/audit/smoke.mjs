@@ -293,7 +293,7 @@ async function runNeutralUiSmoke(page) {
       !control.labels?.length && !String(control.getAttribute("aria-label") || "").trim()
     )).map((control) => control.id || control.tagName);
     const outside = [...document.body.children].filter((node) => (
-      node !== backdrop && node.id !== "vibbit-preview-bar"
+      node !== backdrop && node.id !== "vibbit-preview-bar" && node.id !== "vibbit-live-status"
     ));
     const focusable = [...(panel?.querySelectorAll(
       'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])'
@@ -305,6 +305,14 @@ async function runNeutralUiSmoke(page) {
       firstId: focusable[0]?.id || ""
     };
   });
+  const dynamicSiblingInert = await page.evaluate(async () => {
+    const sibling = document.createElement("button");
+    sibling.id = "smoke-dynamic-modal-sibling";
+    sibling.textContent = "Late page control";
+    document.body.appendChild(sibling);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return sibling.inert === true;
+  });
   await page.keyboard.press("Tab");
   const focusTrapped = await page.evaluate((firstId) => (
     document.activeElement?.id === firstId
@@ -312,6 +320,12 @@ async function runNeutralUiSmoke(page) {
   ), modalAccessibility.firstId);
   await page.click("#x-setup");
   await page.waitForFunction(() => document.querySelector("#vibbit-backdrop")?.style.display === "none");
+  const dynamicSiblingRestored = await page.evaluate(() => {
+    const sibling = document.querySelector("#smoke-dynamic-modal-sibling");
+    const restored = sibling?.inert === false;
+    sibling?.remove();
+    return restored;
+  });
   await page.evaluate(() => {
     const probe = document.createElement("button");
     probe.id = "smoke-focus-restore";
@@ -334,9 +348,11 @@ async function runNeutralUiSmoke(page) {
     "04b Modal keyboard and screen-reader contract",
     modalAccessibility.unnamed.length === 0
       && modalAccessibility.outsideInert
+      && dynamicSiblingInert
+      && dynamicSiblingRestored
       && focusTrapped
       && focusRestored,
-    `unnamedControls=${modalAccessibility.unnamed.join(",") || "none"}, outsideInert=${modalAccessibility.outsideInert}, focusTrapped=${focusTrapped}, focusRestored=${focusRestored}.`
+    `unnamedControls=${modalAccessibility.unnamed.join(",") || "none"}, outsideInert=${modalAccessibility.outsideInert}, dynamicSiblingInert=${dynamicSiblingInert}, dynamicSiblingRestored=${dynamicSiblingRestored}, focusTrapped=${focusTrapped}, focusRestored=${focusRestored}.`
   );
 
   const setupDefault = await page.evaluate(() => {
@@ -446,15 +462,21 @@ async function runNeutralUiSmoke(page) {
   });
   await page.fill("#p", "Verify the live editor can upgrade an upstream unverified result");
   await page.click("#go");
-  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Done", { timeout: 30000 });
+  await page.waitForFunction(() => (
+    document.querySelector("#status")?.textContent?.trim() === "Done"
+      && document.querySelector("#vibbit-live-status")?.textContent?.trim() === "Done"
+  ), { timeout: 30000 });
   const liveUpgradeState = await page.evaluate(() => ({
     status: document.querySelector("#status")?.textContent?.trim() || "",
+    liveStatus: document.querySelector("#vibbit-live-status")?.textContent?.trim() || "",
     log: document.querySelector("#log")?.textContent || ""
   }));
   pushCheck(
     "08b Live validation upgrades upstream unverified outcome",
-    liveUpgradeState.status === "Done" && /Live decompile check passed/.test(liveUpgradeState.log),
-    `status='${liveUpgradeState.status}', liveProbePassed=${/Live decompile check passed/.test(liveUpgradeState.log)}.`
+    liveUpgradeState.status === "Done"
+      && liveUpgradeState.liveStatus === "Done"
+      && /Live decompile check passed/.test(liveUpgradeState.log),
+    `status='${liveUpgradeState.status}', liveStatus='${liveUpgradeState.liveStatus}', liveProbePassed=${/Live decompile check passed/.test(liveUpgradeState.log)}.`
   );
   await page.evaluate(() => {
     delete window.__smokeManagedOutcome;
@@ -477,11 +499,13 @@ async function runNeutralUiSmoke(page) {
   await page.waitForFunction(() => (
     window.__smokeManagedAbortObserved === true
       && document.querySelector("#vibbit-backdrop")?.style.display === "none"
+      && document.querySelector("#vibbit-live-status")?.textContent?.trim() === "Cancelled"
   ), { timeout: 10000 });
   const closeCancellation = await page.evaluate(() => {
     const result = {
       aborted: window.__smokeManagedAbortObserved === true,
-      hidden: document.querySelector("#vibbit-backdrop")?.style.display === "none"
+      hidden: document.querySelector("#vibbit-backdrop")?.style.display === "none",
+      liveStatus: document.querySelector("#vibbit-live-status")?.textContent?.trim() || ""
     };
     window.__smokeDelayManaged = false;
     window.__vibbit.open();
@@ -489,8 +513,8 @@ async function runNeutralUiSmoke(page) {
   });
   pushCheck(
     "08c Closing Vibbit cancels active generation",
-    closeCancellation.aborted && closeCancellation.hidden,
-    `providerAbortObserved=${closeCancellation.aborted}, panelHidden=${closeCancellation.hidden}.`
+    closeCancellation.aborted && closeCancellation.hidden && closeCancellation.liveStatus === "Cancelled",
+    `providerAbortObserved=${closeCancellation.aborted}, panelHidden=${closeCancellation.hidden}, liveStatus='${closeCancellation.liveStatus}'.`
   );
 
   await page.evaluate(() => {

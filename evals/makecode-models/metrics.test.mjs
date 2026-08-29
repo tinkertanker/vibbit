@@ -138,3 +138,15 @@ test("unmeasured oracle rows stay out of pass-rate and cost denominators", () =>
   assert.equal(summary.costUsd.unknownRows, 1);
   assert.equal(summarizeRecords([{ ...unmeasured, normalizedUsage: null }]).overall.costUsd.totalKnown, null);
 });
+
+test("pairedBootstrap rejects duplicate observations even when oracle measurements are absent", () => {
+  const unmeasured = record("a", "one", false, { strictAutomatedProxyPass: null });
+  assert.throws(
+    () => pairedBootstrap([record("a", "one", true), unmeasured, record("b", "one", false)], 20),
+    /duplicate candidate\/case\/repetition/
+  );
+  assert.throws(
+    () => pairedBootstrap([unmeasured, structuredClone(unmeasured), record("b", "one", false)], 20),
+    /duplicate candidate\/case\/repetition/
+  );
+});

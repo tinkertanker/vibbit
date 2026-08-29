@@ -151,9 +151,9 @@ export function pairedBootstrap(records, iterations = 2000) {
         if (Object.hasOwn(pair, candidate)) {
           throw new Error("Paired comparison contains duplicate candidate/case/repetition rows");
         }
-        if (typeof record.evaluation?.strictAutomatedProxyPass === "boolean") {
-          pair[candidate] = record.evaluation.strictAutomatedProxyPass ? 1 : 0;
-        }
+        pair[candidate] = typeof record.evaluation?.strictAutomatedProxyPass === "boolean"
+          ? (record.evaluation.strictAutomatedProxyPass ? 1 : 0)
+          : null;
       }
       const differences = [...byPair.values()]
         .filter((pair) => Number.isFinite(pair[left]) && Number.isFinite(pair[right]))

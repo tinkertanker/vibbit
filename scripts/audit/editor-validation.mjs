@@ -149,14 +149,22 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
     );
     await page.evaluate((code) => {
       const models = window.monaco.editor.getModels();
-      const model = models.find((item) => /main\.ts$/i.test(item.uri?.path || item.uri?.toString?.() || "")) || models[0];
+      const mainModels = models.filter((item) => /main\.ts$/i.test(item.uri?.path || item.uri?.toString?.() || ""));
+      if (mainModels.length !== 1) {
+        throw new Error(`Expected exactly one main.ts model, found ${mainModels.length}`);
+      }
+      const [model] = mainModels;
       model.setValue(code);
     }, fixture.code);
     await page.waitForTimeout(2500);
 
     const sourceState = await page.evaluate((submittedCode) => {
       const models = window.monaco?.editor?.getModels?.() || [];
-      const model = models.find((item) => /main\.ts$/i.test(item.uri?.path || item.uri?.toString?.() || "")) || models[0];
+      const mainModels = models.filter((item) => /main\.ts$/i.test(item.uri?.path || item.uri?.toString?.() || ""));
+      if (mainModels.length !== 1) {
+        throw new Error(`Expected exactly one main.ts model, found ${mainModels.length}`);
+      }
+      const [model] = mainModels;
       const value = String(model?.getValue?.() || "").replace(/\r\n/g, "\n");
       const expected = String(submittedCode || "").replace(/\r\n/g, "\n");
       const markers = model
@@ -180,7 +188,8 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
           && /problem converting|unable to convert|grey javascript/i.test(node.textContent || ""));
       const selectedBlocks = [...document.querySelectorAll(".blocks-menuitem")]
         .some((node) => /selected|active/.test(node.className));
-      return visibleDialog || selectedBlocks;
+      const activeProject = window.E?.getEditor?.();
+      return visibleDialog || selectedBlocks || activeProject?.isBlocksActive?.();
     }, null, { timeout: 30000 });
     await page.waitForTimeout(1500);
 
@@ -223,8 +232,8 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
           // Ignore cross-origin frames; the active editor workspace is same-origin.
         }
       }
-      const activeCandidates = candidates.filter((candidate) => candidate.selectedBlocks && candidate.visible);
-      const active = activeCandidates.length === 1 ? activeCandidates[0] : null;
+      const visibleCandidates = candidates.filter((candidate) => candidate.visible);
+      const active = visibleCandidates.length === 1 ? visibleCandidates[0] : null;
       const details = active ? (() => {
         const workspace = active.workspace;
         const blocks = workspace.getAllBlocks(false) || [];
@@ -241,17 +250,16 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
         return { blockTypes, greyTypes, nativeBlocks };
       })() : { blockTypes: [], greyTypes: [], nativeBlocks: 0 };
       return {
-        selectedBlocks: activeCandidates.length > 0,
+        selectedBlocks: candidates.some((candidate) => candidate.selectedBlocks),
         workspaceFound: Boolean(active),
         workspaceCandidates: candidates.length,
-        activeWorkspaceCandidates: activeCandidates.length,
+        activeWorkspaceCandidates: visibleCandidates.length,
         greyTypes: details.greyTypes,
         nativeBlocks: details.nativeBlocks,
         blockTypes: details.blockTypes
       };
     });
-    const releasedEditorAccepted = blockState.selectedBlocks
-      && sourceState.sourceMatches
+    const releasedEditorAccepted = sourceState.sourceMatches
       && sourceState.compileErrors.length === 0
       && !conversionDialog
       && blockState.workspaceFound
