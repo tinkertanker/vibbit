@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { stubForTarget } from "./makecode-compat-core.mjs";
 import {
   compileAndDecompile,
   countGreyBlocks,
@@ -37,17 +38,18 @@ test("pin table covers microbit, arcade, and maker with SHA commits", () => {
   assert.throws(() => getTargetPin("unknown"), /Unknown MakeCode target/);
 });
 
-test("XML reject counts typescript_statement independently of decompile.success", () => {
+test("XML reject counts statement and expression grey blocks independently of decompile.success", () => {
   const xml = [
     '<xml xmlns="http://www.w3.org/1999/xhtml">',
     '<block type="pxt-on-start"></block>',
     '<block type="typescript_statement">',
     '<mutation line0="class Foo &#123;&#125;" numlines="1"></mutation>',
     "</block>",
+    '<block type="typescript_expression"><field name="EXPRESSION">(() =&gt; 1)()</field></block>',
     "</xml>"
   ].join("");
-  assert.equal(countGreyBlocks(xml), 1);
-  assert.deepEqual(extractGreySnippets(xml), ["class Foo {}"]);
+  assert.equal(countGreyBlocks(xml), 2);
+  assert.deepEqual(extractGreySnippets(xml), ["class Foo {}", "(() => 1)()"]);
 });
 
 test("MakeCode score awards 60 only when compile, decompile, native, and round-trip pass", () => {
@@ -82,7 +84,7 @@ test("pinned workers compile and decompile native stubs", { timeout: LIVE_MS }, 
   const cases = [
     { target: "microbit", code: 'basic.showString("Hi")\n', nativeHint: /pxt-on-start|device_print_message/ },
     { target: "arcade", code: 'game.splash("Hi")\n', nativeHint: /<block/ },
-    { target: "maker", code: "forever(function () {\n})\n", nativeHint: /<block/ }
+    { target: "maker", code: stubForTarget("maker") + "\n", nativeHint: /<block/ }
   ];
   for (const item of cases) {
     const report = await compileAndDecompile({ target: item.target, code: item.code });
@@ -94,6 +96,30 @@ test("pinned workers compile and decompile native stubs", { timeout: LIVE_MS }, 
     assert.match(report.blocksXml, item.nativeHint);
     assert.equal(report.targetRelease.commit, getTargetPin(item.target).commit);
     assert.match(report.hashes.blocksSha256, /^[0-9a-f]{64}$/);
+  }
+});
+
+test("pinned Circuit Playground pin capabilities match the Maker prompt", { timeout: LIVE_MS }, async () => {
+  const valid = await compileAndDecompile({
+    target: "maker",
+    code: [
+      "pins.LED.digitalWrite(true)",
+      "pins.A0.analogWrite(512)",
+      "pause(pins.A1.analogRead())",
+      "pins.A2.servoWrite(90)",
+      "pins.LED.digitalWrite(pins.A7.digitalRead())"
+    ].join("\n")
+  });
+  assert.equal(valid.ok, true, JSON.stringify(valid.diagnostics.slice(0, 3)));
+
+  for (const code of [
+    "pins.A3.analogWrite(512)",
+    "pins.A0.analogRead()",
+    "pins.A0.servoWrite(90)",
+    "pins.LED.analogRead()"
+  ]) {
+    const report = await compileAndDecompile({ target: "maker", code });
+    assert.equal(report.compileOk, false, `${code} unexpectedly compiled`);
   }
 });
 

@@ -63,7 +63,7 @@ export function listPinnedTargets() {
 }
 
 export function countGreyBlocks(xml) {
-  const matches = String(xml || "").match(/type="typescript_statement"/g);
+  const matches = String(xml || "").match(/type="typescript_(?:statement|expression)"/g);
   return matches ? matches.length : 0;
 }
 
@@ -81,7 +81,7 @@ function decodeXmlAttr(text) {
 export function extractGreySnippets(xml) {
   const snippets = [];
   const source = String(xml || "");
-  const blockRe = /<block\b[^>]*\btype="typescript_statement"[^>]*>([\s\S]*?)<\/block>/gi;
+  const blockRe = /<block\b[^>]*\btype="typescript_(?:statement|expression)"[^>]*>([\s\S]*?)<\/block>/gi;
   let blockMatch;
   while ((blockMatch = blockRe.exec(source)) && snippets.length < 8) {
     const body = blockMatch[1] || "";
@@ -91,7 +91,9 @@ export function extractGreySnippets(xml) {
     while ((lineMatch = lineRe.exec(body))) {
       lines[Number(lineMatch[1])] = decodeXmlAttr(lineMatch[2]);
     }
-    const preview = lines.filter((item) => item != null).join(" ").replace(/\s+/g, " ").trim();
+    const fieldMatch = body.match(/<field\b[^>]*>([\s\S]*?)<\/field>/i);
+    const preview = (lines.filter((item) => item != null).join(" ") || decodeXmlAttr(fieldMatch?.[1] || ""))
+      .replace(/\s+/g, " ").trim();
     snippets.push((preview || "grey block").slice(0, 140));
   }
   return snippets;

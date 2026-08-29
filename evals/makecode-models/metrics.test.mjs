@@ -1,0 +1,152 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { macroMeanTotalScore, pairedBootstrap, quantile, summarizeRecords, wilsonInterval } from "./metrics.mjs";
+
+function record(model, caseId, pass, overrides = {}) {
+  return {
+    model,
+    provider: "test-provider",
+    target: "microbit",
+    category: "sensors",
+    caseId,
+    repetition: 0,
+    totalScore: pass ? 100 : 0,
+    normalizedUsage: {
+      inputTokens: 10,
+      outputTokens: 5,
+      reasoningTokens: 1,
+      cachedInputTokens: 2,
+      attemptsWithUsage: 1,
+      attemptsWithoutUsage: 0
+    },
+    evaluation: {
+      staticPolicyPass: pass,
+      automatedProxyPass: pass,
+      strictAutomatedProxyPass: pass,
+      firstAttemptProxyPass: pass,
+      passWithinBudget: pass,
+      repairEligible: false,
+      repaired: false,
+      fallback: false,
+      falseSuccess: false,
+      failureClass: pass ? null : "decompile",
+      latencyMs: pass ? 10 : 20,
+      costUsd: pass ? 0.01 : 0.02,
+      ...overrides
+    }
+  };
+}
+
+test("quantile interpolates sorted finite values", () => {
+  assert.equal(quantile([30, 10, null, 20], 0.5), 20);
+  assert.equal(quantile([], 0.95), null);
+});
+
+test("Wilson interval stays within probability bounds", () => {
+  assert.equal(wilsonInterval(0, 0), null);
+  const interval = wilsonInterval(3, 4);
+  assert(interval.low > 0 && interval.low < 0.75);
+  assert(interval.high > 0.75 && interval.high <= 1);
+});
+
+test("summarizeRecords reports policy, repair, outcome, latency, and failure metrics", () => {
+  const records = [
+    record("a", "one", true),
+    record("a", "two", false, {
+      firstAttemptPass: false,
+      passWithinBudget: true,
+      repairEligible: true,
+      repaired: true,
+      fallback: true,
+      falseSuccess: true
+    })
+  ];
+  const summary = summarizeRecords(records);
+  assert.equal(summary.overall.strictAutomatedProxyPass.rate, 0.5);
+  assert.equal(summary.overall.passWithinBudget.rate, 1);
+  assert.equal(summary.overall.conditionalRepairSuccess.rate, 1);
+  assert.equal(summary.overall.fallback.rate, 0.5);
+  assert.equal(summary.overall.falseSuccess.rate, 0.5);
+  assert.equal(summary.overall.latencyMs.median, 15);
+  assert.equal(summary.overall.costUsd.totalKnown, 0.03);
+  assert.equal(summary.overall.tokens.input, 20);
+  assert.equal(summary.overall.failureClasses.decompile, 1);
+  assert.equal(summary.overall.macroMeanTotalScore, 50);
+  assert.equal(summary.byCandidate["test-provider/a"].macroMeanTotalScore, 50);
+  assert.equal(summary.byTarget.microbit.count, 2);
+});
+
+test("macro score weights cases within each candidate rather than repetitions or other models", () => {
+  const candidateA = [
+    { ...record("a", "one", true), repetition: 0 },
+    { ...record("a", "one", true), repetition: 1 },
+    { ...record("a", "one", true), repetition: 2 },
+    { ...record("a", "two", false), repetition: 0 }
+  ];
+  const candidateB = [
+    { ...record("b", "one", false), totalScore: 20 },
+    { ...record("b", "two", false), totalScore: 20 }
+  ];
+  const summary = summarizeRecords([...candidateA, ...candidateB]);
+  assert.equal(macroMeanTotalScore(candidateA), 50);
+  assert.equal(summary.byCandidate["test-provider/a"].macroMeanTotalScore, 50);
+  assert.equal(summary.byCandidate["test-provider/b"].macroMeanTotalScore, 20);
+  assert.equal(summary.overall.macroMeanTotalScore, null);
+});
+
+test("pairedBootstrap compares matched provider/model candidates rather than unpaired totals", () => {
+  const records = [
+    record("a", "one", true),
+    record("b", "one", false),
+    record("a", "two", false),
+    record("b", "two", false),
+    record("a", "unmatched", true)
+  ];
+  const [comparison] = pairedBootstrap(records, 100);
+  assert.equal(comparison.pairedCases, 2);
+  assert.equal(comparison.strictAutomatedProxyPassRateDelta, 0.5);
+  assert(comparison.bootstrap95.low >= 0);
+  assert(comparison.bootstrap95.high <= 1);
+});
+
+test("pairedBootstrap keeps identical model IDs on different providers distinct", () => {
+  const records = [
+    record("same", "one", true),
+    { ...record("same", "one", false), provider: "other-provider" }
+  ];
+  const [comparison] = pairedBootstrap(records, 20);
+  assert.equal(comparison.left, "other-provider/same");
+  assert.equal(comparison.right, "test-provider/same");
+  assert.equal(comparison.pairedCases, 1);
+  assert.equal(comparison.strictAutomatedProxyPassRateDelta, -1);
+});
+
+test("unmeasured oracle rows stay out of pass-rate and cost denominators", () => {
+  const measured = record("a", "one", true);
+  const unmeasured = record("a", "two", false, {
+    automatedProxyPass: null,
+    strictAutomatedProxyPass: null,
+    passWithinBudget: null,
+    costUsd: null
+  });
+  unmeasured.costUsd = null;
+  const summary = summarizeRecords([measured, unmeasured]).overall;
+  assert.equal(summary.strictAutomatedProxyPass.total, 1);
+  assert.equal(summary.strictAutomatedProxyPass.rate, 1);
+  assert.equal(summary.costUsd.knownRows, 1);
+  assert.equal(summary.costUsd.unknownRows, 1);
+  assert.equal(summarizeRecords([{ ...unmeasured, normalizedUsage: null }]).overall.costUsd.totalKnown, null);
+});
+
+test("pairedBootstrap rejects duplicate observations even when oracle measurements are absent", () => {
+  const unmeasured = record("a", "one", false, { strictAutomatedProxyPass: null });
+  assert.throws(
+    () => pairedBootstrap([record("a", "one", true), unmeasured, record("b", "one", false)], 20),
+    /duplicate candidate\/case\/repetition/
+  );
+  assert.throws(
+    () => pairedBootstrap([unmeasured, structuredClone(unmeasured), record("b", "one", false)], 20),
+    /duplicate candidate\/case\/repetition/
+  );
+});

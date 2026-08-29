@@ -1,6 +1,8 @@
 const BACKEND = "https://vibbit.tk.sg";
 const HOSTED_MANAGED = false;
 const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
+const EXTENSION_BUILD = false;
+const EXTENSION_RUNTIME_REVISION = "source";
 
 (function () {
   const existingRuntime = window.__vibbit;
@@ -49,6 +51,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const STORAGE_MANAGED_SESSION = "__vibbit_managed_session";
   const STORAGE_MANAGED_SESSION_EXPIRES = "__vibbit_managed_session_expires";
   const CLASS_CODE_LENGTH = 10;
+  // BEGIN_PAGE_BYOK_CONFIG
+  const memoryProviderKeys = Object.create(null);
 
   const MODEL_PRESETS = {
     openai: [
@@ -97,6 +101,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     if (provider === "opencode") return OPENCODE_THINK_MODELS.has(model);
     return false;
   };
+  // END_PAGE_BYOK_CONFIG
 
   const storageGet = (key) => {
     try {
@@ -121,16 +126,94 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
   };
 
+  // BEGIN_PAGE_BYOK_KEY_STATE
   const keyStorageForProvider = (provider) => STORAGE_KEY_PREFIX + (provider || "openai");
 
-  const getStoredProviderKey = (provider) => storageGet(keyStorageForProvider(provider)) || "";
+  const getStoredProviderKey = (provider) => memoryProviderKeys[provider || "openai"] || "";
 
   const setStoredProviderKey = (provider, value) => {
     const normalized = String(value || "").trim();
-    const key = keyStorageForProvider(provider);
-    if (normalized) storageSet(key, normalized);
-    else storageRemove(key);
+    const name = provider || "openai";
+    if (normalized) memoryProviderKeys[name] = normalized;
+    else delete memoryProviderKeys[name];
   };
+
+  for (const providerName of Object.keys(MODEL_PRESETS)) {
+    const legacyKey = keyStorageForProvider(providerName);
+    storageRemove(legacyKey);
+  }
+  // END_PAGE_BYOK_KEY_STATE
+
+  // BEGIN_EXTENSION_BYOK_BRIDGE
+  const EXTENSION_REQUEST_EVENT_PREFIX = "__vibbit_extension_request_v2_";
+  const EXTENSION_RESPONSE_EVENT_PREFIX = "__vibbit_extension_response_v2_";
+  const extensionRequest = (type, payload, signal) => {
+    if (!EXTENSION_BUILD) return Promise.reject(new Error("extension_bridge_unavailable"));
+    const bridgeToken = String(document.documentElement?.dataset?.vibbitBridgeToken || "");
+    if (!/^[A-Za-z0-9_-]{8,80}$/.test(bridgeToken)) {
+      return Promise.reject(new Error("extension_bridge_unavailable"));
+    }
+    const requestEvent = EXTENSION_REQUEST_EVENT_PREFIX + bridgeToken;
+    const responseEvent = EXTENSION_RESPONSE_EVENT_PREFIX + bridgeToken;
+    const requestId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
+      ? globalThis.crypto.randomUUID().replace(/-/g, "")
+      : (Date.now().toString(36) + Math.random().toString(36).slice(2, 18));
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timeout = 0;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        document.removeEventListener(responseEvent, onResponse);
+        if (signal) signal.removeEventListener("abort", onAbort);
+      };
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn(value);
+      };
+      const onResponse = (event) => {
+        const detail = event && event.detail && typeof event.detail === "object" ? event.detail : {};
+        if (detail.requestId !== requestId) return;
+        if (detail.ok) finish(resolve, detail.value);
+        else {
+          const error = new Error(String(detail.error && detail.error.code || "extension_bridge_error"));
+          error.code = error.message;
+          error.status = Number(detail.error && detail.error.status) || 0;
+          finish(reject, error);
+        }
+      };
+      const onAbort = () => {
+        document.dispatchEvent(new CustomEvent(requestEvent, {
+          detail: { type: "vibbit:byok:cancel", requestId, payload: {} }
+        }));
+        finish(reject, createAbortError());
+      };
+      const onTimeout = () => {
+        if (type === "vibbit:byok:generate") {
+          document.dispatchEvent(new CustomEvent(requestEvent, {
+            detail: { type: "vibbit:byok:cancel", requestId, payload: {} }
+          }));
+        }
+        const error = new Error("extension_bridge_timeout");
+        error.code = error.message;
+        finish(reject, error);
+      };
+      document.addEventListener(responseEvent, onResponse);
+      if (signal) {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+      timeout = setTimeout(onTimeout, type === "vibbit:byok:generate" ? 130000 : 10000);
+      document.dispatchEvent(new CustomEvent(requestEvent, {
+        detail: { type, requestId, payload: payload && typeof payload === "object" ? payload : {} }
+      }));
+    });
+  };
+  // END_EXTENSION_BYOK_BRIDGE
 
   const bookmarkletConfig = window.__vibbitBookmarkletConfig && typeof window.__vibbitBookmarkletConfig === "object"
     ? window.__vibbitBookmarkletConfig
@@ -213,7 +296,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* mode */
     + '  <div id="setup-mode-row" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Mode</div>'
+    + '    <label for="setup-mode" style="' + S_LABEL + '">Mode</label>'
     + '    <select id="setup-mode" style="' + S_SELECT + '">'
     + '      <option value="byok">Bring your own key</option>'
     + '      <option value="managed">Managed (school account)</option>'
@@ -222,7 +305,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* BYOK: provider */
     + '  <div id="setup-byok-provider" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Provider</div>'
+    + '    <label for="setup-prov" style="' + S_LABEL + '">Provider</label>'
     + '    <select id="setup-prov" style="' + S_SELECT + '">'
     + '      <option value="openai">OpenAI</option>'
     + '      <option value="gemini">Gemini</option>'
@@ -233,24 +316,25 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* BYOK: model */
     + '  <div id="setup-byok-model" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Model</div>'
+    + '    <label for="setup-model" style="' + S_LABEL + '">Model</label>'
     + '    <select id="setup-model" style="' + S_SELECT + '"></select>'
     + '  </div>'
 
     /* BYOK: API key */
     + '  <div id="setup-byok-key" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">API Key</div>'
+    + '    <label for="setup-key" style="' + S_LABEL + '">API Key</label>'
     + '    <input id="setup-key" type="password" placeholder="Paste your API key" style="' + S_INPUT + '">'
+    + '    <div id="setup-key-note" style="font-size:11px;color:#9bb1dd">Kept in memory only; page scripts can observe bookmarklet inputs.</div>'
     + '  </div>'
 
     /* Managed: server URL */
     + '  <div id="setup-managed-server" style="display:none">'
     + '    <div id="setup-managed-server-url" style="display:grid;gap:4px">'
-    + '      <div style="' + S_LABEL + '">Server URL</div>'
+    + '      <label for="setup-server" style="' + S_LABEL + '">Server URL</label>'
     + '      <input id="setup-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
     + '    <div style="display:grid;gap:4px;margin-top:8px">'
-    + '      <div style="' + S_LABEL + '">Classroom code</div>'
+    + '      <label for="setup-class-code" style="' + S_LABEL + '">Classroom code</label>'
     + '      <input id="setup-class-code" placeholder="ABCDE-FGHIJ from your teacher" style="' + S_INPUT + '" autocomplete="off" spellcheck="false">'
     + '    </div>'
     + '  </div>'
@@ -320,7 +404,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* mode */
     + '  <div id="set-mode-row" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Mode</div>'
+    + '    <label for="set-mode" style="' + S_LABEL + '">Mode</label>'
     + '    <select id="set-mode" style="' + S_SELECT + '">'
     + '      <option value="byok">Bring your own key</option>'
     + '      <option value="managed">Managed (school account)</option>'
@@ -329,7 +413,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* BYOK: provider */
     + '  <div id="set-byok-provider" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Provider</div>'
+    + '    <label for="set-prov" style="' + S_LABEL + '">Provider</label>'
     + '    <select id="set-prov" style="' + S_SELECT + '">'
     + '      <option value="openai">OpenAI</option>'
     + '      <option value="gemini">Gemini</option>'
@@ -340,27 +424,28 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
     /* BYOK: model */
     + '  <div id="set-byok-model" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">Model</div>'
+    + '    <label for="set-model" style="' + S_LABEL + '">Model</label>'
     + '    <select id="set-model" style="' + S_SELECT + '"></select>'
     + '  </div>'
 
     /* BYOK: API key */
     + '  <div id="set-byok-key" style="display:grid;gap:4px">'
-    + '    <div style="' + S_LABEL + '">API Key</div>'
+    + '    <label for="set-key" style="' + S_LABEL + '">API Key</label>'
     + '    <div style="display:flex;gap:8px">'
     + '      <input id="set-key" type="password" placeholder="API key" style="flex:1;padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef">'
     + '      <button id="save" style="padding:8px 12px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:600;cursor:pointer;white-space:nowrap">Save Key</button>'
     + '    </div>'
+    + '    <div id="set-key-note" style="font-size:11px;color:#9bb1dd">Kept in memory only; page scripts can observe bookmarklet inputs.</div>'
     + '  </div>'
 
     /* Managed: server URL */
     + '  <div id="set-managed-server" style="display:none">'
     + '    <div id="set-managed-server-url" style="display:grid;gap:4px">'
-    + '      <div style="' + S_LABEL + '">Server URL</div>'
+    + '      <label for="set-server" style="' + S_LABEL + '">Server URL</label>'
     + '      <input id="set-server" placeholder="vibbit.tk.sg" style="' + S_INPUT + '">'
     + '    </div>'
     + '    <div style="display:grid;gap:4px;margin-top:8px">'
-    + '      <div style="' + S_LABEL + '">Classroom code</div>'
+    + '      <label for="set-class-code" style="' + S_LABEL + '">Classroom code</label>'
     + '      <input id="set-class-code" placeholder="ABCDE-FGHIJ from your teacher" style="' + S_INPUT + '" autocomplete="off" spellcheck="false">'
     + '    </div>'
     + '  </div>'
@@ -369,7 +454,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '  <details id="set-advanced">'
     + '    <summary style="cursor:pointer;font-size:12px;color:#9eb2ff;font-weight:500;user-select:none">Advanced</summary>'
     + '    <div style="display:grid;gap:4px;margin-top:8px">'
-    + '      <div style="' + S_LABEL + '">Target</div>'
+    + '      <label for="set-target" style="' + S_LABEL + '">Target</label>'
     + '      <select id="set-target" style="' + S_SELECT + '">'
     + '        <option value="microbit">micro:bit</option>'
     + '        <option value="arcade">Arcade</option>'
@@ -394,6 +479,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '</button>'
     + '<button id="preview-new" aria-label="Start a new chat" style="padding:6px 14px;border:1px solid #29324e;border-radius:999px;background:transparent;color:#8899bb;font-size:12px;font-weight:500;cursor:pointer">New Chat</button>';
 
+  const liveStatus = document.createElement("div");
+  liveStatus.id = "vibbit-live-status";
+  liveStatus.setAttribute("role", "status");
+  liveStatus.setAttribute("aria-live", "polite");
+  liveStatus.setAttribute("aria-atomic", "true");
+  liveStatus.style.cssText = "position:fixed;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0";
+
   /* hidden elements for backwards-compat refs */
   const hiddenCompat = document.createElement("div");
   hiddenCompat.style.display = "none";
@@ -401,6 +493,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   ui.appendChild(hiddenCompat);
 
   const runtimeStyle = document.createElement("style");
+  runtimeStyle.id = "vibbit-runtime-style";
   runtimeStyle.textContent = [
     "@keyframes vibbit-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}",
     "@keyframes vibbit-msg-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}",
@@ -441,12 +534,70 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     if (!document.head.contains(runtimeStyle)) document.head.appendChild(runtimeStyle);
     if (!document.body.contains(backdrop)) document.body.appendChild(backdrop);
     if (!document.body.contains(previewBar)) document.body.appendChild(previewBar);
-    if (!document.body.contains(fab)) document.body.appendChild(fab);
+    if (!document.body.contains(liveStatus)) document.body.appendChild(liveStatus);
+    if (!EXTENSION_BUILD && !document.body.contains(fab)) document.body.appendChild(fab);
     return true;
+  };
+
+  let busy = false;
+  let generationController = null;
+  let closeTimer = 0;
+  let focusBeforeOpen = null;
+  let inertedPageNodes = [];
+  let modalIsolationObserver = null;
+
+  const visibleFocusableElements = () => [...ui.querySelectorAll(
+    'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])'
+  )].filter((node) => Boolean(node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+
+  const focusPanelControl = () => {
+    const focusable = visibleFocusableElements();
+    const preferred = focusable.find((node) => node.id === "p")
+      || focusable.find((node) => /^(INPUT|SELECT|TEXTAREA)$/.test(node.tagName))
+      || focusable[0];
+    try { preferred?.focus({ preventScroll: true }); } catch (error) {}
+  };
+
+  const isolatePageForModal = () => {
+    if (modalIsolationObserver || inertedPageNodes.length || !document.body) return;
+    const inertNode = (node) => {
+      if (!(node instanceof HTMLElement)
+        || node === backdrop
+        || node === previewBar
+        || node === liveStatus
+        || inertedPageNodes.some((entry) => entry.node === node)) return;
+      inertedPageNodes.push({ node, inert: Boolean(node.inert) });
+      node.inert = true;
+    };
+    [...document.body.children].forEach(inertNode);
+    modalIsolationObserver = new MutationObserver((records) => {
+      records.forEach((record) => [...record.addedNodes].forEach(inertNode));
+    });
+    modalIsolationObserver.observe(document.body, { childList: true });
+  };
+
+  const restorePageAfterModal = () => {
+    modalIsolationObserver?.disconnect();
+    modalIsolationObserver = null;
+    inertedPageNodes.forEach(({ node, inert }) => {
+      if (node?.isConnected) node.inert = inert;
+    });
+    inertedPageNodes = [];
+  };
+
+  const restorePageFocus = () => {
+    const target = focusBeforeOpen;
+    focusBeforeOpen = null;
+    if (!target?.isConnected || typeof target.focus !== "function") return;
+    try { target.focus({ preventScroll: true }); } catch (error) {}
   };
 
   const openPanel = function () {
     if (!ensureRuntimeMounted()) return;
+    clearTimeout(closeTimer);
+    const active = document.activeElement;
+    if (active && !ui.contains(active) && !previewBar.contains(active)) focusBeforeOpen = active;
+    isolatePageForModal();
     fab.style.display = "none";
     previewBar.style.display = "none";
     backdrop.style.display = "flex";
@@ -454,25 +605,30 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       backdrop.dataset.active = "true";
     });
     requestAnimationFrame(function () {
-      try { promptEl && promptEl.focus({ preventScroll: true }); } catch (e) {}
+      focusPanelControl();
     });
   };
 
   const closePanel = function () {
     if (!ensureRuntimeMounted()) return;
+    if (generationController && !generationController.signal.aborted) generationController.abort();
     backdrop.dataset.active = "";
     previewBar.style.display = "none";
-    setTimeout(function () {
+    closeTimer = setTimeout(function () {
       backdrop.style.display = "none";
-      fab.style.display = "flex";
+      fab.style.display = EXTENSION_BUILD ? "none" : "flex";
+      restorePageAfterModal();
+      restorePageFocus();
     }, 200);
   };
 
   const enterPreview = function () {
     backdrop.dataset.active = "";
-    setTimeout(function () {
+    closeTimer = setTimeout(function () {
       backdrop.style.display = "none";
       previewBar.style.display = "flex";
+      restorePageAfterModal();
+      try { previewReturnBtn?.focus({ preventScroll: true }); } catch (error) {}
     }, 200);
   };
 
@@ -481,7 +637,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     openPanel();
   };
 
-  fab.onclick = openPanel;
+  if (!EXTENSION_BUILD) fab.onclick = openPanel;
   if (launchPanelOnLoad) {
     openPanel();
   } else {
@@ -557,11 +713,25 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const saveBtn = $("#save");
   const backBtn = $("#back");
 
+  if (EXTENSION_BUILD) {
+    setupKey.value = "";
+    setupKey.disabled = true;
+    setupKey.placeholder = "Managed in Vibbit extension settings";
+    setKey.value = "";
+    setKey.disabled = true;
+    setKey.placeholder = "Stored only in extension session storage";
+    saveBtn.textContent = "Open BYOK Settings";
+    saveBtn.style.background = "#3454D1";
+    $("#setup-key-note").textContent = "Stored in extension session storage; never exposed to this page.";
+    $("#set-key-note").textContent = "Provider, model, and key are managed in extension settings.";
+  }
+
   /* ── view switching ──────────────────────────────────────── */
   const showView = (name) => {
     Object.keys(views).forEach((key) => {
       views[key].style.display = key === name ? "flex" : "none";
     });
+    if (backdrop.dataset.active === "true") requestAnimationFrame(focusPanelControl);
   };
 
   /* ── model preset population ─────────────────────────────── */
@@ -592,8 +762,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── mode-dependent field visibility ─────────────────────── */
   const setModeVisibility = (mode, refs) => {
     const isByok = mode === "byok";
-    refs.byokProvider.style.display = isByok ? "grid" : "none";
-    refs.byokModel.style.display = isByok ? "grid" : "none";
+    refs.byokProvider.style.display = isByok && !EXTENSION_BUILD ? "grid" : "none";
+    refs.byokModel.style.display = isByok && !EXTENSION_BUILD ? "grid" : "none";
     refs.byokKey.style.display = isByok ? "grid" : "none";
     refs.managedServer.style.display = isByok ? "none" : "grid";
     if (refs.managedServerUrl) {
@@ -653,6 +823,10 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const refreshThinkHarderVisibility = () => {
+    if (EXTENSION_BUILD) {
+      thinkHarderWrap.style.display = "none";
+      return;
+    }
     const mode = coerceMode(storageGet(STORAGE_MODE) || "byok");
     const provider = storageGet(STORAGE_PROVIDER) || "openai";
     const model = storageGet(STORAGE_MODEL) || "";
@@ -660,12 +834,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     thinkHarderWrap.style.display = mode === "byok" && supportsThinking ? "inline-flex" : "none";
   };
 
+  const getExtensionByokStatus = () => extensionRequest("vibbit:byok:status", {});
+  const openExtensionByokSettings = () => extensionRequest("vibbit:byok:open-options", {});
+
   /* ── state ───────────────────────────────────────────────── */
   let undoStack = [];
-  let busy = false;
   let logsCollapsed = true;
   let feedbackCollapsed = false;
-  let generationController = null;
   let queuedForcedRequest = "";
   let queuedForcedDialog = null;
   let lastConversionDialog = null;
@@ -678,11 +853,30 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   let loadingTick = 0;
   let loadingAssistantIdx = -1;
   let loadingVerbPhase = "model";
+  let statusAnnouncementVersion = 0;
+
+  const terminalStatuses = new Set([
+    "Done",
+    "Applied, unverified",
+    "Fallback applied",
+    "Cancelled",
+    "Error",
+    "No code",
+    "Needs fix",
+    "Reverted"
+  ]);
 
   const setStatus = (value) => {
     const next = value || "";
     statusEl.textContent = next;
     ui.dataset.status = next;
+    const announcementVersion = ++statusAnnouncementVersion;
+    liveStatus.textContent = "";
+    if (terminalStatuses.has(next)) {
+      setTimeout(() => {
+        if (announcementVersion === statusAnnouncementVersion) liveStatus.textContent = next;
+      }, 0);
+    }
   };
 
   const setBusyIndicator = (on) => {
@@ -821,6 +1015,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const ALLOWED_ASSISTANT_STATUSES = {
     generating: true,
     done: true,
+    fallback: true,
+    unverified: true,
     error: true,
     cancelled: true,
     "convert-error": true
@@ -915,6 +1111,24 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         });
       }
       html += '<div class="vibbit-msg-success">' + CHECK_SVG + ' Code applied to MakeCode</div>';
+      if (!actionsHidden) {
+        html += '<div class="vibbit-msg-actions">';
+        html += '<button class="vibbit-btn-preview" data-action="preview">Preview</button>';
+        if (undoStack.length > 0) {
+          html += '<button class="vibbit-btn-undo" data-action="undo">Undo</button>';
+        }
+        html += '</div>';
+      }
+    } else if (status === "fallback" || status === "unverified") {
+      if (msg.feedback && msg.feedback.length) {
+        msg.feedback.forEach(function (line) {
+          html += '<div class="vibbit-feedback-line">' + escapeHTML(line) + '</div>';
+        });
+      }
+      const outcomeText = status === "fallback"
+        ? "A minimal fallback was applied; it may not satisfy the request."
+        : "Code was applied, but native Blocks validation was unavailable.";
+      html += '<div class="vibbit-msg-error" role="status" aria-live="polite">' + outcomeText + '</div>';
       if (!actionsHidden) {
         html += '<div class="vibbit-msg-actions">';
         html += '<button class="vibbit-btn-preview" data-action="preview">Preview</button>';
@@ -1072,7 +1286,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     for (let i = 0; i < chatMessages.length; i++) {
       const msg = chatMessages[i];
       if (!msg || msg.role !== "assistant") continue;
-      if (msg.status !== "done" && msg.status !== "convert-error") continue;
+      if (!["done", "fallback", "unverified", "convert-error"].includes(msg.status)) continue;
       if (msg.actionsHidden) continue;
       msg.actionsHidden = true;
       const wrapper = chatMessageEls[i];
@@ -1247,11 +1461,30 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   });
 
   /* Escape to close */
-  document.addEventListener("keydown", (e) => {
+  const handleDocumentKeydown = (e) => {
+    if (e.key === "Tab" && backdrop.dataset.active === "true") {
+      const focusable = visibleFocusableElements();
+      if (!focusable.length) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !ui.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !ui.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
+      return;
+    }
     if (e.key === "Escape" && backdrop.style.display !== "none" && !busy) {
       closePanel();
     }
-  });
+  };
+  document.addEventListener("keydown", handleDocumentKeydown);
 
   /* init empty state */
   renderEmptyState();
@@ -1419,6 +1652,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   setupProv.onchange = () => {
+    if (EXTENSION_BUILD) return;
     populateModels(setupModel, setupProv.value, null);
     setupKey.value = getStoredProviderKey(setupProv.value);
   };
@@ -1445,16 +1679,31 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     setupMode.value = mode;
     showSetupError("");
     if (mode === "byok") {
+      if (EXTENSION_BUILD) {
+        try {
+          const extensionStatus = await getExtensionByokStatus();
+          if (!extensionStatus || !extensionStatus.hasKey) {
+            showSetupError("Add a provider key in Vibbit extension settings, then return here.");
+            await openExtensionByokSettings();
+            return;
+          }
+        } catch {
+          showSetupError("Could not reach Vibbit extension settings. Reload the extension and this page.");
+          return;
+        }
+      }
       const key = setupKey.value.trim();
-      if (!key) {
+      if (!EXTENSION_BUILD && !key) {
         setupKey.style.borderColor = "#ef4444";
         setupKey.focus();
         return;
       }
       setupKey.style.borderColor = "#29324e";
-      storageSet(STORAGE_PROVIDER, setupProv.value);
-      storageSet(STORAGE_MODEL, setupModel.value);
-      setStoredProviderKey(setupProv.value, key);
+      if (!EXTENSION_BUILD) {
+        storageSet(STORAGE_PROVIDER, setupProv.value);
+        storageSet(STORAGE_MODEL, setupModel.value);
+        setStoredProviderKey(setupProv.value, key);
+      }
     } else {
       const server = hostedManaged
         ? DEFAULT_SERVER
@@ -1492,7 +1741,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     setMode.value = mode;
     setProv.value = setupProv.value;
     populateModels(setModel, setupProv.value, setupModel.value);
-    setKey.value = getStoredProviderKey(setupProv.value);
+    setKey.value = EXTENSION_BUILD ? "" : getStoredProviderKey(setupProv.value);
     setServer.value = setupServer.value;
     setClassCode.value = setupClassCode.value;
     applySettingsMode();
@@ -1510,6 +1759,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   setProv.onchange = () => {
+    if (EXTENSION_BUILD) return;
     populateModels(setModel, setProv.value, null);
     storageSet(STORAGE_PROVIDER, setProv.value);
     /* select the default and persist */
@@ -1519,19 +1769,26 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   setModel.onchange = () => {
+    if (EXTENSION_BUILD) return;
     storageSet(STORAGE_MODEL, setModel.value);
     refreshThinkHarderVisibility();
   };
 
   thinkHarder.onchange = () => {
+    if (EXTENSION_BUILD) return;
     storageSet(STORAGE_THINK_HARDER, thinkHarder.checked ? "1" : "0");
   };
 
-  saveBtn.onclick = () => {
+  saveBtn.onclick = async () => {
     try {
+      if (EXTENSION_BUILD) {
+        await openExtensionByokSettings();
+        setStatus("Settings opened");
+        return;
+      }
       setStoredProviderKey(setProv.value, setKey.value.trim());
-      setStatus("Key saved");
-      logLine("BYOK API key saved in this browser.");
+      setStatus("Key held for this page");
+      logLine("BYOK API key is held only in memory until this page reloads.");
     } catch (error) {
       logLine("Save failed: " + error);
     }
@@ -1575,13 +1832,19 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return true;
   };
   const destroyRuntime = () => {
+    if (generationController && !generationController.signal.aborted) generationController.abort();
+    clearTimeout(closeTimer);
+    document.removeEventListener("keydown", handleDocumentKeydown);
     try {
       if (fab && fab.parentNode) fab.parentNode.removeChild(fab);
       if (previewBar && previewBar.parentNode) previewBar.parentNode.removeChild(previewBar);
+      if (liveStatus && liveStatus.parentNode) liveStatus.parentNode.removeChild(liveStatus);
       if (backdrop && backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
       if (runtimeStyle && runtimeStyle.parentNode) runtimeStyle.parentNode.removeChild(runtimeStyle);
     } catch (error) {
     }
+    restorePageAfterModal();
+    restorePageFocus();
     if (window.__vibbit === runtimeApi) {
       delete window.__vibbit;
     }
@@ -1589,7 +1852,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return true;
   };
   const runtimeApi = {
-    version: "1",
+    version: "2",
+    revision: EXTENSION_RUNTIME_REVISION,
     open: openPanel,
     close: closePanel,
     toggle: togglePanel,
@@ -1828,64 +2092,89 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     };
   };
 
-  const collectBlocklyWorkspaces = (rootWin) => {
-    const workspaces = [];
-    const queue = [rootWin, window];
+  const findMakeCodeProject = (monacoCtx) => {
+    const queue = [monacoCtx && monacoCtx.win, window];
     const seen = new Set();
-
     while (queue.length) {
       const ctx = queue.shift();
       if (!ctx || seen.has(ctx)) continue;
       seen.add(ctx);
-
       try {
-        const blockly = ctx.Blockly;
-        const ws = blockly && (typeof blockly.getMainWorkspace === "function" ? blockly.getMainWorkspace() : blockly.mainWorkspace);
-        if (ws && typeof ws.getAllBlocks === "function") workspaces.push(ws);
+        const project = ctx.E?.getEditor?.();
+        if (project) return { win: ctx, project };
       } catch (error) {
       }
-
       try {
-        const frames = ctx.document ? [...ctx.document.querySelectorAll("iframe")] : [];
-        for (const frame of frames) {
-          try {
-            if (frame.contentWindow) queue.push(frame.contentWindow);
-          } catch (error) {
-          }
+        for (const frame of ctx.document?.querySelectorAll?.("iframe") || []) {
+          if (frame.contentWindow) queue.push(frame.contentWindow);
         }
       } catch (error) {
       }
     }
-
-    return workspaces;
+    return null;
   };
 
-  const inspectGreyBlocks = (rootWin) => {
-    const workspaces = collectBlocklyWorkspaces(rootWin);
-    if (!workspaces.length) {
-      return { checked: false, ok: true, greyBlocks: 0, reason: "Blockly workspace unavailable" };
+  const normaliseSourceProof = (value) => String(value || "")
+    .replace(/\r\n/g, "\n")
+    .trim();
+
+  const inspectGreyBlocks = (proof) => {
+    if (!proof) return { checked: false, ok: true, greyBlocks: 0, reason: "MakeCode project API unavailable" };
+    if (!proof.sourceSaved) return { checked: false, ok: true, greyBlocks: 0, reason: "Pasted source could not be bound" };
+    if (!proof.switchRequested) return { checked: false, ok: true, greyBlocks: 0, reason: "Blocks switch could not be confirmed" };
+
+    const project = proof.project;
+    const blocksEditor = project?.blocksEditor;
+    const workspace = blocksEditor?.editor;
+    let active = false;
+    let sourceMatches = false;
+    try {
+      active = project.state?.header?.id === proof.projectId
+        && project.isBlocksActive?.() === true
+        && project.editor === blocksEditor
+        && project.editorFile?.name === "main.blocks"
+        && project.updatingEditorFile !== true
+        && blocksEditor.loadingXml !== true
+        && !blocksEditor.loadingXmlPromise
+        && blocksEditor.delayLoadXml == null
+        && blocksEditor.typeScriptSaveable === true
+        && workspace
+        && !workspace.isFlyout
+        && !workspace.isDisposed?.()
+        && typeof workspace.getAllBlocks === "function";
+      sourceMatches = proof.model.getVersionId?.() === proof.modelVersion
+        && normaliseSourceProof(proof.model.getValue?.()) === proof.expectedSource
+        && normaliseSourceProof(proof.sourceFile?.content) === proof.expectedSource;
+    } catch (error) {
+      active = false;
+      sourceMatches = false;
+    }
+    if (!active || !sourceMatches) {
+      return {
+        checked: false,
+        ok: true,
+        greyBlocks: 0,
+        reason: active ? "Blocks workspace source could not be attributed" : "Blocks conversion still pending"
+      };
     }
 
     let greyBlocks = 0;
     const snippets = [];
-
-    for (const ws of workspaces) {
-      let blocks = [];
-      try {
-        blocks = ws.getAllBlocks(false) || [];
-      } catch (error) {
-        blocks = [];
-      }
-      for (const block of blocks) {
-        if (!block || block.type !== "typescript_statement") continue;
-        greyBlocks += 1;
-        if (snippets.length < 3) {
-          let preview = "";
-          try { preview = (block.getFieldValue && block.getFieldValue("EXPRESSION")) || ""; } catch (error) {}
-          try { if (!preview && block.toString) preview = block.toString(); } catch (error) {}
-          preview = String(preview || "grey block").replace(/\s+/g, " ").trim();
-          snippets.push(preview.slice(0, 140));
-        }
+    let blocks = [];
+    try {
+      blocks = workspace.getAllBlocks(false) || [];
+    } catch (error) {
+      return { checked: false, ok: true, greyBlocks: 0, reason: "Blocks workspace unavailable" };
+    }
+    for (const block of blocks) {
+      if (!block || (block.type !== "typescript_statement" && block.type !== "typescript_expression")) continue;
+      greyBlocks += 1;
+      if (snippets.length < 3) {
+        let preview = "";
+        try { preview = (block.getFieldValue && block.getFieldValue("EXPRESSION")) || ""; } catch (error) {}
+        try { if (!preview && block.toString) preview = block.toString(); } catch (error) {}
+        preview = String(preview || "grey block").replace(/\s+/g, " ").trim();
+        snippets.push(preview.slice(0, 140));
       }
     }
 
@@ -1901,8 +2190,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return { checked: true, ok: true, greyBlocks: 0, snippets };
   };
 
-  const waitForDecompileProbe = (monacoCtx, timeoutMs = 6000, signal) => {
-    const rootWin = monacoCtx && monacoCtx.win ? monacoCtx.win : monacoCtx;
+  const waitForDecompileProbe = (monacoCtx, proof, timeoutMs = 6000, signal) => {
     const deadline = performance.now() + timeoutMs;
     const startedAt = performance.now();
     const minSettleMs = 1500;
@@ -1930,7 +2218,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           }
         } catch (error) {
         }
-        const report = inspectGreyBlocks(rootWin);
+        const report = inspectGreyBlocks(proof);
         lastReport = report;
         const signature = [
           report.checked ? "checked" : "unchecked",
@@ -1984,18 +2272,70 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         logLine("Pasting generated code into editor.");
         ctx.model.setValue(code);
         throwIfAborted(signal);
+        const projectContext = findMakeCodeProject(ctx);
+        const project = projectContext?.project;
+        const projectId = String(project?.state?.header?.id || "");
+        const modelVersion = ctx.model.getVersionId?.();
+        const sourceFile = project?.editorFile;
+        const proofUnavailableReason = !project
+          ? "MakeCode project API unavailable"
+          : (sourceFile?.name !== "main.ts"
+            ? "active source is not main.ts"
+            : (typeof project.saveCurrentSourceAsync !== "function"
+              ? "source save API unavailable"
+              : (!projectId
+                ? "project identity unavailable"
+                : (!Number.isFinite(modelVersion) ? "model revision unavailable" : ""))));
+        const proof = project
+          && sourceFile?.name === "main.ts"
+          && typeof project.saveCurrentSourceAsync === "function"
+          && projectId
+          && Number.isFinite(modelVersion)
+          ? {
+              project,
+              projectId,
+              sourceFile,
+              model: ctx.model,
+              modelVersion,
+              expectedSource: normaliseSourceProof(code),
+              sourceSaved: false,
+              switchRequested: false
+            }
+          : null;
+        if (!proof) logLine("Live Blocks proof unavailable: " + proofUnavailableReason + ".");
         if (ctx.editor && ctx.editor.setPosition) {
           ctx.editor.setPosition({ lineNumber: 1, column: 1 });
         }
-        logLine("Switching back to Blocks.");
-        clickLike(ctx.win.document, ["blocks"]) || (function () {
-          const menu = ctx.win.document.querySelector("button[aria-label*='More'],button[aria-label*='Editor'],.menu-button,.more-button");
-          if (menu) {
-            menu.click();
-            return clickLike(ctx.win.document, ["blocks"]);
+        const saveSource = proof
+          ? Promise.resolve(project.saveCurrentSourceAsync())
+            .then(() => {
+              proof.sourceSaved = project.state?.header?.id === proof.projectId
+                && project.editorFile === sourceFile
+                && project.editorFile?.name === "main.ts"
+                && proof.model.getVersionId?.() === proof.modelVersion
+                && normaliseSourceProof(proof.model.getValue?.()) === proof.expectedSource
+                && normaliseSourceProof(sourceFile.content) === proof.expectedSource;
+              if (!proof.sourceSaved) logLine("Could not bind the live Blocks check to the pasted source.");
+            })
+            .catch((error) => {
+              logLine("Could not save pasted source before the live Blocks check.");
+            })
+          : Promise.resolve();
+        return saveSource.then(() => {
+          throwIfAborted(signal);
+          logLine("Switching back to Blocks.");
+          let blocksControl = clickLike(ctx.win.document, ["blocks"]);
+          if (!blocksControl) {
+            const menu = ctx.win.document.querySelector("button[aria-label*='More'],button[aria-label*='Editor'],.menu-button,.more-button");
+            if (menu) {
+              menu.click();
+              blocksControl = clickLike(ctx.win.document, ["blocks"]);
+            }
           }
-        })();
-        return waitWithAbort(120, signal).then(() => {
+          if (proof) proof.switchRequested = Boolean(blocksControl);
+          if (!blocksControl) logLine("Could not confirm the Blocks switch control.");
+          return waitWithAbort(120, signal);
+        }).then(() => {
           const conversionDialog = detectConversionDialog(ctx);
           if (conversionDialog) {
             logLine("MakeCode conversion dialog detected: " + (conversionDialog.title || "Cannot convert to Blocks."));
@@ -2004,7 +2344,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             }
             throw createConversionDialogError(conversionDialog);
           }
-          return waitForDecompileProbe(ctx, 6000, signal);
+          return waitForDecompileProbe(ctx, proof, 6000, signal);
         }).then((probe) => {
           throwIfAborted(signal);
           if (probe && probe.conversionDialog) {
@@ -2015,13 +2355,14 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             throw createConversionDialogError(probe.conversionDialog);
           }
           if (!probe.checked) {
-            logLine("Live decompile check unavailable in this session.");
-            return;
+            logLine("Live decompile check unavailable in this session: " + (probe.reason || "provenance unavailable") + ".");
+            return { validation: "unavailable" };
           }
           if (!probe.ok) {
             throw createGreyBlockError(probe);
           }
           logLine("Live decompile check passed (no grey blocks).");
+          return { validation: "verified" };
         });
       });
     });
@@ -2059,6 +2400,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── shared compat core (generated) ───────────────────── */
   // BEGIN_SHARED_COMPAT_CORE
   const {
+    DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
     sanitizeMakeCode,
     normaliseFeedback,
     resolvePromptTargetContext,
@@ -2113,8 +2455,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       }
       if (target === "maker") {
         return {
-          targetName: "Maker",
-          namespaceList: "pins,input,loops,music"
+          targetName: "Maker (Adafruit Circuit Playground Express)",
+          namespaceList: "pins,input,music plus global forever and pause"
         };
       }
       return {
@@ -2124,30 +2466,57 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
 
     const DEFAULT_CURRENT_CODE_TRUNCATION_MARKER = "\n// ... CURRENT_CODE_TRUNCATED ...\n";
+    const DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS = 12000;
 
     function boundCurrentCodeForPrompt(currentCode, {
       maxChars = 0,
-      truncationMarker = DEFAULT_CURRENT_CODE_TRUNCATION_MARKER
+      truncationMarker = DEFAULT_CURRENT_CODE_TRUNCATION_MARKER,
+      strategy = "production"
     } = {}) {
       const source = String(currentCode || "");
       if (!source.trim()) {
-        return { text: "", truncated: false, omittedChars: 0 };
+        return { text: "", truncated: false, omittedChars: 0, strategy };
       }
       if (!maxChars || source.length <= maxChars) {
-        return { text: source, truncated: false, omittedChars: 0 };
+        return { text: source, truncated: false, omittedChars: 0, strategy };
       }
 
-      const budget = Math.max(0, maxChars - truncationMarker.length);
-      const headBudget = Math.floor(budget * 0.65);
-      const tailBudget = Math.max(0, budget - headBudget);
-      const head = source.slice(0, headBudget).trimEnd();
-      const tail = source.slice(source.length - tailBudget).trimStart();
-      const omittedChars = Math.max(0, source.length - (head.length + tail.length));
+      const safeStrategy = ["production", "head", "middle", "tail"].includes(strategy)
+        ? strategy
+        : "production";
+      let text;
+      let keptChars;
+      if (safeStrategy === "head") {
+        const budget = Math.max(0, maxChars - truncationMarker.length);
+        const kept = source.slice(0, budget).trimEnd();
+        text = kept + truncationMarker;
+        keptChars = kept.length;
+      } else if (safeStrategy === "tail") {
+        const budget = Math.max(0, maxChars - truncationMarker.length);
+        const kept = source.slice(-budget).trimStart();
+        text = truncationMarker + kept;
+        keptChars = kept.length;
+      } else if (safeStrategy === "middle") {
+        const budget = Math.max(0, maxChars - truncationMarker.length * 2);
+        const start = Math.max(0, Math.floor((source.length - budget) / 2));
+        const kept = source.slice(start, start + budget).trim();
+        text = truncationMarker + kept + truncationMarker;
+        keptChars = kept.length;
+      } else {
+        const budget = Math.max(0, maxChars - truncationMarker.length);
+        const headBudget = Math.floor(budget * 0.65);
+        const tailBudget = Math.max(0, budget - headBudget);
+        const head = source.slice(0, headBudget).trimEnd();
+        const tail = source.slice(source.length - tailBudget).trimStart();
+        text = head + truncationMarker + tail;
+        keptChars = head.length + tail.length;
+      }
 
       return {
-        text: head + truncationMarker + tail,
+        text,
         truncated: true,
-        omittedChars
+        omittedChars: Math.max(0, source.length - keptChars),
+        strategy: safeStrategy
       };
     }
 
@@ -2157,8 +2526,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       pageErrors,
       conversionDialog,
       recentChat,
-      maxCurrentCodeChars = 0,
-      truncationMarker = DEFAULT_CURRENT_CODE_TRUNCATION_MARKER
+      maxCurrentCodeChars = DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
+      truncationMarker = DEFAULT_CURRENT_CODE_TRUNCATION_MARKER,
+      currentCodeStrategy = "production"
     } = {}) {
       const blocks = [];
       const recentChatTurns = Array.isArray(recentChat) ? recentChat : [];
@@ -2195,7 +2565,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
       const boundedCurrentCode = boundCurrentCodeForPrompt(currentCode, {
         maxChars: maxCurrentCodeChars,
-        truncationMarker
+        truncationMarker,
+        strategy: currentCodeStrategy
       });
       if (boundedCurrentCode.text) {
         if (boundedCurrentCode.truncated && maxCurrentCodeChars > 0) {
@@ -2953,25 +3324,25 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         ].join("\n")
       },
       maker: {
-        name: "Maker",
+        name: "Maker for Adafruit Circuit Playground Express",
         apis: [
-          "pins: digitalReadPin(DigitalPin), digitalWritePin(DigitalPin, value), analogReadPin(AnalogPin), analogWritePin(AnalogPin, value), servoWritePin(AnalogPin, value), map(value, fromLow, fromHigh, toLow, toHigh)",
-          "input: onButtonPressed(handler), buttonIsPressed(), temperature(), lightLevel()",
-          "loops: forever(handler), pause(ms)",
-          "music: playTone(freq, ms), ringTone(freq), rest(ms), setTempo(bpm)"
+          "digital pins: pins.LED and pins.A0/A1/A2/A3/A4/A5/A6/A7 support .digitalWrite(boolean) and .digitalRead()",
+          "analogue output: only pins.A0, pins.A1, and pins.A2 support .analogWrite(value)",
+          "analogue input: only pins.A1, pins.A2, pins.A3, pins.A4, pins.A5, pins.A6, and pins.A7 support .analogRead()",
+          "servo output: only pins.A1 and pins.A2 support .servoWrite(degrees)",
+          "built-in buttons: input.buttonA.onEvent(ButtonEvent.Click, handler), input.buttonB.onEvent(ButtonEvent.Click, handler), .isPressed()",
+          "sensors: input.temperature(TemperatureUnit.Celsius), input.lightLevel()",
+          "loops are global functions: forever(handler), pause(ms). Do not use loops.forever or loops.pause.",
+          "No DigitalPin/AnalogPin enums, pins.digitalWritePin/analogReadPin/analogWritePin/servoWritePin, input.onButtonPressed, or pins.map on this pinned board. Do not call a method on a pin that is not listed for that capability. Scale values with block-safe arithmetic."
         ].join("\n"),
-        request: "blink the LED on pin P0 on and off",
-        feedback: ["Toggles P0 every half second so the LED blinks."],
+        request: "blink the built-in LED on and off",
+        feedback: ["Blinks the Circuit Playground Express built-in LED every half second."],
         example: [
-          "let on = false",
-          "loops.forever(function () {",
-          "    on = !(on)",
-          "    if (on) {",
-          "        pins.digitalWritePin(DigitalPin.P0, 1)",
-          "    } else {",
-          "        pins.digitalWritePin(DigitalPin.P0, 0)",
-          "    }",
-          "    loops.pause(500)",
+          "forever(function () {",
+          "    pins.LED.digitalWrite(true)",
+          "    pause(500)",
+          "    pins.LED.digitalWrite(false)",
+          "    pause(500)",
           "})"
         ].join("\n")
       }
@@ -3001,8 +3372,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       }
       if (targetKey === "maker") {
         return [
-          "Use event handlers and loops, e.g. input.onButtonPressed(function () { }), loops.forever(function () { }).",
-          "Match each block's exact argument count and use only valid Maker enums (e.g. DigitalPin.P0).",
+          "Use Circuit Playground Express handlers and global loops, e.g. input.buttonA.onEvent(ButtonEvent.Click, function () { }) and forever(function () { }).",
+          "Use fixed pin objects such as pins.LED, pins.A3, pins.A0, and pins.A1; match each method's exact argument count.",
           ...common
         ];
       }
@@ -3222,7 +3593,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         ].join("\n");
       }
       if (target === "maker") {
-        return ["loops.forever(function () {", "})"].join("\n");
+        return ["forever(function () {", "})"].join("\n");
       }
       return "basic.showString(\"Hi\")";
     }
@@ -3345,7 +3716,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         .slice(0, 3);
       const parts = [
         "Fix the current JavaScript so MakeCode decompiles it to native Blocks.",
-        "There must be no grey typescript_statement blocks.",
+        "There must be no grey typescript_statement or typescript_expression blocks.",
         "Preserve intended behaviour."
       ];
       if (count) parts.push("Grey block count: " + count + ".");
@@ -3389,7 +3760,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       validationRetries = 0,
       maxAttempts = 1,
       callModel,
-      runDecompile
+      runDecompile,
+      onAttempt
     } = {}) {
       const attemptLimit = Math.max(1, Math.trunc(Number(maxAttempts) || 1));
       let emptyLeft = Math.max(0, Math.trunc(Number(emptyRetries) || 0));
@@ -3431,6 +3803,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           decompile
         };
         attempts.push(last);
+        if (typeof onAttempt === "function") onAttempt(last, attempts.length);
 
         if (reason === "ok") break;
         if (attempts.length >= attemptLimit) break;
@@ -3485,12 +3858,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       const upstreamAttempts = attempts.length;
 
       if (last && last.reason === "ok") {
+        const outcome = last.decompile && last.decompile.skipped ? "ok-unverified" : "ok";
         return {
           code: last.code,
           feedback: normaliseFeedback(lastFeedback),
           validation: lastValidation,
           upstreamAttempts,
-          outcome: "ok",
+          outcome,
           attempts
         };
       }
@@ -3536,6 +3910,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
 
     return {
+      DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
       sanitizeMakeCode,
       normaliseFeedback,
       resolvePromptTargetContext,
@@ -3562,7 +3937,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const sysFor = (target) => buildSystemPrompt(target, { conversational: true });
 
-  const MAX_CURRENT_CODE_PROMPT_CHARS = 12000;
+  const MAX_CURRENT_CODE_PROMPT_CHARS = DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS;
   const CURRENT_CODE_TRUNCATION_MARKER = "\n// ... CURRENT_CODE_TRUNCATED ...\n";
 
   const userFor = (request, currentCode, pageErrors, conversionDialog, recentChat) => {
@@ -3589,9 +3964,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       new Promise((_, reject) => setTimeout(() => reject(new Error((label || "request") + " timeout")), ms))
     ]);
   };
-
-
-
+  // BEGIN_PAGE_BYOK_TRANSPORT
   const parseModelList = (model) => {
     if (!model) return [];
     return model.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
@@ -3662,7 +4035,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const callGemini = (key, model, system, user, signal) => {
-    const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model || "gemini-3-flash-preview") + ":generateContent?key=" + encodeURIComponent(key);
+    const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model || "gemini-3-flash-preview") + ":generateContent";
     const body = {
       contents: [{ role: "user", parts: [{ text: system + "\n\n" + user }] }],
       generationConfig: { temperature: BASE_TEMP, maxOutputTokens: MAXTOK }
@@ -3670,7 +4043,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return withTimeout(
       fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify(body),
         signal
       })
@@ -3692,7 +4065,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       Authorization: "Bearer " + key
     };
     try { headers["HTTP-Referer"] = location && location.origin ? location.origin : ""; } catch (error) {}
-    try { if (document && document.title) headers["X-Title"] = document.title; } catch (error) {}
+    headers["X-Title"] = "Vibbit";
 
     const sendForModel = (modelId) => {
       const thinkHarderEnabled = storageGet(STORAGE_THINK_HARDER) === "1"
@@ -3804,6 +4177,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       "OpenCode " + access + " " + modelId
     );
   };
+  // END_PAGE_BYOK_TRANSPORT
 
   const askValidated = (provider, apiKey, model, system, user, target, signal) => {
     const providers = { openai: callOpenAI, gemini: callGemini, openrouter: callOpenRouter, opencode: callOpenCode };
@@ -4108,6 +4482,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     let lastGeneratedCode = "";
     let lastGeneratePassedOracle = false;
     let finalFeedback = [];
+    let finalOutcome = "unknown";
 
     const runGenerationAttempt = (forcedRequest, forcedDlg, options) => {
       const shouldSnapshot = !options || options.snapshot !== false;
@@ -4201,6 +4576,18 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             }, signal);
           }
 
+          if (EXTENSION_BUILD) {
+            logLine("Mode: BYOK extension broker.");
+            return extensionRequest("vibbit:byok:generate", {
+              target,
+              request: effectiveRequest,
+              currentCode,
+              pageErrors,
+              conversionDialog,
+              recentChat: recentChatContext
+            }, signal);
+          }
+
           const provider = storageGet(STORAGE_PROVIDER) || "openai";
           const apiKey = getStoredProviderKey(provider).trim();
           if (!apiKey) throw new Error("Enter API key for BYOK mode (open Settings).");
@@ -4215,6 +4602,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
           const code = extractCode(result && result.code ? result.code : "");
           lastGeneratedCode = code;
+          finalOutcome = String(result && result.outcome || "unknown");
           lastGeneratePassedOracle = generatePassedStaticOracle(result, code);
           if (result && (result.outcome || result.validationOk != null)) {
             logLine("Generate outcome=" + (result.outcome || "unknown") + " validationOk=" + (result.validationOk === false ? "0" : "1") + ".");
@@ -4258,17 +4646,27 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
               }
               logLine("Live decompile check failed: " + message);
               logLine("Applying minimal fallback stub.");
+              finalOutcome = "stub-live";
               finalFeedback = normaliseFeedback(finalFeedback.concat(["Live editor fallback: " + message]));
-              return pasteToMakeCode(stubForTarget(target), { snapshot: false, signal });
+              lastGeneratedCode = stubForTarget(target);
+              return pasteToMakeCode(lastGeneratedCode, { snapshot: false, signal });
             })
-            .then(() => {
+            .then((pasteResult) => {
               throwIfAborted(signal);
               finalFeedback = normaliseFeedback(finalFeedback, DEFAULT_FEEDBACK_MESSAGE);
               renderFeedback(finalFeedback);
               hideFixConvertButton();
-              setStatus("Done");
-              logLine("Pasted and switched back to Blocks.");
-              updateAssistantMessage(assistantIdx, { status: "done", feedback: finalFeedback, code: lastGeneratedCode, content: "" });
+              const usedFallback = /^stub-/.test(finalOutcome);
+              const liveValidation = pasteResult && pasteResult.validation;
+              const unverified = liveValidation === "verified"
+                ? false
+                : (finalOutcome === "ok-unverified" || liveValidation === "unavailable");
+              const assistantStatus = usedFallback ? "fallback" : (unverified ? "unverified" : "done");
+              setStatus(usedFallback ? "Fallback applied" : (unverified ? "Applied, unverified" : "Done"));
+              logLine(usedFallback
+                ? "Minimal fallback pasted and switched to Blocks."
+                : (unverified ? "Code pasted; native Blocks validation was unavailable." : "Pasted and verified in Blocks."));
+              updateAssistantMessage(assistantIdx, { status: assistantStatus, feedback: finalFeedback, code: lastGeneratedCode, content: "" });
             });
         });
     };
@@ -4313,7 +4711,32 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         return;
       }
 
-      const message = error && error.message ? error.message : String(error);
+      const rawMessage = error && error.message ? error.message : String(error);
+      const extensionMessages = {
+        tab_not_armed: "Click the Vibbit toolbar icon to authorize BYOK generation for this tab.",
+        managed_only_build: "This Vibbit build supports Managed mode only.",
+        missing_key: "Add a provider key in Vibbit extension settings.",
+        request_in_progress: "A BYOK provider request is already running in this tab.",
+        request_timed_out: "The provider request timed out. Try again.",
+        request_too_large: "The request is too large for the BYOK broker.",
+        current_code_too_large: "The current project is too large for the BYOK broker.",
+        bridge_error: "The Vibbit extension bridge is unavailable. Reload the extension and this page.",
+        extension_bridge_timeout: "The Vibbit extension bridge did not respond. Click the toolbar icon again or reload this page."
+      };
+      let message = EXTENSION_BUILD && extensionMessages[rawMessage]
+        ? extensionMessages[rawMessage]
+        : rawMessage;
+      if (EXTENSION_BUILD && /_http_error$/.test(rawMessage)) {
+        message = error && error.status === 401
+          ? "The provider rejected this key. Check it in Vibbit extension settings."
+          : (error && error.status === 429
+            ? "The provider rate limit or quota was reached. Try again later."
+            : "The provider returned an error. Check the key, model, and provider status.");
+      } else if (EXTENSION_BUILD && /_network_error$/.test(rawMessage)) {
+        message = "Could not reach the provider. Check the network and try again.";
+      } else if (EXTENSION_BUILD && /_invalid_response$/.test(rawMessage)) {
+        message = "The provider returned an unreadable response. Try again or choose another model.";
+      }
       setStatus("Error");
       finalFeedback = normaliseFeedback(finalFeedback, DEFAULT_FAILURE_FEEDBACK);
       renderFeedback(finalFeedback);
@@ -4358,11 +4781,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     revertEditor()
       .then(() => {
         logLine("Revert complete.");
+        setStatus("Reverted");
         /* add a system message to chat */
         addChatMessage({ role: "assistant", content: "Reverted to previous code.", status: "cancelled" });
       })
       .catch((error) => {
         logLine("Revert failed: " + (error && error.message ? error.message : String(error)));
+        setStatus("Error");
       })
       .finally(() => {
         busy = false;

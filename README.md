@@ -3,7 +3,7 @@
 This repo ships one Vibbit runtime supporting both:
 
 - `Managed` mode (school server with server-side API keys)
-- `BYOK` mode (student/teacher brings their own key in the panel)
+- `BYOK` mode (student/teacher brings their own provider key)
 
 ## Managed classroom flow
 
@@ -42,6 +42,10 @@ This repo ships one Vibbit runtime supporting both:
 - OpenRouter key -> `https://openrouter.ai/api/v1/chat/completions`
 - OpenCode key -> OpenCode Go or Zen (`https://opencode.ai/zen/go/v1` or `https://opencode.ai/zen/v1`)
 
+In the Chrome extension, BYOK configuration lives on the extension's options page. Keys are kept in trusted `chrome.storage.session`, cleared when Chrome exits, and never placed in MakeCode's DOM, events, `localStorage`, or provider requests from the page. Clicking the Vibbit toolbar action arms that exact MakeCode document for a fixed 15 minutes and at most 10 generations; one request may run at a time, and cancellation, navigation, or tab close aborts provider work. While armed, hostile code already running on the MakeCode page can invoke the bounded generation capability and spend that quota, but it cannot read the key or choose an arbitrary endpoint, model, header, or provider request body. Schools that require prevention of all page-initiated quota use should distribute the hosted-managed package (`npm run package`), whose service worker denies BYOK; merely selecting Managed mode inside a neutral dual-mode build is not a security boundary.
+
+The bookmarklet cannot provide the same origin boundary: its BYOK key is memory-only and disappears on reload, but other scripts on the page can observe it while the bookmarklet is running. Rotate any key previously entered into an older Vibbit build that persisted keys in MakeCode `localStorage`.
+
 ## Files
 
 - `work.js`: primary runtime source (extension + bookmarklet)
@@ -55,6 +59,13 @@ This repo ships one Vibbit runtime supporting both:
 - Runtime validation checks known enum members from `pxt-microbit` core enums (for example `Button`, `Gesture`, `TouchPin`, `DigitalPin`).
 - Runtime validation checks argument counts for core block APIs (derived from `//% blockId` signatures) before accepting model output.
 - Prompt guidance includes `blocks-test` style example shapes to bias towards code that decompiles cleanly to Blocks.
+- Maker guidance is pinned to Adafruit Circuit Playground Express and uses fixed pin/button objects and global `forever`/`pause`, rather than micro:bit-style pin enums. `pins.LED` and `pins.A0`–`pins.A7` support digital I/O; analogue output is A0–A2, analogue input is A1–A7, and servo output is A1–A2.
+
+Vibbit reports the validation state explicitly:
+
+- `Done`: code was applied and the available MakeCode validation passed.
+- `Applied, unverified`: code was applied, but the live editor validation probe was unavailable.
+- `Fallback applied`: retries were exhausted and Vibbit applied a target-safe stub rather than claiming model output succeeded.
 
 ## Build extension
 
@@ -233,19 +244,23 @@ Then:
    - test error-aware flow (empty prompt + page errors)
    - trigger conversion modal and verify retry + `Fix convert error`
 4. BYOK checks after `npm run build` (neutral dual-mode):
-   - mode toggle, provider + model + key
+   - click the toolbar action to arm the tab, then use **Open BYOK Settings** for provider + model + session key
    - generation, paste, and error-context fixing
 5. Reload extension and refresh MakeCode tabs after each build
 
 ## Playwright audits
 
 - `npm run audit:smoke` -> deterministic UI smoke + screenshots
+- `npm run audit:extension` -> real unpacked-extension key/isolation/arming canary (uses Xvfb automatically in Linux orbs)
+- `npm run audit:editor` -> released MakeCode editor valid/invalid/grey-block conversion checks
 - `npm run audit:live` -> optional managed/BYOK live verification
 - `npm run audit:install` -> install Chromium
 
 Audit output:
 
 - `output/playwright/audits/`
+
+Model and Harness policy evaluation, including raw-vs-retry runs, immutable trajectories, adversarial context cases, ablations, Wilson intervals, and paired model comparisons, is documented in `docs/makecode-model-evaluation.md`.
 
 ## Troubleshooting
 

@@ -36,14 +36,20 @@ async function installFetchMock(page) {
     if (!window.__smokeMonacoStub) {
       const model = {
         __value: "",
+        __version: 1,
         getValue() {
           return this.__value;
         },
+        getVersionId() {
+          return this.__version;
+        },
         setValue(next) {
           this.__value = String(next || "");
+          this.__version += 1;
           window.__smokeMonacoValue = this.__value;
         }
       };
+      window.__smokeMonacoModel = model;
       const editor = {
         getModel() {
           return model;
@@ -83,6 +89,7 @@ async function installFetchMock(page) {
       window.__smokeByokUrl = "";
       window.__smokeConnectCalls = 0;
       window.__smokeSessionToken = "";
+      window.__smokeManagedAbortObserved = false;
       window.fetch = (input, init) => {
         const url = typeof input === "string" ? input : (input && input.url ? input.url : "");
         const headers = (init && init.headers) || {};
@@ -110,9 +117,20 @@ async function installFetchMock(page) {
             }));
           }
           window.__smokeManagedCalls += 1;
+          if (window.__smokeDelayManaged) {
+            return new Promise((_resolve, reject) => {
+              const onAbort = () => {
+                window.__smokeManagedAbortObserved = true;
+                reject(new DOMException("Aborted", "AbortError"));
+              };
+              if (init?.signal?.aborted) onAbort();
+              else init?.signal?.addEventListener("abort", onAbort, { once: true });
+            });
+          }
           return Promise.resolve(new Response(JSON.stringify({
             code: "basic.showString(\"Managed\")",
-            feedback: []
+            feedback: [],
+            outcome: window.__smokeManagedOutcome || undefined
           }), {
             status: 200,
             headers: { "Content-Type": "application/json" }
@@ -125,7 +143,9 @@ async function installFetchMock(page) {
           window.__smokeByokCalls += 1;
           window.__smokeByokUrl = url;
           try { window.__smokeByokBody = JSON.parse((init && init.body) || "null"); } catch {}
-          const generated = "{\"feedback\":[],\"code\":\"basic.showString(\\\"BYOK\\\")\"}";
+          const generated = window.__smokeForceInvalid
+            ? "{\"feedback\":[\"retry\"],\"code\":\"const bad = () => 1\"}"
+            : "{\"feedback\":[],\"code\":\"basic.showString(\\\"BYOK\\\")\"}";
           const responseBody = url.endsWith("/responses")
             ? { output: [{ content: [{ type: "output_text", text: generated }] }] }
             : { choices: [{ message: { content: generated } }] };
@@ -169,19 +189,61 @@ async function runBuildAndPackage() {
     await readFile(path.join(repoRoot, "dist", "manifest.json"), "utf8")
   );
   const hostedScript = await readFile(path.join(repoRoot, "dist", "content-script.js"), "utf8");
+  const hostedBackground = await readFile(path.join(repoRoot, "dist", "extension", "background.js"), "utf8");
+  const hostedForbiddenFiles = [
+    "page-bridge.js",
+    "options.html",
+    "options.js",
+    "extension/byok-arm.mjs",
+    "extension/byok-broker.mjs",
+    "extension/byok-config.mjs",
+    "extension/provider-transport.mjs",
+    "shared/makecode-compat-core.mjs"
+  ];
+  const hostedFilesMissing = (await Promise.all(hostedForbiddenFiles.map(async (name) => {
+    try {
+      await readFile(path.join(repoRoot, "dist", name));
+      return false;
+    } catch (error) {
+      if (error?.code === "ENOENT") return true;
+      throw error;
+    }
+  }))).every(Boolean);
+  const { stdout: zipEntries } = await runCommand(
+    "unzip",
+    ["-Z1", path.join(repoRoot, "artifacts", "vibbit-extension.zip")],
+    { cwd: repoRoot, stream: false }
+  );
+  const hostedZipStripped = hostedForbiddenFiles.every((name) => !zipEntries.split(/\r?\n/).includes(name));
   const hostedHasByokPerms = (hostedManifest.host_permissions || []).some((item) => (
     item.includes("api.openai.com")
     || item.includes("generativelanguage.googleapis.com")
     || item.includes("openrouter.ai")
     || item.includes("opencode.ai")
   ));
+  const hostedRuntimeHasByokCapability = [
+    "__vibbit_extension_request_v2_",
+    "vibbit:byok:",
+    "memoryProviderKeys",
+    "gpt-5.6-luna",
+    "gemini-3-flash-preview",
+    "deepseek/deepseek-v4-flash-0731",
+    "go/responses/gpt-5.6-luna"
+  ].some((item) => hostedScript.includes(item));
   pushCheck(
     "Hosted package is code-only Managed",
     /const HOSTED_MANAGED = true;/.test(hostedScript)
       && /const BACKEND = "https:\/\/vibbit\.tk\.sg";/.test(hostedScript)
+      && /const HOSTED_MANAGED = true;/.test(hostedBackground)
       && !hostedHasByokPerms
+      && !hostedRuntimeHasByokCapability
+      && !(hostedManifest.permissions || []).includes("storage")
+      && !hostedManifest.options_page
+      && !(hostedManifest.content_scripts || []).some((entry) => entry.js.includes("page-bridge.js"))
+      && hostedFilesMissing
+      && hostedZipStripped
       && (hostedManifest.host_permissions || []).includes("https://vibbit.tk.sg/*"),
-    `hostedManaged=${/const HOSTED_MANAGED = true;/.test(hostedScript)}, byokPermsRemoved=${!hostedHasByokPerms}.`
+    `hostedManaged=${/const HOSTED_MANAGED = true;/.test(hostedScript)}, brokerDenied=${/const HOSTED_MANAGED = true;/.test(hostedBackground)}, byokPermsRemoved=${!hostedHasByokPerms}, byokRuntimeRemoved=${!hostedRuntimeHasByokCapability}, byokFilesRemoved=${hostedFilesMissing && hostedZipStripped}.`
   );
   pushCheck("Build + package", true, "`npm run build` (neutral) and `npm run package` (hosted) succeeded.");
 }
@@ -227,6 +289,76 @@ async function runNeutralUiSmoke(page) {
     panelVisible
       ? `Panel rendered and screenshot saved at \`${screenshots.panel}\`.`
       : "Panel controls were not visible after injecting `work.js`."
+  );
+
+  const modalAccessibility = await page.evaluate(() => {
+    const panel = document.querySelector("#vibbit-panel");
+    const backdrop = document.querySelector("#vibbit-backdrop");
+    const controls = [...(panel?.querySelectorAll("input,select,textarea") || [])];
+    const unnamed = controls.filter((control) => (
+      !control.labels?.length && !String(control.getAttribute("aria-label") || "").trim()
+    )).map((control) => control.id || control.tagName);
+    const outside = [...document.body.children].filter((node) => (
+      node !== backdrop && node.id !== "vibbit-preview-bar" && node.id !== "vibbit-live-status"
+    ));
+    const focusable = [...(panel?.querySelectorAll(
+      'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])'
+    ) || [])].filter((node) => Boolean(node.offsetWidth || node.offsetHeight || node.getClientRects().length));
+    focusable.at(-1)?.focus();
+    return {
+      unnamed,
+      outsideInert: outside.length > 0 && outside.every((node) => node.inert === true),
+      firstId: focusable[0]?.id || ""
+    };
+  });
+  const dynamicSiblingInert = await page.evaluate(async () => {
+    const sibling = document.createElement("button");
+    sibling.id = "smoke-dynamic-modal-sibling";
+    sibling.textContent = "Late page control";
+    document.body.appendChild(sibling);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return sibling.inert === true;
+  });
+  await page.keyboard.press("Tab");
+  const focusTrapped = await page.evaluate((firstId) => (
+    document.activeElement?.id === firstId
+      && document.querySelector("#vibbit-panel")?.contains(document.activeElement)
+  ), modalAccessibility.firstId);
+  await page.click("#x-setup");
+  await page.waitForFunction(() => document.querySelector("#vibbit-backdrop")?.style.display === "none");
+  const dynamicSiblingRestored = await page.evaluate(() => {
+    const sibling = document.querySelector("#smoke-dynamic-modal-sibling");
+    const restored = sibling?.inert === false;
+    sibling?.remove();
+    return restored;
+  });
+  await page.evaluate(() => {
+    const probe = document.createElement("button");
+    probe.id = "smoke-focus-restore";
+    probe.textContent = "Focus probe";
+    document.body.appendChild(probe);
+    probe.focus();
+    window.__vibbit.open();
+  });
+  await page.waitForFunction(() => document.querySelector("#vibbit-backdrop")?.dataset.active === "true");
+  await page.click("#x-setup");
+  await page.waitForFunction(() => document.querySelector("#vibbit-backdrop")?.style.display === "none");
+  const focusRestored = await page.evaluate(() => {
+    const restored = document.activeElement?.id === "smoke-focus-restore";
+    document.querySelector("#smoke-focus-restore")?.remove();
+    window.__vibbit.open();
+    return restored;
+  });
+  await page.waitForFunction(() => document.querySelector("#vibbit-backdrop")?.dataset.active === "true");
+  pushCheck(
+    "04b Modal keyboard and screen-reader contract",
+    modalAccessibility.unnamed.length === 0
+      && modalAccessibility.outsideInert
+      && dynamicSiblingInert
+      && dynamicSiblingRestored
+      && focusTrapped
+      && focusRestored,
+    `unnamedControls=${modalAccessibility.unnamed.join(",") || "none"}, outsideInert=${modalAccessibility.outsideInert}, dynamicSiblingInert=${dynamicSiblingInert}, dynamicSiblingRestored=${dynamicSiblingRestored}, focusTrapped=${focusTrapped}, focusRestored=${focusRestored}.`
   );
 
   const setupDefault = await page.evaluate(() => {
@@ -303,7 +435,7 @@ async function runNeutralUiSmoke(page) {
   await page.click("#go");
   await page.waitForFunction(() => {
     const status = document.querySelector("#status")?.textContent?.trim() || "";
-    return status === "Done" || status === "Error";
+    return ["Done", "Applied, unverified", "Fallback applied", "Error"].includes(status);
   }, { timeout: 30000 });
 
   const managedGenerationState = await page.evaluate(() => {
@@ -319,7 +451,7 @@ async function runNeutralUiSmoke(page) {
   await page.screenshot({ path: screenshots.managedFeedback, fullPage: false });
   pushCheck(
     "08 Managed mocked generation",
-    managedGenerationState.status === "Done"
+    managedGenerationState.status === "Applied, unverified"
       && managedGenerationState.connectCalls === 1
       && managedGenerationState.managedCalls === 1
       && managedGenerationState.pastedCode.includes("basic.showString(\"Managed\")"),
@@ -327,11 +459,144 @@ async function runNeutralUiSmoke(page) {
   );
 
   await page.evaluate(() => {
+    window.__smokeManagedOutcome = "ok-unverified";
+    const sourceFile = { name: "main.ts", content: "" };
+    const blocksFile = { name: "main.blocks", content: "<xml></xml>" };
+    const workspace = {
+      isFlyout: false,
+      isDisposed() { return false; },
+      getAllBlocks() { return []; }
+    };
+    const textEditor = {};
+    const blocksEditor = {
+      editor: workspace,
+      loadingXml: false,
+      loadingXmlPromise: null,
+      delayLoadXml: null,
+      typeScriptSaveable: true
+    };
+    const project = {
+      state: { header: { id: "smoke-live-project", editor: "tsprj" }, currFile: sourceFile },
+      editor: textEditor,
+      editorFile: sourceFile,
+      textEditor,
+      blocksEditor,
+      updatingEditorFile: false,
+      isBlocksActive() { return this.editor === blocksEditor; },
+      saveCurrentSourceAsync() {
+        sourceFile.content = window.__smokeMonacoModel.getValue();
+        return Promise.resolve();
+      }
+    };
+    window.__smokeLiveProject = project;
+    window.__smokeLiveTextEditor = textEditor;
+    window.__smokeLiveSourceFile = sourceFile;
+    window.__smokeOriginalE = window.E;
+    window.E = { getEditor() { return project; } };
+    window.__smokeBlocksClickHandler = (event) => {
+      const control = event.target?.closest?.("button,[role='tab'],a,[aria-label]");
+      const label = ((control?.textContent || "") + " " + (control?.getAttribute?.("aria-label") || "")).toLowerCase();
+      if (!label.includes("blocks") || label.includes("javascript")) return;
+      project.editor = blocksEditor;
+      project.editorFile = blocksFile;
+      project.state.currFile = blocksFile;
+      project.state.header.editor = "blocksprj";
+    };
+    document.addEventListener("click", window.__smokeBlocksClickHandler, true);
+  });
+  await page.fill("#p", "Verify the live editor can upgrade an upstream unverified result");
+  await page.click("#go");
+  await page.waitForFunction(() => (
+    ["Done", "Applied, unverified", "Fallback applied", "Error"].includes(
+      document.querySelector("#status")?.textContent?.trim()
+    )
+  ), { timeout: 30000 });
+  const liveUpgradeState = await page.evaluate(() => ({
+    status: document.querySelector("#status")?.textContent?.trim() || "",
+    liveStatus: document.querySelector("#vibbit-live-status")?.textContent?.trim() || "",
+    log: document.querySelector("#log")?.textContent || ""
+  }));
+  pushCheck(
+    "08b Live validation upgrades upstream unverified outcome",
+    liveUpgradeState.status === "Done"
+      && liveUpgradeState.liveStatus === "Done"
+      && /Live decompile check passed/.test(liveUpgradeState.log),
+    `status='${liveUpgradeState.status}', liveStatus='${liveUpgradeState.liveStatus}', liveProbePassed=${/Live decompile check passed/.test(liveUpgradeState.log)}, log='${liveUpgradeState.log.slice(-320)}'.`
+  );
+  await page.evaluate(() => {
+    document.removeEventListener("click", window.__smokeBlocksClickHandler, true);
+    const project = window.__smokeLiveProject;
+    project.editor = window.__smokeLiveTextEditor;
+    project.editorFile = window.__smokeLiveSourceFile;
+    project.state.currFile = window.__smokeLiveSourceFile;
+    project.state.header.editor = "tsprj";
+  });
+  await page.fill("#p", "Do not verify a stale Blocks workspace");
+  await page.click("#go");
+  await page.waitForFunction(() => (
+    ["Done", "Applied, unverified", "Fallback applied", "Error"].includes(
+      document.querySelector("#status")?.textContent?.trim()
+    )
+  ), { timeout: 30000 });
+  const staleWorkspaceState = await page.evaluate(() => ({
+    status: document.querySelector("#status")?.textContent?.trim() || "",
+    log: document.querySelector("#log")?.textContent || ""
+  }));
+  pushCheck(
+    "08c Stale Blocks workspace fails closed",
+    staleWorkspaceState.status === "Applied, unverified"
+      && /Live decompile check unavailable/.test(staleWorkspaceState.log),
+    `status='${staleWorkspaceState.status}', validationUnavailable=${/Live decompile check unavailable/.test(staleWorkspaceState.log)}.`
+  );
+  await page.evaluate(() => {
+    delete window.__smokeManagedOutcome;
+    document.removeEventListener("click", window.__smokeBlocksClickHandler, true);
+    delete window.__smokeBlocksClickHandler;
+    delete window.__smokeLiveProject;
+    delete window.__smokeLiveTextEditor;
+    delete window.__smokeLiveSourceFile;
+    window.E = window.__smokeOriginalE;
+    delete window.__smokeOriginalE;
+  });
+
+  const managedCallsBeforeClose = await page.evaluate(() => {
+    window.__smokeDelayManaged = true;
+    window.__smokeManagedAbortObserved = false;
+    return Number(window.__smokeManagedCalls || 0);
+  });
+  await page.fill("#p", "close-cancels active generation");
+  await page.click("#go");
+  await page.waitForFunction(
+    (before) => Number(window.__smokeManagedCalls || 0) > before,
+    managedCallsBeforeClose,
+    { timeout: 10000 }
+  );
+  await page.click("#x-main");
+  await page.waitForFunction(() => (
+    window.__smokeManagedAbortObserved === true
+      && document.querySelector("#vibbit-backdrop")?.style.display === "none"
+      && document.querySelector("#vibbit-live-status")?.textContent?.trim() === "Cancelled"
+  ), { timeout: 10000 });
+  const closeCancellation = await page.evaluate(() => {
+    const result = {
+      aborted: window.__smokeManagedAbortObserved === true,
+      hidden: document.querySelector("#vibbit-backdrop")?.style.display === "none",
+      liveStatus: document.querySelector("#vibbit-live-status")?.textContent?.trim() || ""
+    };
+    window.__smokeDelayManaged = false;
+    window.__vibbit.open();
+    return result;
+  });
+  pushCheck(
+    "08d Closing Vibbit cancels active generation",
+    closeCancellation.aborted && closeCancellation.hidden && closeCancellation.liveStatus === "Cancelled",
+    `providerAbortObserved=${closeCancellation.aborted}, panelHidden=${closeCancellation.hidden}, liveStatus='${closeCancellation.liveStatus}'.`
+  );
+
+  await page.evaluate(() => {
     localStorage.setItem("__vibbit_mode", "byok");
     localStorage.setItem("__vibbit_provider", "opencode");
     localStorage.setItem("__vibbit_model", "go/hy3");
-    localStorage.setItem("__vibbit_key_openai", "smoke-dummy-key");
-    localStorage.setItem("__vibbit_key_opencode", "smoke-dummy-key");
   });
   await page.click("#gear");
   await page.waitForSelector("#set-mode", { timeout: 10000 });
@@ -357,6 +622,8 @@ async function runNeutralUiSmoke(page) {
   );
   await page.selectOption("#set-prov", "openai");
   await page.selectOption("#set-model", "gpt-5.2");
+  await page.fill("#set-key", "smoke-dummy-key");
+  await page.click("#save");
   const unsupportedThinkingHidden = await page.locator("#think-harder-wrap").evaluate((element) => element.style.display === "none");
   await page.selectOption("#set-model", "gpt-5.6-luna");
   const supportedThinkingVisible = await page.locator("#think-harder-wrap").evaluate((element) => element.style.display === "inline-flex");
@@ -374,7 +641,7 @@ async function runNeutralUiSmoke(page) {
   await page.click("#go");
   await page.waitForFunction(() => {
     const status = document.querySelector("#status")?.textContent?.trim() || "";
-    return status === "Done" || status === "Error";
+    return ["Done", "Applied, unverified", "Fallback applied", "Error"].includes(status);
   }, { timeout: 30000 });
 
   const byokGenerationState = await page.evaluate(() => {
@@ -394,7 +661,7 @@ async function runNeutralUiSmoke(page) {
   await page.screenshot({ path: screenshots.byokFeedback, fullPage: false });
   pushCheck(
     "11 OpenAI Responses generation",
-    byokGenerationState.status === "Done"
+    byokGenerationState.status === "Applied, unverified"
       && byokGenerationState.pastedCode.includes("basic.showString(\"BYOK\")")
       && byokGenerationState.byokCalls >= 1
       && byokGenerationState.byokUrl === "https://api.openai.com/v1/responses"
@@ -410,11 +677,13 @@ async function runNeutralUiSmoke(page) {
   await page.click("#gear");
   await page.selectOption("#set-prov", "opencode");
   await page.selectOption("#set-model", "go/hy3");
+  await page.fill("#set-key", "smoke-dummy-key");
+  await page.click("#save");
   await page.click("#back");
   await page.fill("#p", "Create a tiny OpenCode byok program");
   await page.click("#go");
   await page.waitForFunction(() => Number(window.__smokeByokCalls || 0) >= 2, { timeout: 30000 });
-  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Done", { timeout: 30000 });
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Applied, unverified", { timeout: 30000 });
   const openCodeChatState = await page.evaluate(() => ({
     url: window.__smokeByokUrl,
     body: window.__smokeByokBody
@@ -434,7 +703,7 @@ async function runNeutralUiSmoke(page) {
   await page.fill("#p", "Create another tiny byok program");
   await page.click("#go");
   await page.waitForFunction(() => Number(window.__smokeByokCalls || 0) >= 3, { timeout: 30000 });
-  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Done", { timeout: 30000 });
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Applied, unverified", { timeout: 30000 });
   const responsesState = await page.evaluate(() => ({
     url: window.__smokeByokUrl,
     body: window.__smokeByokBody,
@@ -448,6 +717,26 @@ async function runNeutralUiSmoke(page) {
       && responsesState.body?.reasoning?.effort === "xhigh"
       && responsesState.code.includes("basic.showString(\"BYOK\")"),
     `url='${responsesState.url}', model='${responsesState.body?.model || ""}', maxOutputTokens=${responsesState.body?.max_output_tokens || 0}.`
+  );
+
+  const callsBeforeFallback = await page.evaluate(() => {
+    window.__smokeForceInvalid = true;
+    return Number(window.__smokeByokCalls || 0);
+  });
+  await page.fill("#p", "Exercise exhausted validation retries");
+  await page.click("#go");
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Fallback applied", { timeout: 30000 });
+  const fallbackState = await page.evaluate(() => ({
+    calls: Number(window.__smokeByokCalls || 0),
+    code: window.__smokeMonacoValue || "",
+    warning: [...document.querySelectorAll(".vibbit-msg-error")].map((node) => node.textContent || "").join(" ")
+  }));
+  pushCheck(
+    "15 Exhausted retries expose fallback outcome",
+    fallbackState.calls === callsBeforeFallback + 3
+      && fallbackState.code === 'basic.showString("Hi")'
+      && /minimal fallback was applied/i.test(fallbackState.warning),
+    `calls=${fallbackState.calls - callsBeforeFallback}, code='${fallbackState.code}', warning=${/minimal fallback was applied/i.test(fallbackState.warning)}.`
   );
 }
 
@@ -467,8 +756,16 @@ async function runHostedUiSmoke(browser) {
 
     const hostedRuntime = await readFile(path.join(repoRoot, "dist", "content-script.js"), "utf8");
     await page.addScriptTag({ content: hostedRuntime });
-    await page.waitForSelector("#vibbit-fab", { timeout: 20000 });
-    await page.click("#vibbit-fab");
+    await page.waitForSelector("#vibbit-panel", { state: "attached", timeout: 20000 });
+    await page.evaluate(() => {
+      const backdrop = document.querySelector("#vibbit-backdrop");
+      const panel = document.querySelector("#vibbit-panel");
+      if (backdrop) {
+        backdrop.style.display = "flex";
+        backdrop.dataset.active = "true";
+      }
+      if (panel) panel.style.display = "flex";
+    });
     await page.waitForSelector("#setup-go", { timeout: 20000 });
     await page.screenshot({ path: screenshots.hostedPanel, fullPage: false });
 
@@ -487,7 +784,7 @@ async function runHostedUiSmoke(browser) {
       };
     });
     pushCheck(
-      "15 Hosted-managed UI is code-only",
+      "16 Hosted-managed UI is code-only",
       hostedSetup.modeValue === "managed"
         && hostedSetup.modeRowHidden
         && hostedSetup.byokHidden
@@ -505,7 +802,7 @@ async function runHostedUiSmoke(browser) {
       badge: document.querySelector("#classroom-badge")?.textContent || ""
     }));
     pushCheck(
-      "16 Hosted join verifies classroom code",
+      "17 Hosted join verifies classroom code",
       hostedJoin.connectCalls === 1 && hostedJoin.badge.includes("Smoke Classroom"),
       `connectCalls=${hostedJoin.connectCalls}, badge='${hostedJoin.badge}'.`
     );

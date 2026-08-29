@@ -3,18 +3,22 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
   buildSystemPrompt,
   buildUserPrompt,
   parseModelOutput,
+  runGenerationLoop,
+  serializeTranscript,
   validateBlocksCompatibility
 } from "../../shared/makecode-compat-core.mjs";
 import {
   compileAndDecompile,
   scoreMakeCodeValidation
 } from "../../shared/makecode-decompile.mjs";
+import { summarizeRecords } from "./metrics.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -26,6 +30,14 @@ const defaults = {
   timeoutMs: 90000,
   provider: "openrouter",
   promptMode: "managed",
+  policy: "raw",
+  context: "full",
+  maxCurrentCodeChars: DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
+  currentCodeWindow: "production",
+  maxEmptyRetries: 2,
+  maxValidationRetries: 2,
+  maxAttempts: 3,
+  validation: "pinned",
   out: path.join(repoRoot, "output", "model-evals")
 };
 
@@ -41,6 +53,14 @@ Options:
   --temperature N      Sampling temperature (default: 0.1)
   --seed N             Send seed + repetition number (only where supported)
   --prompt-mode MODE   managed or byok; byok adds Vibbit conversation guidance
+  --policy MODE        raw one-shot baseline or production harness (default: raw)
+  --context MODE       full, no-recent-chat, no-current-code, no-page-errors, or no-conversion-dialog
+  --max-current-code-chars N  Current-code prompt budget (default: production budget)
+  --current-code-window MODE   production, head, middle, or tail (default: production)
+  --max-empty-retries N       Harness empty-output retries (default: 2)
+  --max-validation-retries N  Harness compatibility/decompile retries (default: 2)
+  --max-attempts N            Global Harness provider-attempt budget (default: 3)
+  --validation MODE    pinned or static-only (default: pinned)
   --max-tokens N       Maximum output tokens (default: 3072)
   --timeout-ms N       Per-request timeout (default: 90000)
   --case REGEX         Run matching case IDs only
@@ -55,7 +75,17 @@ Default key variables:
 
 function parseArgs(argv) {
   const options = { ...defaults };
-  const numberKeys = new Set(["samples", "temperature", "seed", "max-tokens", "timeout-ms"]);
+  const numberKeys = new Set([
+    "samples",
+    "temperature",
+    "seed",
+    "max-tokens",
+    "timeout-ms",
+    "max-current-code-chars",
+    "max-empty-retries",
+    "max-validation-retries",
+    "max-attempts"
+  ]);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") return { help: true };
@@ -78,6 +108,20 @@ function parseArgs(argv) {
   options.protocol = String(options.protocol || "chat").toLowerCase();
   if (!["chat", "responses"].includes(options.protocol)) throw new Error("--protocol must be chat or responses");
   if (!["managed", "byok"].includes(options.promptMode)) throw new Error("--prompt-mode must be managed or byok");
+  if (!["raw", "harness"].includes(options.policy)) throw new Error("--policy must be raw or harness");
+  if (!["full", "no-recent-chat", "no-current-code", "no-page-errors", "no-conversion-dialog"].includes(options.context)) {
+    throw new Error("--context must be full, no-recent-chat, no-current-code, no-page-errors, or no-conversion-dialog");
+  }
+  if (!["production", "head", "middle", "tail"].includes(options.currentCodeWindow)) {
+    throw new Error("--current-code-window must be production, head, middle, or tail");
+  }
+  if (!["pinned", "static-only"].includes(options.validation)) {
+    throw new Error("--validation must be pinned or static-only");
+  }
+  for (const key of ["maxCurrentCodeChars", "maxEmptyRetries", "maxValidationRetries", "maxAttempts"]) {
+    if (!Number.isInteger(options[key]) || options[key] < 0) throw new Error(`--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)} must be a non-negative integer`);
+  }
+  if (options.maxAttempts < 1) throw new Error("--max-attempts must be at least 1");
   return options;
 }
 
@@ -131,7 +175,7 @@ function strictContract(raw) {
   }
 }
 
-function criteriaResult(code, testCase) {
+export function criteriaResult(code, testCase) {
   const required = (testCase.required || []).map((source) => ({
     pattern: source,
     pass: new RegExp(source, "m").test(code)
@@ -176,27 +220,36 @@ function emptyMakeCodeValidation(message) {
   };
 }
 
-async function runPinnedMakeCodeValidation(code, target) {
+async function runPinnedMakeCodeValidation(code, target, compileImpl = compileAndDecompile) {
   if (!String(code || "").trim()) {
     const report = emptyMakeCodeValidation("empty output");
     return { report, score: scoreMakeCodeValidation(report), error: null };
   }
   try {
-    const report = await compileAndDecompile({ code, target });
+    const report = await compileImpl({ code, target });
     return { report, score: scoreMakeCodeValidation(report), error: null };
-  } catch (error) {
-    const report = emptyMakeCodeValidation(error.message);
-    return { report, score: scoreMakeCodeValidation(report), error: error.message };
+  } catch {
+    return {
+      report: null,
+      score: null,
+      error: { code: "pinned_validation_unavailable", status: 0 }
+    };
   }
 }
 
-function buildPrompt(testCase, promptMode) {
-  const system = buildSystemPrompt(testCase.target, { conversational: promptMode === "byok" });
+export function buildPrompt(testCase, options) {
+  const currentCode = options.context === "no-current-code" ? "" : (testCase.currentCode || "");
+  const pageErrors = options.context === "no-page-errors" ? [] : (testCase.pageErrors || []);
+  const recentChat = options.context === "no-recent-chat" ? "" : (testCase.recentChat || "");
+  const system = buildSystemPrompt(testCase.target, { conversational: options.promptMode === "byok" });
   const user = buildUserPrompt({
     request: testCase.request,
-    currentCode: testCase.currentCode || "",
-    pageErrors: testCase.pageErrors || [],
-    conversionDialog: testCase.conversionDialog || null
+    currentCode,
+    pageErrors,
+    conversionDialog: options.context === "no-conversion-dialog" ? null : (testCase.conversionDialog || null),
+    recentChat,
+    maxCurrentCodeChars: options.maxCurrentCodeChars,
+    currentCodeStrategy: options.currentCodeWindow
   });
   return { system, user };
 }
@@ -220,6 +273,23 @@ function extractResponsesText(data) {
     .join("");
 }
 
+class EvaluatorRequestError extends Error {
+  constructor(code, { status = 0, latencyMs = null } = {}) {
+    super(code);
+    this.name = "EvaluatorRequestError";
+    this.code = code;
+    this.status = status;
+    this.latencyMs = latencyMs;
+  }
+}
+
+function safeError(error) {
+  return {
+    code: String(error?.code || "evaluation_error"),
+    status: Number(error?.status) || 0
+  };
+}
+
 async function fetchJson(url, init, timeoutMs) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -232,13 +302,24 @@ async function fetchJson(url, init, timeoutMs) {
     try {
       data = JSON.parse(body);
     } catch {
-      throw new Error(`HTTP ${response.status}: non-JSON response (${body.slice(0, 160)})`);
+      throw new EvaluatorRequestError("provider_invalid_json", {
+        status: response.status,
+        latencyMs
+      });
     }
     if (!response.ok) {
-      const detail = data?.error?.message || data?.message || body.slice(0, 200);
-      throw new Error(`HTTP ${response.status}: ${detail}`);
+      throw new EvaluatorRequestError("provider_http_error", {
+        status: response.status,
+        latencyMs
+      });
     }
     return { data, latencyMs };
+  } catch (error) {
+    if (error instanceof EvaluatorRequestError) throw error;
+    throw new EvaluatorRequestError(
+      error?.name === "AbortError" ? "provider_timeout" : "provider_network_error",
+      { latencyMs: Math.round(performance.now() - started) }
+    );
   } finally {
     clearTimeout(timeout);
   }
@@ -250,7 +331,7 @@ async function snapshotModels(providerConfig, timeoutMs) {
     const { data } = await fetchJson(providerConfig.modelsEndpoint, {}, timeoutMs);
     return data;
   } catch (error) {
-    return { snapshotError: error.message };
+    return { snapshotError: safeError(error) };
   }
 }
 
@@ -259,15 +340,114 @@ function pricingFor(model, modelSnapshot) {
   return entries.find((entry) => entry.id === model)?.pricing || null;
 }
 
-function estimateCost(usage, pricing) {
-  if (Number.isFinite(Number(usage?.cost))) return Number(usage.cost);
+function finiteUsageValue(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return null;
+}
+
+export function normalizeUsage(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  return {
+    inputTokens: finiteUsageValue(usage.prompt_tokens, usage.input_tokens),
+    outputTokens: finiteUsageValue(usage.completion_tokens, usage.output_tokens),
+    totalTokens: finiteUsageValue(usage.total_tokens),
+    reasoningTokens: finiteUsageValue(
+      usage.completion_tokens_details?.reasoning_tokens,
+      usage.output_tokens_details?.reasoning_tokens
+    ),
+    cachedInputTokens: finiteUsageValue(
+      usage.prompt_tokens_details?.cached_tokens,
+      usage.input_tokens_details?.cached_tokens
+    )
+  };
+}
+
+export function estimateCost(usage, pricing) {
+  if (usage?.cost !== null && usage?.cost !== undefined && usage?.cost !== ""
+    && Number.isFinite(Number(usage.cost))) return Number(usage.cost);
   if (!pricing) return null;
   const promptRate = Number(pricing.prompt);
   const completionRate = Number(pricing.completion);
   if (!Number.isFinite(promptRate) || !Number.isFinite(completionRate)) return null;
-  const promptTokens = Number(usage?.prompt_tokens || 0);
-  const completionTokens = Number(usage?.completion_tokens || 0);
+  const normalized = normalizeUsage(usage);
+  const promptTokens = normalized?.inputTokens;
+  const completionTokens = normalized?.outputTokens;
+  if (!Number.isFinite(promptTokens) || !Number.isFinite(completionTokens)) return null;
   return promptTokens * promptRate + completionTokens * completionRate;
+}
+
+function providerBody(messages, model, repetition, options) {
+  const serialized = serializeTranscript(messages);
+  const body = options.protocol === "responses"
+    ? {
+        model,
+        max_output_tokens: options.maxTokens,
+        input: messages
+      }
+    : {
+        model,
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        messages
+      };
+  if (options.protocol === "responses" && !/^gpt-/i.test(model)) body.temperature = options.temperature;
+  if (options.protocol === "chat" && Number.isInteger(options.seed)) body.seed = options.seed + repetition;
+  return { body, serialized };
+}
+
+async function callProvider({
+  messages,
+  model,
+  repetition,
+  options,
+  providerConfig,
+  apiKey,
+  modelSnapshot
+}) {
+  const { body, serialized } = providerBody(messages, model, repetition, options);
+  const attemptBase = {
+    requestMessages: messages.map((message) => ({ role: message.role, content: String(message.content || "") })),
+    requestTranscriptSha256: sha256(`${serialized.system}\n${serialized.user}`)
+  };
+  let fetched;
+  try {
+    fetched = await fetchJson(providerConfig.endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body)
+    }, options.timeoutMs);
+  } catch (error) {
+    error.attempt = {
+      ...attemptBase,
+      failed: true,
+      latencyMs: error.latencyMs,
+      usage: null,
+      normalizedUsage: null,
+      costUsd: null,
+      error: safeError(error)
+    };
+    throw error;
+  }
+  const { data, latencyMs } = fetched;
+  const raw = options.protocol === "responses" ? extractResponsesText(data) : extractResponseText(data);
+  const usage = data.usage || null;
+  return {
+    ...attemptBase,
+    failed: false,
+    raw,
+    latencyMs,
+    usage,
+    normalizedUsage: normalizeUsage(usage),
+    costUsd: estimateCost(usage, pricingFor(model, modelSnapshot)),
+    responseId: data.id || null,
+    resolvedModel: data.model || null,
+    finishReason: data.choices?.[0]?.finish_reason || data.status || null,
+    error: null
+  };
 }
 
 function shuffledMatrix(models, cases, samples) {
@@ -284,6 +464,125 @@ function shuffledMatrix(models, cases, samples) {
     }
   }
   return rows;
+}
+
+function providerAttemptTotals(providerAttempts) {
+  const finiteLatencies = providerAttempts.map((attempt) => attempt.latencyMs).filter(Number.isFinite);
+  const finiteCosts = providerAttempts.map((attempt) => attempt.costUsd).filter(Number.isFinite);
+  const normalizedUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    cachedInputTokens: 0,
+    attemptsWithUsage: 0,
+    attemptsWithoutUsage: 0
+  };
+  for (const attempt of providerAttempts) {
+    if (!attempt.normalizedUsage) {
+      normalizedUsage.attemptsWithoutUsage += 1;
+      continue;
+    }
+    normalizedUsage.attemptsWithUsage += 1;
+    for (const key of ["inputTokens", "outputTokens", "reasoningTokens", "cachedInputTokens"]) {
+      if (Number.isFinite(attempt.normalizedUsage[key])) normalizedUsage[key] += attempt.normalizedUsage[key];
+    }
+  }
+  return {
+    latencyMs: finiteLatencies.length
+      ? finiteLatencies.reduce((sum, value) => sum + value, 0)
+      : null,
+    costUsd: providerAttempts.length > 0 && finiteCosts.length === providerAttempts.length
+      ? finiteCosts.reduce((sum, value) => sum + value, 0)
+      : null,
+    normalizedUsage
+  };
+}
+
+function buildTrajectory(providerAttempts, policyResult = null) {
+  return providerAttempts.map((attempt, attemptIndex) => {
+    const harnessAttempt = policyResult?.attempts?.[attemptIndex] || {};
+    return {
+      attempt: attemptIndex + 1,
+      requestMessages: attempt.requestMessages,
+      requestTranscriptSha256: attempt.requestTranscriptSha256,
+      rawCandidate: attempt.failed ? null : attempt.raw,
+      parsedCandidate: attempt.failed ? null : {
+        code: harnessAttempt.code || "",
+        feedback: harnessAttempt.feedback || []
+      },
+      failureClass: attempt.failed
+        ? "transport-or-provider"
+        : (harnessAttempt.reason || "unknown"),
+      latencyMs: attempt.latencyMs,
+      usage: attempt.usage,
+      normalizedUsage: attempt.normalizedUsage,
+      costUsd: attempt.costUsd,
+      responseId: attempt.responseId || null,
+      resolvedModel: attempt.resolvedModel || null,
+      finishReason: attempt.finishReason || null,
+      error: attempt.error || null
+    };
+  });
+}
+
+export async function runHarnessEvaluation({
+  target,
+  systemPrompt,
+  userPrompt,
+  options,
+  callModel,
+  compileImpl = compileAndDecompile,
+  onAttempt
+}) {
+  let validationOutage = null;
+  const policyResult = await runGenerationLoop({
+    target,
+    systemPrompt,
+    initialUserPrompt: userPrompt,
+    emptyRetries: options.maxEmptyRetries,
+    validationRetries: options.maxValidationRetries,
+    maxAttempts: options.maxAttempts,
+    callModel,
+    onAttempt,
+    runDecompile: options.validation === "pinned"
+      ? async (code, requestedTarget) => {
+          try {
+            return await compileImpl({ code, target: requestedTarget });
+          } catch (error) {
+            validationOutage = error;
+            throw error;
+          }
+        }
+      : undefined
+  });
+
+  if (options.validation === "static-only") {
+    return {
+      policyResult,
+      pinned: await runPinnedMakeCodeValidation(policyResult.code, target, compileImpl)
+    };
+  }
+  const lastAttempt = policyResult.attempts[policyResult.attempts.length - 1] || null;
+  if (lastAttempt?.decompile && !lastAttempt.decompile.skipped) {
+    return {
+      policyResult,
+      pinned: {
+        report: lastAttempt.decompile,
+        score: scoreMakeCodeValidation(lastAttempt.decompile),
+        error: null
+      }
+    };
+  }
+  return {
+    policyResult,
+    pinned: {
+      report: null,
+      score: null,
+      error: validationOutage
+        ? { code: "pinned_validation_unavailable", status: 0 }
+        : null
+    }
+  };
 }
 
 async function main() {
@@ -329,36 +628,18 @@ async function main() {
   const validationRecords = [];
   for (let index = 0; index < matrix.length; index += 1) {
     const { model, testCase, repetition } = matrix[index];
-    const { system, user } = buildPrompt(testCase, options.promptMode);
-    const body = options.protocol === "responses"
-      ? {
-          model,
-          max_output_tokens: options.maxTokens,
-          input: [
-            { role: "system", content: system },
-            { role: "user", content: user }
-          ]
-        }
-      : {
-          model,
-          temperature: options.temperature,
-          max_tokens: options.maxTokens,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user }
-          ]
-        };
-    if (options.protocol === "responses" && !/^gpt-/i.test(model)) {
-      body.temperature = options.temperature;
-    }
-    if (options.protocol === "chat" && Number.isInteger(options.seed)) body.seed = options.seed + repetition;
+    const { system, user } = buildPrompt(testCase, options);
 
     process.stdout.write(`[${index + 1}/${matrix.length}] ${model} ${testCase.id} #${repetition + 1} ... `);
     const base = {
-      schemaVersion: 1,
+      schemaVersion: 3,
       provider: options.provider,
       endpoint: providerConfig.endpoint,
+      policy: options.policy,
+      context: options.context,
+      validationMode: options.validation,
       requestedModel: model,
+      model,
       caseId: testCase.id,
       target: testCase.target,
       targetBoard: testCase.targetBoard || null,
@@ -366,60 +647,199 @@ async function main() {
       repetition,
       temperature: options.temperature,
       promptMode: options.promptMode,
-      seed: body.seed ?? null,
+      seed: Number.isInteger(options.seed) ? options.seed + repetition : null,
       systemPromptSha256: sha256(system),
       userPromptSha256: sha256(user),
       corpusVersion: corpus.version
     };
+    const providerAttempts = [];
+    const completedHarnessAttempts = [];
     try {
-      const { data, latencyMs } = await fetchJson(providerConfig.endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify(body)
-      }, options.timeoutMs);
-      const raw = options.protocol === "responses" ? extractResponsesText(data) : extractResponseText(data);
-      const parsed = parseModelOutput(raw);
+      const invoke = async (messages) => {
+        try {
+          const attempt = await callProvider({
+            messages,
+            model,
+            repetition,
+            options,
+            providerConfig,
+            apiKey,
+            modelSnapshot
+          });
+          providerAttempts.push(attempt);
+          return attempt.raw;
+        } catch (error) {
+          if (error.attempt) providerAttempts.push(error.attempt);
+          throw error;
+        }
+      };
+      let policyResult;
+      let pinned;
+      if (options.policy === "harness") {
+        ({ policyResult, pinned } = await runHarnessEvaluation({
+          target: testCase.target,
+          systemPrompt: system,
+          userPrompt: user,
+          options,
+          callModel: invoke,
+          compileImpl: compileAndDecompile,
+          onAttempt: (attempt) => completedHarnessAttempts.push(attempt)
+        }));
+      } else {
+        const raw = await invoke([
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ]);
+        const parsed = parseModelOutput(raw);
+        const compatibility = parsed.code
+          ? validateBlocksCompatibility(parsed.code, testCase.target)
+          : { ok: false, violations: ["empty output"] };
+        pinned = await runPinnedMakeCodeValidation(parsed.code, testCase.target);
+        const reason = !String(parsed.code || "").trim()
+          ? "empty"
+          : (!compatibility.ok ? "invalid" : (pinned.report && !pinned.report.ok ? "decompile" : "ok"));
+        policyResult = {
+          code: parsed.code,
+          feedback: parsed.feedback,
+          validation: compatibility,
+          upstreamAttempts: 1,
+          outcome: reason === "ok" ? (pinned.report ? "ok" : "ok-unverified") : "raw-invalid",
+          attempts: [{
+            raw,
+            code: parsed.code,
+            feedback: parsed.feedback,
+            validation: compatibility,
+            reason,
+            decompile: pinned?.report || null
+          }]
+        };
+      }
+
+      const finalProviderAttempt = providerAttempts[providerAttempts.length - 1];
+      const raw = finalProviderAttempt?.raw || "";
+      const parsed = { code: policyResult.code, feedback: policyResult.feedback };
       const contract = strictContract(raw);
-      const compatibility = parsed.code
-        ? validateBlocksCompatibility(parsed.code, testCase.target)
+      const compatibility = policyResult.code
+        ? validateBlocksCompatibility(policyResult.code, testCase.target)
         : { ok: false, violations: ["empty output"] };
-      const criteria = criteriaResult(parsed.code, testCase);
+      const criteria = criteriaResult(policyResult.code, testCase);
       const provisional = provisionalScore(contract, compatibility, criteria);
-      const usage = data.usage || null;
+      const fallback = String(policyResult.outcome).startsWith("stub-");
+      const pinnedAvailable = Boolean(pinned?.report);
+      const makeCodeOk = pinnedAvailable ? Boolean(pinned.report.ok) : null;
+      const staticPolicyPass = !fallback && compatibility.ok && criteria.ok;
+      const automatedProxyPass = pinnedAvailable ? staticPolicyPass && makeCodeOk : null;
+      const strictAutomatedProxyPass = pinnedAvailable ? automatedProxyPass && contract.ok : null;
+      const firstAttempt = policyResult.attempts[0] || null;
+      const firstCriteria = criteriaResult(firstAttempt?.code || "", testCase);
+      const firstAttemptProxyPass = firstAttempt?.decompile && !firstAttempt.decompile.skipped
+        ? Boolean(firstAttempt.reason === "ok" && firstCriteria.ok && firstAttempt.decompile.ok)
+        : null;
+      const repairEligible = Boolean(firstAttempt && firstAttempt.reason !== "ok");
+      const repaired = repairEligible
+        ? (pinnedAvailable ? automatedProxyPass : null)
+        : false;
+      const finalReason = policyResult.attempts[policyResult.attempts.length - 1]?.reason || null;
+      const failureClass = automatedProxyPass === true
+        ? (contract.ok ? null : "response-contract")
+        : (fallback ? `fallback-${finalReason || "unknown"}`
+          : (!compatibility.ok ? "compatibility"
+            : (!criteria.ok ? "task-criteria"
+              : (!pinnedAvailable ? "validation-unavailable"
+                : (!makeCodeOk ? "makecode" : (!contract.ok ? "response-contract" : "unknown"))))));
+      const totals = providerAttemptTotals(providerAttempts);
+      const trajectory = buildTrajectory(providerAttempts, policyResult);
+      const totalScore = pinned?.score
+        ? Number((provisional.score + pinned.score.score).toFixed(2))
+        : null;
       const record = {
         ...base,
         status: "ok",
-        responseId: data.id || null,
-        resolvedModel: data.model || null,
-        finishReason: data.choices?.[0]?.finish_reason || data.status || null,
-        latencyMs,
-        usage,
-        costUsd: estimateCost(usage, pricingFor(model, modelSnapshot)),
+        responseId: finalProviderAttempt?.responseId || null,
+        resolvedModel: finalProviderAttempt?.resolvedModel || null,
+        finishReason: finalProviderAttempt?.finishReason || null,
+        latencyMs: totals.latencyMs,
+        usage: providerAttempts.map((attempt) => attempt.usage),
+        normalizedUsage: totals.normalizedUsage,
+        costUsd: totals.costUsd,
         raw,
         parsed,
         contract,
         compatibility,
         criteria,
         provisional,
-        makeCodeValidation: null
+        totalScore,
+        totalMax: totalScore === null ? null : 100,
+        outcome: policyResult.outcome,
+        upstreamAttempts: policyResult.upstreamAttempts,
+        trajectory,
+        makeCodeValidation: pinned?.report || null,
+        validationError: pinned?.error || null,
+        evaluation: {
+          staticPolicyPass,
+          automatedProxyPass,
+          strictAutomatedProxyPass,
+          firstAttemptProxyPass,
+          passWithinBudget: pinnedAvailable ? automatedProxyPass : null,
+          repairEligible,
+          repaired,
+          fallback,
+          falseSuccess: pinnedAvailable ? staticPolicyPass && !makeCodeOk : null,
+          failureClass,
+          latencyMs: totals.latencyMs,
+          costUsd: totals.costUsd
+        }
       };
       records.push(record);
-      const pinned = await runPinnedMakeCodeValidation(parsed.code, testCase.target);
       validationRecords.push({
         requestedModel: model,
         caseId: testCase.id,
         repetition,
         target: testCase.target,
         targetBoard: testCase.targetBoard || null,
-        makeCodeValidation: pinned.report,
-        makeCodeScore: pinned.score,
-        totalScore: Number((provisional.score + pinned.score.score).toFixed(2)),
-        totalMax: 100,
-        error: pinned.error
+        policy: options.policy,
+        outcome: policyResult.outcome,
+        makeCodeValidation: pinned?.report || null,
+        makeCodeScore: pinned?.score || null,
+        totalScore,
+        totalMax: totalScore === null ? null : 100,
+        evaluation: record.evaluation,
+        error: pinned?.error || null
       });
-      console.log(`${provisional.score}/${provisional.max} + ${pinned.score.score}/${pinned.score.max}, ${latencyMs}ms`);
+      const verdict = strictAutomatedProxyPass === true
+        ? "STRICT AUTOMATED PROXY PASS"
+        : (automatedProxyPass === true ? `AUTOMATED PROXY PASS (${failureClass})` : failureClass);
+      console.log(`${policyResult.outcome}, ${policyResult.upstreamAttempts} attempt(s), ${verdict}, ${totals.latencyMs}ms`);
     } catch (error) {
-      records.push({ ...base, status: "error", error: error.message, makeCodeValidation: null });
+      const totals = providerAttemptTotals(providerAttempts);
+      const publicError = safeError(error);
+      records.push({
+        ...base,
+        status: "error",
+        error: publicError,
+        latencyMs: totals.latencyMs,
+        usage: providerAttempts.map((attempt) => attempt.usage),
+        normalizedUsage: totals.normalizedUsage,
+        costUsd: totals.costUsd,
+        totalScore: 0,
+        totalMax: 100,
+        trajectory: buildTrajectory(providerAttempts, { attempts: completedHarnessAttempts }),
+        makeCodeValidation: null,
+        evaluation: {
+          staticPolicyPass: false,
+          automatedProxyPass: false,
+          strictAutomatedProxyPass: false,
+          firstAttemptProxyPass: null,
+          passWithinBudget: false,
+          repairEligible: false,
+          repaired: false,
+          fallback: false,
+          falseSuccess: false,
+          failureClass: "transport-or-provider",
+          latencyMs: totals.latencyMs,
+          costUsd: totals.costUsd
+        }
+      });
       validationRecords.push({
         requestedModel: model,
         caseId: testCase.id,
@@ -429,9 +849,9 @@ async function main() {
         makeCodeScore: { score: 0, max: 60 },
         totalScore: 0,
         totalMax: 100,
-        error: error.message
+        error: publicError
       });
-      console.log(`ERROR ${error.message}`);
+      console.log(`ERROR ${publicError.code}`);
     }
   }
 
@@ -439,15 +859,26 @@ async function main() {
   await writeFile(resultsPath, records.map((item) => JSON.stringify(item)).join("\n") + "\n");
   const validationPath = path.join(runDir, "makecode-validation.jsonl");
   await writeFile(validationPath, validationRecords.map((item) => JSON.stringify(item)).join("\n") + "\n");
-  const scored = validationRecords.filter((item) => item.makeCodeValidation);
-  const meanTotal = scored.length
-    ? Number((scored.reduce((sum, item) => sum + item.totalScore, 0) / scored.length).toFixed(2))
-    : null;
+  const metrics = summarizeRecords(records);
+  const macroMeanTotalScoreByCandidate = Object.fromEntries(
+    Object.entries(metrics.byCandidate).map(([candidate, candidateMetrics]) => [
+      candidate,
+      candidateMetrics.macroMeanTotalScore
+    ])
+  );
   const summary = {
-    schemaVersion: 1,
+    schemaVersion: 3,
     createdAt: new Date().toISOString(),
     provider: options.provider,
     protocol: options.protocol,
+    policy: options.policy,
+    context: options.context,
+    validationMode: options.validation,
+    maxCurrentCodeChars: options.maxCurrentCodeChars,
+    currentCodeWindow: options.currentCodeWindow,
+    maxEmptyRetries: options.maxEmptyRetries,
+    maxValidationRetries: options.maxValidationRetries,
+    maxAttempts: options.maxAttempts,
     endpoint: providerConfig.endpoint,
     corpus: path.relative(repoRoot, path.resolve(options.corpus)),
     corpusVersion: corpus.version,
@@ -459,8 +890,10 @@ async function main() {
     requests: records.length,
     successfulRequests: records.filter((item) => item.status === "ok").length,
     errors: records.filter((item) => item.status === "error").length,
-    meanTotalScore: meanTotal,
-    note: "results.jsonl is the immutable provider capture. Pinned compile and decompile scores live in makecode-validation.jsonl.",
+    macroMeanTotalScore: metrics.overall.macroMeanTotalScore,
+    macroMeanTotalScoreByCandidate,
+    metrics,
+    note: "results.jsonl is a local, immutable evaluation capture containing raw prompts, candidates, and retry trajectories; review it as potentially sensitive. Pinned compile/decompile results live in makecode-validation.jsonl.",
     results: "results.jsonl",
     makeCodeValidation: "makecode-validation.jsonl",
     modelSnapshot: "models-snapshot.json"
@@ -469,7 +902,9 @@ async function main() {
   console.log(`Run written to ${runDir}`);
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}

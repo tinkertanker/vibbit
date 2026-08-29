@@ -93,7 +93,7 @@ function createProxyHandler(counter) {
 
 async function waitForTerminalStatus(page) {
   await page.waitForFunction(() => {
-    const finalStates = ["Done", "Error", "No code", "Idle"];
+    const finalStates = ["Done", "Applied, unverified", "Fallback applied", "Error", "No code", "Idle"];
     const status = document.querySelector("#status")?.textContent?.trim() || "";
     return finalStates.includes(status);
   }, undefined, { timeout: 90000 });
@@ -299,9 +299,9 @@ try {
     const managedState = await waitForTerminalStatus(page);
     await page.screenshot({ path: screenshots.managed, fullPage: false });
 
-    const managedPass = managedState.status === "Done";
+    const managedPass = managedState.status === "Applied, unverified";
     pushCheck(
-      "Managed live request",
+      "Managed live transport (editor validation unavailable in this audit)",
       managedPass ? "PASS" : "FAIL",
       `status='${managedState.status}', proxiedRequests=${managedProxyCounter.count}, logHasManaged=${managedState.log.includes("Mode: Managed backend.")}.`
     );
@@ -328,9 +328,9 @@ try {
     const byokState = await waitForTerminalStatus(page);
     await page.screenshot({ path: screenshots.byok, fullPage: false });
 
-    const byokPass = byokState.status === "Done";
+    const byokPass = byokState.status === "Applied, unverified";
     pushCheck(
-      `BYOK live request (${providerConfig.provider})`,
+      `BYOK live transport (${providerConfig.provider}; editor validation unavailable in this audit)`,
       byokPass ? "PASS" : "FAIL",
       `status='${byokState.status}', proxiedRequests=${byokProxyCounter.count}, logHasByok=${byokState.log.includes("Mode: BYOK.")}.`
     );

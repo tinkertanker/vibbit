@@ -13,21 +13,35 @@
     "default_title": "Vibbit"
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "extension/background.js",
+    "type": "module"
   },
-  "content_scripts": [{
-    "matches": [
-      "https://makecode.microbit.org/*",
-      "https://arcade.makecode.com/*",
-      "https://maker.makecode.com/*"
-    ],
-    "js": ["content-script.js"],
-    "run_at": "document_idle",
-    "world": "MAIN"
-  }],
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://makecode.microbit.org/*",
+        "https://arcade.makecode.com/*",
+        "https://maker.makecode.com/*"
+      ],
+      "js": ["page-bridge.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://makecode.microbit.org/*",
+        "https://arcade.makecode.com/*",
+        "https://maker.makecode.com/*"
+      ],
+      "js": ["content-script.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ],
   "permissions": [
     "scripting",
-    "activeTab"
+    "activeTab",
+    "storage"
   ],
   "host_permissions": [
     "https://vibbit.tk.sg/*",

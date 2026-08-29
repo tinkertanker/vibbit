@@ -18,6 +18,8 @@
     "backend:start": "node apps/backend/src/server.mjs",
     "backend:dev": "node --watch apps/backend/src/server.mjs",
     "audit:smoke": "node scripts/audit/smoke.mjs",
+    "audit:editor": "node scripts/audit/editor-validation.mjs",
+    "audit:extension": "node scripts/audit/extension-boundary.mjs",
     "audit:live": "node scripts/audit/live.mjs",
     "audit:install": "npx playwright install chromium"
   },
