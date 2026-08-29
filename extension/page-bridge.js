@@ -1,4 +1,6 @@
 (() => {
+  if (globalThis.__vibbitExtensionBridgeV1) return;
+  globalThis.__vibbitExtensionBridgeV1 = true;
   const REQUEST_EVENT = "__vibbit_extension_request_v1";
   const RESPONSE_EVENT = "__vibbit_extension_response_v1";
   const ALLOWED = new Set([

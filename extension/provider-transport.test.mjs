@@ -87,6 +87,23 @@ test("OpenRouter identifies Vibbit without disclosing the MakeCode project title
   assert.doesNotMatch(JSON.stringify(requestHeaders), /Student full name|private project/);
 });
 
+test("OpenRouter models without reasoning support keep the bounded default request", async () => {
+  let requestBody;
+  await callByokProvider({
+    provider: "openrouter",
+    model: "xiaomi/mimo-v2.5",
+    apiKey: "secret",
+    messages: MESSAGES,
+    thinkHarder: true,
+    fetchImpl: async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return jsonResponse({ choices: [{ message: { content: "ok" } }] });
+    }
+  });
+  assert.equal(requestBody.max_tokens, 3072);
+  assert.equal(Object.hasOwn(requestBody, "reasoning"), false);
+});
+
 test("OpenAI Responses uses the bounded reasoning contract", async () => {
   let requestBody;
   await callByokProvider({

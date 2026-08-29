@@ -136,10 +136,8 @@ const EXTENSION_BUILD = false;
     else delete memoryProviderKeys[name];
   };
 
-  let purgedLegacyProviderKeys = 0;
   for (const providerName of Object.keys(MODEL_PRESETS)) {
     const legacyKey = keyStorageForProvider(providerName);
-    if (storageGet(legacyKey)) purgedLegacyProviderKeys += 1;
     storageRemove(legacyKey);
   }
 
@@ -150,7 +148,9 @@ const EXTENSION_BUILD = false;
       : (Date.now().toString(36) + Math.random().toString(36).slice(2, 18));
     return new Promise((resolve, reject) => {
       let settled = false;
+      let timeout = 0;
       const cleanup = () => {
+        clearTimeout(timeout);
         document.removeEventListener(EXTENSION_RESPONSE_EVENT, onResponse);
         if (signal) signal.removeEventListener("abort", onAbort);
       };
@@ -177,6 +177,16 @@ const EXTENSION_BUILD = false;
         }));
         finish(reject, createAbortError());
       };
+      const onTimeout = () => {
+        if (type === "vibbit:byok:generate") {
+          document.dispatchEvent(new CustomEvent(EXTENSION_REQUEST_EVENT, {
+            detail: { type: "vibbit:byok:cancel", requestId, payload: {} }
+          }));
+        }
+        const error = new Error("extension_bridge_timeout");
+        error.code = error.message;
+        finish(reject, error);
+      };
       document.addEventListener(EXTENSION_RESPONSE_EVENT, onResponse);
       if (signal) {
         if (signal.aborted) {
@@ -185,6 +195,7 @@ const EXTENSION_BUILD = false;
         }
         signal.addEventListener("abort", onAbort, { once: true });
       }
+      timeout = setTimeout(onTimeout, type === "vibbit:byok:generate" ? 130000 : 10000);
       document.dispatchEvent(new CustomEvent(EXTENSION_REQUEST_EVENT, {
         detail: { type, requestId, payload: payload && typeof payload === "object" ? payload : {} }
       }));
@@ -1015,7 +1026,7 @@ const EXTENSION_BUILD = false;
       const outcomeText = status === "fallback"
         ? "A minimal fallback was applied; it may not satisfy the request."
         : "Code was applied, but native Blocks validation was unavailable.";
-      html += '<div class="vibbit-msg-error">' + outcomeText + '</div>';
+      html += '<div class="vibbit-msg-error" role="status" aria-live="polite">' + outcomeText + '</div>';
       if (!actionsHidden) {
         html += '<div class="vibbit-msg-actions">';
         html += '<button class="vibbit-btn-preview" data-action="preview">Preview</button>';
@@ -2002,7 +2013,7 @@ const EXTENSION_BUILD = false;
         blocks = [];
       }
       for (const block of blocks) {
-        if (!block || block.type !== "typescript_statement") continue;
+        if (!block || (block.type !== "typescript_statement" && block.type !== "typescript_expression")) continue;
         greyBlocks += 1;
         if (snippets.length < 3) {
           let preview = "";
@@ -2255,27 +2266,53 @@ const EXTENSION_BUILD = false;
 
     function boundCurrentCodeForPrompt(currentCode, {
       maxChars = 0,
-      truncationMarker = DEFAULT_CURRENT_CODE_TRUNCATION_MARKER
+      truncationMarker = DEFAULT_CURRENT_CODE_TRUNCATION_MARKER,
+      strategy = "production"
     } = {}) {
       const source = String(currentCode || "");
       if (!source.trim()) {
-        return { text: "", truncated: false, omittedChars: 0 };
+        return { text: "", truncated: false, omittedChars: 0, strategy };
       }
       if (!maxChars || source.length <= maxChars) {
-        return { text: source, truncated: false, omittedChars: 0 };
+        return { text: source, truncated: false, omittedChars: 0, strategy };
       }
 
-      const budget = Math.max(0, maxChars - truncationMarker.length);
-      const headBudget = Math.floor(budget * 0.65);
-      const tailBudget = Math.max(0, budget - headBudget);
-      const head = source.slice(0, headBudget).trimEnd();
-      const tail = source.slice(source.length - tailBudget).trimStart();
-      const omittedChars = Math.max(0, source.length - (head.length + tail.length));
+      const safeStrategy = ["production", "head", "middle", "tail"].includes(strategy)
+        ? strategy
+        : "production";
+      let text;
+      let keptChars;
+      if (safeStrategy === "head") {
+        const budget = Math.max(0, maxChars - truncationMarker.length);
+        const kept = source.slice(0, budget).trimEnd();
+        text = kept + truncationMarker;
+        keptChars = kept.length;
+      } else if (safeStrategy === "tail") {
+        const budget = Math.max(0, maxChars - truncationMarker.length);
+        const kept = source.slice(-budget).trimStart();
+        text = truncationMarker + kept;
+        keptChars = kept.length;
+      } else if (safeStrategy === "middle") {
+        const budget = Math.max(0, maxChars - truncationMarker.length * 2);
+        const start = Math.max(0, Math.floor((source.length - budget) / 2));
+        const kept = source.slice(start, start + budget).trim();
+        text = truncationMarker + kept + truncationMarker;
+        keptChars = kept.length;
+      } else {
+        const budget = Math.max(0, maxChars - truncationMarker.length);
+        const headBudget = Math.floor(budget * 0.65);
+        const tailBudget = Math.max(0, budget - headBudget);
+        const head = source.slice(0, headBudget).trimEnd();
+        const tail = source.slice(source.length - tailBudget).trimStart();
+        text = head + truncationMarker + tail;
+        keptChars = head.length + tail.length;
+      }
 
       return {
-        text: head + truncationMarker + tail,
+        text,
         truncated: true,
-        omittedChars
+        omittedChars: Math.max(0, source.length - keptChars),
+        strategy: safeStrategy
       };
     }
 
@@ -2286,7 +2323,8 @@ const EXTENSION_BUILD = false;
       conversionDialog,
       recentChat,
       maxCurrentCodeChars = DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
-      truncationMarker = DEFAULT_CURRENT_CODE_TRUNCATION_MARKER
+      truncationMarker = DEFAULT_CURRENT_CODE_TRUNCATION_MARKER,
+      currentCodeStrategy = "production"
     } = {}) {
       const blocks = [];
       const recentChatTurns = Array.isArray(recentChat) ? recentChat : [];
@@ -2323,7 +2361,8 @@ const EXTENSION_BUILD = false;
 
       const boundedCurrentCode = boundCurrentCodeForPrompt(currentCode, {
         maxChars: maxCurrentCodeChars,
-        truncationMarker
+        truncationMarker,
+        strategy: currentCodeStrategy
       });
       if (boundedCurrentCode.text) {
         if (boundedCurrentCode.truncated && maxCurrentCodeChars > 0) {
@@ -3083,11 +3122,14 @@ const EXTENSION_BUILD = false;
       maker: {
         name: "Maker for Adafruit Circuit Playground Express",
         apis: [
-          "fixed pins: pins.LED.digitalWrite(boolean), pins.LED.digitalRead(); pins.A0/A1/A2/A3/A4/A5/A6/A7.digitalWrite(boolean), .digitalRead(), .analogWrite(value), .analogRead(), .servoWrite(degrees)",
+          "digital pins: pins.LED and pins.A0/A1/A2/A3/A4/A5/A6/A7 support .digitalWrite(boolean) and .digitalRead()",
+          "analogue output: only pins.A0, pins.A1, and pins.A2 support .analogWrite(value)",
+          "analogue input: only pins.A1, pins.A2, pins.A3, pins.A4, pins.A5, pins.A6, and pins.A7 support .analogRead()",
+          "servo output: only pins.A1 and pins.A2 support .servoWrite(degrees)",
           "built-in buttons: input.buttonA.onEvent(ButtonEvent.Click, handler), input.buttonB.onEvent(ButtonEvent.Click, handler), .isPressed()",
           "sensors: input.temperature(TemperatureUnit.Celsius), input.lightLevel()",
           "loops are global functions: forever(handler), pause(ms). Do not use loops.forever or loops.pause.",
-          "No DigitalPin/AnalogPin enums, pins.digitalWritePin/analogReadPin/analogWritePin/servoWritePin, input.onButtonPressed, or pins.map on this pinned board. Scale values with block-safe arithmetic."
+          "No DigitalPin/AnalogPin enums, pins.digitalWritePin/analogReadPin/analogWritePin/servoWritePin, input.onButtonPressed, or pins.map on this pinned board. Do not call a method on a pin that is not listed for that capability. Scale values with block-safe arithmetic."
         ].join("\n"),
         request: "blink the built-in LED on and off",
         feedback: ["Blinks the Circuit Playground Express built-in LED every half second."],
@@ -3347,7 +3389,7 @@ const EXTENSION_BUILD = false;
         ].join("\n");
       }
       if (target === "maker") {
-        return ["loops.forever(function () {", "})"].join("\n");
+        return ["forever(function () {", "})"].join("\n");
       }
       return "basic.showString(\"Hi\")";
     }
@@ -3470,7 +3512,7 @@ const EXTENSION_BUILD = false;
         .slice(0, 3);
       const parts = [
         "Fix the current JavaScript so MakeCode decompiles it to native Blocks.",
-        "There must be no grey typescript_statement blocks.",
+        "There must be no grey typescript_statement or typescript_expression blocks.",
         "Preserve intended behaviour."
       ];
       if (count) parts.push("Grey block count: " + count + ".");
@@ -4409,8 +4451,10 @@ const EXTENSION_BUILD = false;
               renderFeedback(finalFeedback);
               hideFixConvertButton();
               const usedFallback = /^stub-/.test(finalOutcome);
-              const unverified = finalOutcome === "ok-unverified"
-                || (pasteResult && pasteResult.validation === "unavailable");
+              const liveValidation = pasteResult && pasteResult.validation;
+              const unverified = liveValidation === "verified"
+                ? false
+                : (finalOutcome === "ok-unverified" || liveValidation === "unavailable");
               const assistantStatus = usedFallback ? "fallback" : (unverified ? "unverified" : "done");
               setStatus(usedFallback ? "Fallback applied" : (unverified ? "Applied, unverified" : "Done"));
               logLine(usedFallback
@@ -4464,15 +4508,29 @@ const EXTENSION_BUILD = false;
       const rawMessage = error && error.message ? error.message : String(error);
       const extensionMessages = {
         tab_not_armed: "Click the Vibbit toolbar icon to authorize BYOK generation for this tab.",
+        managed_only_build: "This Vibbit build supports Managed mode only.",
         missing_key: "Add a provider key in Vibbit extension settings.",
         request_in_progress: "A BYOK provider request is already running in this tab.",
+        request_timed_out: "The provider request timed out. Try again.",
         request_too_large: "The request is too large for the BYOK broker.",
         current_code_too_large: "The current project is too large for the BYOK broker.",
-        bridge_error: "The Vibbit extension bridge is unavailable. Reload the extension and this page."
+        bridge_error: "The Vibbit extension bridge is unavailable. Reload the extension and this page.",
+        extension_bridge_timeout: "The Vibbit extension bridge did not respond. Click the toolbar icon again or reload this page."
       };
-      const message = EXTENSION_BUILD && extensionMessages[rawMessage]
+      let message = EXTENSION_BUILD && extensionMessages[rawMessage]
         ? extensionMessages[rawMessage]
         : rawMessage;
+      if (EXTENSION_BUILD && /_http_error$/.test(rawMessage)) {
+        message = error && error.status === 401
+          ? "The provider rejected this key. Check it in Vibbit extension settings."
+          : (error && error.status === 429
+            ? "The provider rate limit or quota was reached. Try again later."
+            : "The provider returned an error. Check the key, model, and provider status.");
+      } else if (EXTENSION_BUILD && /_network_error$/.test(rawMessage)) {
+        message = "Could not reach the provider. Check the network and try again.";
+      } else if (EXTENSION_BUILD && /_invalid_response$/.test(rawMessage)) {
+        message = "The provider returned an unreadable response. Try again or choose another model.";
+      }
       setStatus("Error");
       finalFeedback = normaliseFeedback(finalFeedback, DEFAULT_FAILURE_FEEDBACK);
       renderFeedback(finalFeedback);

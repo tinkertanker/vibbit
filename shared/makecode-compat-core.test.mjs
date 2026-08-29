@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   TARGET_API_CATALOG,
+  boundCurrentCodeForPrompt,
   buildCorrectionInstruction,
   buildDecompileFixRequest,
   buildFailedAttemptUserTurn,
@@ -16,6 +17,26 @@ import {
 } from "./makecode-compat-core.mjs";
 
 const TARGETS = ["microbit", "arcade", "maker"];
+
+test("current-code window strategies share the core prompt boundary", () => {
+  const source = `HEAD-${"m".repeat(200)}-TAIL`;
+  const production = boundCurrentCodeForPrompt(source, { maxChars: 100, strategy: "production" });
+  const head = boundCurrentCodeForPrompt(source, { maxChars: 100, strategy: "head" });
+  const middle = boundCurrentCodeForPrompt(source, { maxChars: 100, strategy: "middle" });
+  const tail = boundCurrentCodeForPrompt(source, { maxChars: 100, strategy: "tail" });
+  assert.match(production.text, /HEAD-/);
+  assert.match(production.text, /-TAIL/);
+  assert.match(head.text, /HEAD-/);
+  assert.doesNotMatch(head.text, /-TAIL/);
+  assert.doesNotMatch(middle.text, /HEAD-|-TAIL/);
+  assert.doesNotMatch(tail.text, /HEAD-/);
+  assert.match(tail.text, /-TAIL/);
+  for (const result of [production, head, middle, tail]) {
+    assert.equal(result.truncated, true);
+    assert(result.text.length <= 100);
+    assert(result.omittedChars > 0);
+  }
+});
 
 test("system prompt keeps the four-block skeleton with front and end anchors", () => {
   for (const target of TARGETS) {
@@ -36,7 +57,7 @@ test("system prompt keeps the four-block skeleton with front and end anchors", (
 test("system prompt grounds the model in target-specific APIs only", () => {
   assert.ok(buildSystemPrompt("microbit").includes("basic:"));
   assert.ok(buildSystemPrompt("arcade").includes("sprites:"));
-  assert.ok(buildSystemPrompt("maker").includes("pins.LED.digitalWrite(boolean)"));
+  assert.ok(buildSystemPrompt("maker").includes("support .digitalWrite(boolean) and .digitalRead()"));
   assert.ok(buildSystemPrompt("maker").includes("input.buttonA.onEvent(ButtonEvent.Click"));
   assert.doesNotMatch(buildSystemPrompt("maker"), /loops\.forever\(function|DigitalPin\.P0/);
   const microbit = buildSystemPrompt("microbit");

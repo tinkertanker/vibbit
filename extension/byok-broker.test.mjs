@@ -154,3 +154,12 @@ test("public broker errors never return arbitrary exception text", () => {
     status: 0
   });
 });
+
+test("public broker errors distinguish an internal timeout from user cancellation", () => {
+  const aborted = new DOMException("Aborted", "AbortError");
+  assert.deepEqual(publicBrokerError(aborted), { code: "cancelled", status: 0 });
+  assert.deepEqual(publicBrokerError(aborted, { timedOut: true }), {
+    code: "request_timed_out",
+    status: 0
+  });
+});

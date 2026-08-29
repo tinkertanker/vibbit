@@ -112,7 +112,8 @@ async function installFetchMock(page) {
           window.__smokeManagedCalls += 1;
           return Promise.resolve(new Response(JSON.stringify({
             code: "basic.showString(\"Managed\")",
-            feedback: []
+            feedback: [],
+            outcome: window.__smokeManagedOutcome || undefined
           }), {
             status: 200,
             headers: { "Content-Type": "application/json" }
@@ -171,6 +172,7 @@ async function runBuildAndPackage() {
     await readFile(path.join(repoRoot, "dist", "manifest.json"), "utf8")
   );
   const hostedScript = await readFile(path.join(repoRoot, "dist", "content-script.js"), "utf8");
+  const hostedBackground = await readFile(path.join(repoRoot, "dist", "extension", "background.js"), "utf8");
   const hostedHasByokPerms = (hostedManifest.host_permissions || []).some((item) => (
     item.includes("api.openai.com")
     || item.includes("generativelanguage.googleapis.com")
@@ -181,9 +183,12 @@ async function runBuildAndPackage() {
     "Hosted package is code-only Managed",
     /const HOSTED_MANAGED = true;/.test(hostedScript)
       && /const BACKEND = "https:\/\/vibbit\.tk\.sg";/.test(hostedScript)
+      && /const HOSTED_MANAGED = true;/.test(hostedBackground)
       && !hostedHasByokPerms
+      && !hostedManifest.options_page
+      && !(hostedManifest.content_scripts || []).some((entry) => entry.js.includes("page-bridge.js"))
       && (hostedManifest.host_permissions || []).includes("https://vibbit.tk.sg/*"),
-    `hostedManaged=${/const HOSTED_MANAGED = true;/.test(hostedScript)}, byokPermsRemoved=${!hostedHasByokPerms}.`
+    `hostedManaged=${/const HOSTED_MANAGED = true;/.test(hostedScript)}, brokerDenied=${/const HOSTED_MANAGED = true;/.test(hostedBackground)}, byokPermsRemoved=${!hostedHasByokPerms}.`
   );
   pushCheck("Build + package", true, "`npm run build` (neutral) and `npm run package` (hosted) succeeded.");
 }
@@ -327,6 +332,31 @@ async function runNeutralUiSmoke(page) {
       && managedGenerationState.pastedCode.includes("basic.showString(\"Managed\")"),
     `status='${managedGenerationState.status}', connectCalls=${managedGenerationState.connectCalls}, managedCalls=${managedGenerationState.managedCalls}.`
   );
+
+  await page.evaluate(() => {
+    window.__smokeManagedOutcome = "ok-unverified";
+    window.Blockly = {
+      getMainWorkspace() {
+        return { getAllBlocks() { return []; } };
+      }
+    };
+  });
+  await page.fill("#p", "Verify the live editor can upgrade an upstream unverified result");
+  await page.click("#go");
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Done", { timeout: 30000 });
+  const liveUpgradeState = await page.evaluate(() => ({
+    status: document.querySelector("#status")?.textContent?.trim() || "",
+    log: document.querySelector("#log")?.textContent || ""
+  }));
+  pushCheck(
+    "08b Live validation upgrades upstream unverified outcome",
+    liveUpgradeState.status === "Done" && /Live decompile check passed/.test(liveUpgradeState.log),
+    `status='${liveUpgradeState.status}', liveProbePassed=${/Live decompile check passed/.test(liveUpgradeState.log)}.`
+  );
+  await page.evaluate(() => {
+    delete window.__smokeManagedOutcome;
+    delete window.Blockly;
+  });
 
   await page.evaluate(() => {
     localStorage.setItem("__vibbit_mode", "byok");

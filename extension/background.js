@@ -1,11 +1,12 @@
 import { createByokBroker, publicBrokerError } from "./byok-broker.mjs";
 
+const HOSTED_MANAGED = false;
 const MAKECODE_HOSTS = new Set([
   "makecode.microbit.org",
   "arcade.makecode.com",
   "maker.makecode.com"
 ]);
-const ARM_STORAGE_KEY = "vibbitByokArmsV1";
+const ARM_STORAGE_KEY_PREFIX = "vibbitByokArmV1:";
 const ARM_TTL_MS = 15 * 60 * 1000;
 const MAX_GENERATIONS_PER_ARM = 10;
 const REQUEST_TIMEOUT_MS = 120000;
@@ -40,34 +41,34 @@ function isTrustedPageSender(sender) {
     && isMakeCodeUrl(sender.tab.url);
 }
 
-async function readArms() {
-  const stored = await chrome.storage.session.get(ARM_STORAGE_KEY);
-  const source = stored?.[ARM_STORAGE_KEY];
-  return source && typeof source === "object" ? source : {};
+function armStorageKey(tabId) {
+  return `${ARM_STORAGE_KEY_PREFIX}${tabId}`;
 }
 
-async function writeArms(arms) {
-  await chrome.storage.session.set({ [ARM_STORAGE_KEY]: arms });
+async function readArm(tabId) {
+  const key = armStorageKey(tabId);
+  const stored = await chrome.storage.session.get(key);
+  const arm = stored?.[key];
+  return arm && typeof arm === "object" ? arm : null;
 }
 
 async function armTab(tabId, documentId, url) {
   if (!documentId) return false;
-  const arms = await readArms();
-  arms[String(tabId)] = {
+  const key = armStorageKey(tabId);
+  await chrome.storage.session.set({ [key]: {
     documentId: String(documentId),
     url: String(url || ""),
     expiresAt: Date.now() + ARM_TTL_MS,
     remaining: MAX_GENERATIONS_PER_ARM
-  };
-  await writeArms(arms);
+  } });
   return true;
 }
 
 async function getArm(sender, { consume = false } = {}) {
   const tabId = sender.tab?.id;
   if (!Number.isInteger(tabId)) return null;
-  const arms = await readArms();
-  const arm = arms[String(tabId)];
+  const key = armStorageKey(tabId);
+  const arm = await readArm(tabId);
   const documentMatches = Boolean(arm?.documentId && sender.documentId)
     && arm.documentId === String(sender.documentId);
   const valid = arm
@@ -76,16 +77,12 @@ async function getArm(sender, { consume = false } = {}) {
     && Number(arm.expiresAt) > Date.now()
     && Number(arm.remaining) > 0;
   if (!valid) {
-    if (arm) {
-      delete arms[String(tabId)];
-      await writeArms(arms);
-    }
+    if (arm) await chrome.storage.session.remove(key);
     return null;
   }
   if (consume) {
     arm.remaining = Number(arm.remaining) - 1;
-    arm.expiresAt = Date.now() + ARM_TTL_MS;
-    await writeArms(arms);
+    await chrome.storage.session.set({ [key]: arm });
   }
   return { ...arm };
 }
@@ -100,6 +97,13 @@ async function currentDocument(tabId) {
 }
 
 async function togglePageUi(tabId) {
+  if (!HOSTED_MANAGED) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      files: ["page-bridge.js"]
+    });
+  }
   let state = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
@@ -136,8 +140,10 @@ async function togglePageUi(tabId) {
 
 chrome.action.onClicked.addListener(async (tab) => {
   if (!Number.isInteger(tab.id) || !isMakeCodeUrl(tab.url)) return;
-  const injection = await currentDocument(tab.id);
-  if (!await armTab(tab.id, injection?.documentId || "", tab.url)) return;
+  if (!HOSTED_MANAGED) {
+    const injection = await currentDocument(tab.id);
+    if (!await armTab(tab.id, injection?.documentId || "", tab.url)) return;
+  }
   await togglePageUi(tab.id);
 });
 
@@ -146,6 +152,7 @@ function activeKey(sender) {
 }
 
 async function handleExtensionMessage(message) {
+  if (HOSTED_MANAGED) return { ok: false, error: { code: "managed_only_build", status: 0 } };
   if (message.type === "vibbit:byok:config:get") return { ok: true, value: await broker.publicConfig() };
   if (message.type === "vibbit:byok:config:save") return { ok: true, value: await broker.saveConfig(message.payload) };
   if (message.type === "vibbit:byok:key:clear") return { ok: true, value: await broker.clearKey(message.payload?.provider) };
@@ -154,6 +161,7 @@ async function handleExtensionMessage(message) {
 }
 
 async function handlePageMessage(message, sender) {
+  if (HOSTED_MANAGED) return { ok: false, error: { code: "managed_only_build", status: 0 } };
   if (message.type === "vibbit:byok:open-options") {
     if (!await getArm(sender)) {
       return { ok: false, error: { code: "tab_not_armed", status: 0 } };
@@ -182,7 +190,11 @@ async function handlePageMessage(message, sender) {
     return { ok: false, error: { code: "request_in_progress", status: 0 } };
   }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
   activeRequests.set(key, { requestId, controller });
   try {
     const arm = await getArm(sender, { consume: true });
@@ -196,13 +208,35 @@ async function handlePageMessage(message, sender) {
     });
     return { ok: true, value };
   } catch (error) {
-    return { ok: false, error: publicBrokerError(error) };
+    return { ok: false, error: publicBrokerError(error, { timedOut }) };
   } finally {
     clearTimeout(timeout);
     const active = activeRequests.get(key);
     if (active?.requestId === requestId) activeRequests.delete(key);
   }
 }
+
+function abortTabRequests(tabId) {
+  const prefix = `${tabId}:`;
+  for (const [key, active] of activeRequests.entries()) {
+    if (!key.startsWith(prefix)) continue;
+    active.controller.abort();
+    activeRequests.delete(key);
+  }
+}
+
+function clearTabState(tabId) {
+  abortTabRequests(tabId);
+  chrome.storage.session.remove(armStorageKey(tabId)).catch(() => {});
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "loading") clearTabState(tabId);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  clearTabState(tabId);
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const input = message && typeof message === "object" ? message : {};

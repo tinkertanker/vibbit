@@ -42,7 +42,7 @@ This repo ships one Vibbit runtime supporting both:
 - OpenRouter key -> `https://openrouter.ai/api/v1/chat/completions`
 - OpenCode key -> OpenCode Go or Zen (`https://opencode.ai/zen/go/v1` or `https://opencode.ai/zen/v1`)
 
-In the Chrome extension, BYOK configuration lives on the extension's options page. Keys are kept in trusted `chrome.storage.session`, cleared when Chrome exits, and never placed in MakeCode's DOM, events, `localStorage`, or provider requests from the page. Clicking the Vibbit toolbar action arms that exact MakeCode document for 15 minutes and at most 10 generations; one request may run at a time and cancellation aborts the provider fetch. While armed, hostile code already running on the MakeCode page can invoke the bounded generation capability and spend that quota, but it cannot read the key or choose an arbitrary endpoint, model, header, or provider request body. Schools that require prevention of all page-initiated quota use should use Managed mode rather than BYOK.
+In the Chrome extension, BYOK configuration lives on the extension's options page. Keys are kept in trusted `chrome.storage.session`, cleared when Chrome exits, and never placed in MakeCode's DOM, events, `localStorage`, or provider requests from the page. Clicking the Vibbit toolbar action arms that exact MakeCode document for a fixed 15 minutes and at most 10 generations; one request may run at a time, and cancellation, navigation, or tab close aborts provider work. While armed, hostile code already running on the MakeCode page can invoke the bounded generation capability and spend that quota, but it cannot read the key or choose an arbitrary endpoint, model, header, or provider request body. Schools that require prevention of all page-initiated quota use should distribute the hosted-managed package (`npm run package`), whose service worker denies BYOK; merely selecting Managed mode inside a neutral dual-mode build is not a security boundary.
 
 The bookmarklet cannot provide the same origin boundary: its BYOK key is memory-only and disappears on reload, but other scripts on the page can observe it while the bookmarklet is running. Rotate any key previously entered into an older Vibbit build that persisted keys in MakeCode `localStorage`.
 
@@ -59,7 +59,7 @@ The bookmarklet cannot provide the same origin boundary: its BYOK key is memory-
 - Runtime validation checks known enum members from `pxt-microbit` core enums (for example `Button`, `Gesture`, `TouchPin`, `DigitalPin`).
 - Runtime validation checks argument counts for core block APIs (derived from `//% blockId` signatures) before accepting model output.
 - Prompt guidance includes `blocks-test` style example shapes to bias towards code that decompiles cleanly to Blocks.
-- Maker guidance is pinned to Adafruit Circuit Playground Express and uses its fixed pin/button objects (`pins.LED`, `pins.A0`–`pins.A7`, `input.buttonA/buttonB`) and global `forever`/`pause`, rather than micro:bit-style pin enums.
+- Maker guidance is pinned to Adafruit Circuit Playground Express and uses fixed pin/button objects and global `forever`/`pause`, rather than micro:bit-style pin enums. `pins.LED` and `pins.A0`–`pins.A7` support digital I/O; analogue output is A0–A2, analogue input is A1–A7, and servo output is A1–A2.
 
 Vibbit reports the validation state explicitly:
 

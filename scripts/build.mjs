@@ -99,9 +99,10 @@ function assertExtensionCredentialBoundary(source) {
 }
 
 async function build() {
-  const [rawClient, rawManifest, frogSvgMarkup] = await Promise.all([
+  const [rawClient, rawManifest, rawBackground, frogSvgMarkup] = await Promise.all([
     readFile(sourcePath, "utf8"),
     readFile(manifestPath, "utf8"),
+    readFile(path.join(root, "extension", "background.js"), "utf8"),
     readFile(frogSvgPath, "utf8")
   ]);
 
@@ -134,6 +135,14 @@ async function build() {
   builtClient = overrideConst(builtClient, "EXTENSION_BUILD", true);
   builtClient = stripPageByokTransport(builtClient);
   assertExtensionCredentialBoundary(builtClient);
+  const builtBackground = overrideConst(rawBackground, "HOSTED_MANAGED", hostedManagedEnabled);
+
+  if (hostedManagedEnabled) {
+    delete manifest.options_page;
+    manifest.content_scripts = manifest.content_scripts.filter((entry) => (
+      !entry.js.includes("page-bridge.js")
+    ));
+  }
 
   if (backend) {
     builtClient = overrideConst(builtClient, "BACKEND", String(backend).trim());
@@ -166,7 +175,6 @@ async function build() {
     mkdir(sharedModuleDir, { recursive: true })
   ]);
   await Promise.all([
-    copyFile(path.join(root, "extension", "background.js"), path.join(extensionModuleDir, "background.js")),
     copyFile(path.join(root, "extension", "byok-broker.mjs"), path.join(extensionModuleDir, "byok-broker.mjs")),
     copyFile(path.join(root, "extension", "byok-config.mjs"), path.join(extensionModuleDir, "byok-config.mjs")),
     copyFile(path.join(root, "extension", "provider-transport.mjs"), path.join(extensionModuleDir, "provider-transport.mjs")),
@@ -188,6 +196,7 @@ async function build() {
 
   await Promise.all([
     writeFile(path.join(distDir, "content-script.js"), builtClient, "utf8"),
+    writeFile(path.join(extensionModuleDir, "background.js"), builtBackground, "utf8"),
     writeFile(path.join(distDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
   ]);
 

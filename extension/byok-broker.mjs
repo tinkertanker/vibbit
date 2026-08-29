@@ -186,8 +186,10 @@ export function createByokBroker({ storageArea, fetchImpl = fetch } = {}) {
   };
 }
 
-export function publicBrokerError(error) {
-  if (error?.name === "AbortError") return { code: "cancelled", status: 0 };
+export function publicBrokerError(error, { timedOut = false } = {}) {
+  if (error?.name === "AbortError") {
+    return { code: timedOut ? "request_timed_out" : "cancelled", status: 0 };
+  }
   if (error instanceof ProviderRequestError) {
     return { code: error.code, status: error.status };
   }

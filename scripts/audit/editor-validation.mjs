@@ -31,10 +31,16 @@ const DEFAULT_FIXTURES = [
     code: "input.onButtonPressed(Button.C, function () {\n    basic.showNumber(1, 2)\n})"
   },
   {
-    id: "microbit-grey-reject",
+    id: "microbit-grey-statement-reject",
     target: "microbit",
     expect: "reject",
     code: "const twice = (value: number) => value * 2\nbasic.showNumber(twice(3))"
+  },
+  {
+    id: "microbit-grey-expression-reject",
+    target: "microbit",
+    expect: "reject",
+    code: "basic.showNumber(true ? 1 : 2)"
   },
   {
     id: "arcade-native-pass",
@@ -43,7 +49,7 @@ const DEFAULT_FIXTURES = [
     code: "info.setScore(0)\ncontroller.A.onEvent(ControllerButtonEvent.Pressed, function () {\n    info.changeScoreBy(1)\n})"
   },
   {
-    id: "maker-circuit-playground-native-pass",
+    id: "maker-fallback-native-pass",
     target: "maker",
     expect: "pass",
     code: "forever(function () {\n    pins.LED.digitalWrite(true)\n    pause(500)\n    pins.LED.digitalWrite(false)\n    pause(500)\n})"
@@ -88,7 +94,10 @@ async function loadFixtures(inputPath) {
       id: String(row.id || row.caseId || `row-${index + 1}`),
       target: String(row.target || "microbit"),
       expect: row.expect === "reject" ? "reject" : "pass",
-      code: String(row.code ?? row.parsed?.code ?? "")
+      code: String(row.code ?? row.parsed?.code ?? ""),
+      model: String(row.model || ""),
+      repetition: Number.isInteger(row.repetition) ? row.repetition : null,
+      inputRow: index + 1
     };
   });
 }
@@ -101,8 +110,15 @@ async function visibleText(page, selector) {
 }
 
 async function validateFixture(browser, fixture, runDir, timeoutMs) {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  const screenshot = path.join(runDir, `${fixture.id.replace(/[^a-z0-9_-]+/gi, "-")}.png`);
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  const evidenceName = [
+    String(fixture.inputRow || fixture.auditRow || 0).padStart(3, "0"),
+    fixture.id,
+    fixture.model,
+    fixture.repetition === null || fixture.repetition === undefined ? "" : `r${fixture.repetition}`
+  ].filter(Boolean).join("-").replace(/[^a-z0-9_-]+/gi, "-");
+  const screenshot = path.join(runDir, `${evidenceName}.png`);
   const started = performance.now();
   try {
     const targetUrl = TARGET_URLS[fixture.target];
@@ -138,6 +154,24 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
     }, fixture.code);
     await page.waitForTimeout(2500);
 
+    const sourceState = await page.evaluate((submittedCode) => {
+      const models = window.monaco?.editor?.getModels?.() || [];
+      const model = models.find((item) => /main\.ts$/i.test(item.uri?.path || item.uri?.toString?.() || "")) || models[0];
+      const value = String(model?.getValue?.() || "").replace(/\r\n/g, "\n");
+      const expected = String(submittedCode || "").replace(/\r\n/g, "\n");
+      const markers = model
+        ? (window.monaco.editor.getModelMarkers({ resource: model.uri }) || [])
+        : [];
+      const errorSeverity = window.monaco?.MarkerSeverity?.Error || 8;
+      return {
+        sourceMatches: value === expected,
+        modelUri: String(model?.uri?.toString?.() || ""),
+        compileErrors: markers
+          .filter((marker) => Number(marker.severity) >= errorSeverity)
+          .map((marker) => String(marker.message || "").slice(0, 240))
+      };
+    }, fixture.code);
+
     const blocksTab = page.getByText("Blocks", { exact: true }).filter({ visible: true }).first();
     await blocksTab.click();
     await page.waitForFunction(() => {
@@ -155,19 +189,73 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
     const blockState = await page.evaluate(() => {
       const selectedBlocks = [...document.querySelectorAll(".blocks-menuitem")]
         .some((node) => /selected|active/.test(node.className));
-      const blockNodes = [...document.querySelectorAll("g.blocklyDraggable")];
-      const greyBlocks = blockNodes.filter((node) => /typescript_statement/.test(node.className?.baseVal || node.className || ""));
-      const nativeBlocks = blockNodes.filter((node) => {
-        const classes = node.className?.baseVal || node.className || "";
-        return !/blocklyShadow|typescript_statement/.test(classes);
+      const workspaces = [];
+      const queue = [window];
+      const seenWindows = new Set();
+      const seenWorkspaces = new Set();
+      const addWorkspace = (workspace) => {
+        if (!workspace || seenWorkspaces.has(workspace) || typeof workspace.getAllBlocks !== "function") return;
+        seenWorkspaces.add(workspace);
+        workspaces.push(workspace);
+      };
+      while (queue.length) {
+        const current = queue.shift();
+        if (!current || seenWindows.has(current)) continue;
+        seenWindows.add(current);
+        try {
+          const blockly = current.Blockly;
+          addWorkspace(blockly && (typeof blockly.getMainWorkspace === "function"
+            ? blockly.getMainWorkspace()
+            : blockly.mainWorkspace));
+          const editor = current.E?.getEditor?.();
+          addWorkspace(editor?.blocksEditor?.editor);
+          addWorkspace(current.blocksEditor?.editor);
+        } catch {
+          // Cross-origin or editor-version differences are expected while walking frames.
+        }
+        try {
+          for (const frame of current.document?.querySelectorAll?.("iframe") || []) {
+            if (frame.contentWindow) queue.push(frame.contentWindow);
+          }
+        } catch {
+          // Ignore cross-origin frames; the active editor workspace is same-origin.
+        }
+      }
+      const candidates = workspaces.map((workspace) => {
+        const blocks = workspace.getAllBlocks(false) || [];
+        const blockTypes = blocks.map((block) => String(block?.type || "")).filter(Boolean);
+        const greyTypes = blockTypes.filter((type) => (
+          type === "typescript_statement" || type === "typescript_expression"
+        ));
+        const nativeBlocks = blocks.filter((block) => {
+          const type = String(block?.type || "");
+          let shadow = false;
+          try { shadow = Boolean(block?.isShadow?.()); } catch {}
+          return !shadow && type !== "typescript_statement" && type !== "typescript_expression";
+        }).length;
+        return { blockTypes, greyTypes, nativeBlocks };
       });
-      return { selectedBlocks, greyBlocks: greyBlocks.length, nativeBlocks: nativeBlocks.length };
+      candidates.sort((left, right) => right.blockTypes.length - left.blockTypes.length);
+      return {
+        selectedBlocks,
+        workspaceFound: candidates.length > 0,
+        greyTypes: candidates[0]?.greyTypes || [],
+        nativeBlocks: candidates[0]?.nativeBlocks || 0,
+        blockTypes: candidates[0]?.blockTypes || []
+      };
     });
     const releasedEditorAccepted = blockState.selectedBlocks
+      && sourceState.sourceMatches
+      && sourceState.compileErrors.length === 0
       && !conversionDialog
-      && blockState.greyBlocks === 0
+      && blockState.workspaceFound
+      && blockState.greyTypes.length === 0
       && blockState.nativeBlocks > 0;
-    const releasedEditorRejected = Boolean(conversionDialog) || blockState.greyBlocks > 0;
+    const releasedEditorRejected = sourceState.sourceMatches && (
+      Boolean(conversionDialog)
+      || blockState.greyTypes.length > 0
+      || sourceState.compileErrors.length > 0
+    );
     const passed = fixture.expect === "pass" ? releasedEditorAccepted : releasedEditorRejected;
     await page.screenshot({ path: screenshot, fullPage: false });
     return {
@@ -177,8 +265,13 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
       passed,
       releasedEditorAccepted,
       releasedEditorRejected,
-      greyBlocks: blockState.greyBlocks,
+      sourceMatches: sourceState.sourceMatches,
+      modelUri: sourceState.modelUri,
+      compileErrors: sourceState.compileErrors,
+      greyBlocks: blockState.greyTypes.length,
+      greyTypes: blockState.greyTypes,
       nativeBlocks: blockState.nativeBlocks,
+      blockTypes: blockState.blockTypes,
       conversionDialog,
       finalUrl: page.url(),
       latencyMs: Math.round(performance.now() - started),
@@ -196,7 +289,7 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
       screenshot: path.relative(repoRoot, screenshot)
     };
   } finally {
-    await page.close();
+    await context.close();
   }
 }
 
@@ -209,6 +302,7 @@ if (options.help) {
 let fixtures = await loadFixtures(options.input);
 if (options.target) fixtures = fixtures.filter((fixture) => fixture.target === options.target);
 if (!fixtures.length) throw new Error("No editor-validation fixtures matched");
+fixtures = fixtures.map((fixture, index) => ({ ...fixture, auditRow: index + 1 }));
 
 const runDir = await createAuditRunDir("editor-validation");
 const browser = await chromium.launch({ headless: !options.headful });
@@ -234,7 +328,7 @@ await writeFile(path.join(runDir, "results.json"), JSON.stringify({
 const report = [
   "# Released MakeCode editor validation",
   "",
-  "This audit writes each fixture into the real released Monaco editor, switches to Blocks, and requires either native blocks with no grey `typescript_statement` nodes or an explicit conversion rejection.",
+  "This audit writes each fixture into the real released Monaco editor, verifies the submitted `main.ts` model and compile markers, switches to Blocks, and inspects only the active Blockly workspace model. Passing fixtures require native non-shadow blocks and no `typescript_statement` or `typescript_expression` grey blocks; rejection fixtures require a conversion dialog, compile error, or grey workspace block.",
   "",
   buildMarkdownTable(results.map((result) => ({
     step: `${result.target}/${result.id} (${result.expect})`,

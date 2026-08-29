@@ -55,5 +55,13 @@ export function supportsByokThinkHarder(provider, model) {
   const safeModel = normaliseByokModel(safeProvider, model);
   if (safeProvider === "openai") return safeModel === "gpt-5.6-luna";
   if (safeProvider === "gemini") return false;
-  return true;
+  if (safeProvider === "openrouter") {
+    return new Set([
+      "openai/gpt-5.6-luna",
+      "deepseek/deepseek-v4-flash-0731",
+      "qwen/qwen3.8-27b",
+      "tencent/hy3"
+    ]).has(safeModel);
+  }
+  return safeProvider === "opencode";
 }
