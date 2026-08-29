@@ -5,7 +5,9 @@ This suite compares models on the outcome Vibbit actually needs: valid response 
 The model sampler and corpus are available now:
 
 - `evals/makecode-models/corpus.json`: 24 cases across micro:bit, Arcade, and Maker and across eight task categories. Micro:bit is the primary screening target; Arcade and Maker remain cross-target regression checks.
-- `evals/makecode-models/run.mjs`: exact Vibbit prompt construction, OpenAI-compatible sampling, strict contract checks, compatibility prechecks, prompt criteria, latency, token usage, and cost capture.
+- `evals/makecode-models/corpus-adversarial.json`: separate source-hierarchy cases with instructions embedded in current code, diagnostics, conversion dialogs, stale chat, and different context positions. Do not mix these into the ordinary quality score.
+- `evals/makecode-models/run.mjs`: exact Vibbit prompt construction, raw one-shot and production `runGenerationLoop` policies, immutable request/candidate/retry trajectories, pinned validation, context/retry ablations, latency, usage, and cost capture.
+- `evals/makecode-models/metrics.mjs`: hard/Harness/first-attempt/budget pass rates, conditional repair, fallback and false-success rates, failure classes, latency/cost quantiles, Wilson intervals, and paired bootstrap model comparisons.
 
 The sampler awards 40 contract and prefilter points in `results.jsonl`. A regex cannot establish whether an API exists or code decompiles. The remaining 60 points come from the pinned MakeCode compiler and decompiler in `shared/makecode-decompile.mjs`. Those scores are written to `makecode-validation.jsonl` beside the raw JSONL. The raw file stays immutable.
 
@@ -47,7 +49,7 @@ Each case has conservative required and forbidden patterns. They test explicit s
 - **Arcade:** use Arcade sprite/controller/scene/game/info APIs and image literals. Accept canonical decompiler normalization, such as a sprite flag replacing a compatibility convenience method; score semantics or Blocks XML rather than textual round-trip identity.
 - **Maker:** pin a board because Maker is a family of hardware packages, not one uniform API. The corpus uses **Adafruit Circuit Playground Express**. Canonical Maker code uses fixed pin objects (`pins.LED.digitalWrite(true)`, `pins.A3.analogRead()`, `pins.A1.servoWrite(90)`), fixed button objects (`input.buttonA.onEvent(ButtonEvent.Click, ...)`), and global `forever`/`pause`. Temperature requires `TemperatureUnit.Celsius`. Pin capabilities and sensor/button packages differ by board.
 
-This inspection exposed a material baseline issue: Vibbit's current Maker catalog in `shared/makecode-compat-core.mjs` describes micro:bit-style `DigitalPin`/`AnalogPin` arguments, `pins.digitalWritePin`, `input.onButtonPressed`, `loops.forever`, and `pins.map`. Those are not the canonical pxt-maker Circuit Playground Express surface; several do not exist there. Do not interpret low Maker scores as model weakness until either that prompt is corrected or the evaluation explicitly measures how well models resist incorrect prompt grounding. Report Maker separately in all cases.
+Vibbit's Maker catalog now uses this same fixed Circuit Playground Express surface. Keep reporting Maker separately because it remains board-specific, not because its prompt is quarantined.
 
 ## Scoring
 
@@ -83,6 +85,8 @@ Report:
 - 95% Wilson intervals for pass rates and paired bootstrap confidence intervals for score/pass-rate differences, resampling by case and repetition;
 - worst-case results. Do not let strong micro:bit results hide a Maker or repair failure.
 
+`summary.json` calculates these policy metrics overall and by model, provider, target, and category. A **Harness pass** follows the permissive production parser and full bounded policy; a **hard pass** additionally requires the strict two-key JSON contract. Keeping both prevents a recoverable formatting miss from being confused with either production failure or perfect model compliance.
+
 Recommended release gate: at least 95% overall hard pass, at least 90% for every target and category, zero JSON-contract failures in the finalist run, and no statistically or practically meaningful regression versus the incumbent. Adjust thresholds only before seeing candidate labels.
 
 ## Sampling strategy
@@ -93,7 +97,16 @@ Use three phases, with most screening spend on micro:bit:
 2. **Cross-target check:** 3 repetitions × the 16 Arcade and Maker cases for candidates that pass the micro:bit screen.
 3. **Final:** at least 10 repetitions × all 24 cases for the shortlist and incumbent. Five is an acceptable budget-constrained minimum, but gives wide intervals.
 
-Keep system/user prompts, max tokens, temperature, target versions, board, and retry policy identical. Use `--prompt-mode managed` for an apples-to-apples primary model comparison. Vibbit's BYOK route adds conversational guidance, so use `--prompt-mode byok` only for a separate route-faithful benchmark. Run raw single attempts first: Vibbit's correction retries can hide first-pass model quality and multiply cost. Run a second end-to-end policy benchmark only after raw quality is understood, recording every retry and fallback separately.
+Keep system/user prompts, max tokens, temperature, target versions, board, and retry policy identical. Use `--prompt-mode managed` for an apples-to-apples primary model comparison. Vibbit's BYOK route adds conversational guidance, so use `--prompt-mode byok` only for a separate route-faithful benchmark. Run `--policy raw` first: correction retries can hide first-pass model quality and multiply cost. Then run `--policy harness`; it calls the same `runGenerationLoop` implementation as production and records each request transcript, raw candidate, failure class, retry, latency, usage, cost, fallback, and final outcome.
+
+For evidence-gated context changes, compare one variable at a time:
+
+- `--context full|no-recent-chat|no-current-code|no-page-errors`;
+- `--max-current-code-chars N` and `--current-code-window head|middle|tail`;
+- `--max-empty-retries N`, `--max-validation-retries N`, and `--max-attempts N`;
+- `--validation pinned|static-only` to quantify what the cheaper static policy misses.
+
+Run the adversarial corpus under both raw and Harness policies before adding stronger source-hierarchy prompt language. It is a comparison path, not an automatic production rule stack or prompt-injection classifier.
 
 The harness rotates case and model order deterministically to reduce time-of-day and warm-cache bias. Run candidates from the same gateway in one interleaved matrix. Alternate gateway order across replicated runs. A provider seed is only a request hint and is not assumed to make results deterministic; repeated samples remain mandatory. If all candidates support a seed, use `--seed 1701` and still vary repetition (`1701 + repetition`). Otherwise omit seed for every candidate in the primary comparison.
 
@@ -110,6 +123,7 @@ node evals/makecode-models/run.mjs \
   --models openai/gpt-5.6-luna,deepseek/deepseek-v4-flash-0731,xiaomi/mimo-v2.5,qwen/qwen3.8-27b,tencent/hy3 \
   --target microbit \
   --samples 5 \
+  --policy raw \
   --prompt-mode managed \
   --dry-run
 ```
@@ -161,14 +175,14 @@ node evals/makecode-models/run.mjs \
 
 Results go to ignored `output/model-evals/<provider>-<timestamp>/`:
 
-- `results.jsonl`: raw output, parsed output, provisional checks, usage/cost, and a null `makeCodeValidation` slot that stays null;
-- `makecode-validation.jsonl`: pinned compile, decompile, grey-block, hash, and 60-point score records derived from that run;
+- `results.jsonl`: local immutable provider capture with exact request messages, each candidate/retry trajectory, parsed/final output, policy outcome, validation, usage/cost, and evaluation fields;
+- `makecode-validation.jsonl`: pinned compile, decompile, grey-block, hash, 60-point score, and policy outcome records;
 - `models-snapshot.json`: provider model metadata at run time;
-- `summary.json`: run configuration and counts.
+- `summary.json`: run configuration, counts, aggregate policy metrics, confidence intervals, and paired model comparisons.
 
 `--dry-run` still validates the matrix without API calls and without loading a compiler worker.
 
-Secrets are read only from the named environment variable and are never written. OpenRouter currently returns native token accounting and cost in `usage`; for endpoints that omit billed cost, retain token counts and apply a frozen price snapshot during analysis rather than silently using today's price later.
+Secrets are read only from the named environment variable and are never written. `results.jsonl` does contain prompts, current code, diagnostics, recent chat, and raw model output so that trajectories are reproducible; treat it as potentially sensitive local evaluation data and do not use it as production telemetry. OpenRouter currently returns native token accounting and cost in `usage`; for endpoints that omit billed cost, retain token counts and apply a frozen price snapshot during analysis rather than silently using today's price later.
 
 ## True MakeCode validation
 
@@ -195,7 +209,7 @@ Where direct compiler-worker integration is unavailable, Playwright can load eac
 - `https://arcade.makecode.com/`;
 - `https://maker.makecode.com/` with the pinned board.
 
-The existing `npm run audit:smoke` is not this validation. It visits only micro:bit, stubs Monaco/provider calls, and accepts a log saying the decompile probe passed, failed, or was unavailable. The live audit also stubs Monaco and tests only one prompt. Corpus compile and decompile run through `evals/makecode-models/run.mjs` and `shared/makecode-decompile.mjs`.
+Run `npm run audit:editor` for this validation. Its default released-editor fixtures prove native micro:bit, Arcade, and Circuit Playground Express programmes are accepted, a compile-invalid programme is rejected, and grey JavaScript blocks are detected. Pass evaluator JSONL through `--input PATH` (and optionally `--target`) to validate sampled candidates. The existing `npm run audit:smoke` still stubs Monaco/provider calls and is not released-editor evidence.
 
 ## What is automated now vs. deferred
 
@@ -206,13 +220,21 @@ Automated now:
 - strict raw JSON and permissive production parser outcomes;
 - Vibbit compatibility prefilter and case criteria;
 - repeated, interleaved sampling for OpenRouter and chat-compatible OpenCode Go/Zen models;
+- separate raw one-shot and exact production Harness-policy runs with complete retry trajectories;
+- context, retry-budget, validation-policy, and head/middle/tail current-code comparison flags;
+- an adversarial source-hierarchy corpus kept separate from the ordinary score;
+- hard/Harness/first-attempt/budget pass, conditional repair, fallback, false-success, failure-class, Wilson, and paired-bootstrap metrics;
 - latency, resolved model, token usage, provider cost where supplied, prompt hashes, and model metadata snapshots;
 - pinned target compile and TypeScript-to-Blocks decompile through `shared/makecode-decompile.mjs`;
 - grey-block/`typescript_statement` rejection and optional Blocks round-trip compilation.
+- released-editor conversion checks through `npm run audit:editor`;
+- unpacked-extension credential/arming boundary canaries through `npm run audit:extension`.
 
 Still deferred:
 
-- visual/browser confirmation of conversion-dialog behaviour and Vibbit's retry/fallback policy on the live editors.
+- provider-funded raw-vs-Harness, context, adversarial, and retry ablations for a frozen model shortlist;
+- a product decision on whether source-hierarchy prompt changes beat the current prompt without ordinary-task regressions;
+- production telemetry, pending a school-approved retention/redaction policy (offline evaluation traces are intentionally local instead).
 
 ## Sources
 

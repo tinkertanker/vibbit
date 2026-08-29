@@ -6,15 +6,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
   buildSystemPrompt,
   buildUserPrompt,
   parseModelOutput,
+  runGenerationLoop,
+  serializeTranscript,
   validateBlocksCompatibility
 } from "../../shared/makecode-compat-core.mjs";
 import {
   compileAndDecompile,
   scoreMakeCodeValidation
 } from "../../shared/makecode-decompile.mjs";
+import { summarizeRecords } from "./metrics.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -26,6 +30,14 @@ const defaults = {
   timeoutMs: 90000,
   provider: "openrouter",
   promptMode: "managed",
+  policy: "raw",
+  context: "full",
+  maxCurrentCodeChars: DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
+  currentCodeWindow: "head",
+  maxEmptyRetries: 2,
+  maxValidationRetries: 2,
+  maxAttempts: 3,
+  validation: "pinned",
   out: path.join(repoRoot, "output", "model-evals")
 };
 
@@ -41,6 +53,14 @@ Options:
   --temperature N      Sampling temperature (default: 0.1)
   --seed N             Send seed + repetition number (only where supported)
   --prompt-mode MODE   managed or byok; byok adds Vibbit conversation guidance
+  --policy MODE        raw one-shot baseline or production harness (default: raw)
+  --context MODE       full, no-recent-chat, no-current-code, or no-page-errors
+  --max-current-code-chars N  Current-code prompt budget (default: production budget)
+  --current-code-window MODE   head, middle, or tail comparison (default: head)
+  --max-empty-retries N       Harness empty-output retries (default: 2)
+  --max-validation-retries N  Harness compatibility/decompile retries (default: 2)
+  --max-attempts N            Global Harness provider-attempt budget (default: 3)
+  --validation MODE    pinned or static-only (default: pinned)
   --max-tokens N       Maximum output tokens (default: 3072)
   --timeout-ms N       Per-request timeout (default: 90000)
   --case REGEX         Run matching case IDs only
@@ -55,7 +75,17 @@ Default key variables:
 
 function parseArgs(argv) {
   const options = { ...defaults };
-  const numberKeys = new Set(["samples", "temperature", "seed", "max-tokens", "timeout-ms"]);
+  const numberKeys = new Set([
+    "samples",
+    "temperature",
+    "seed",
+    "max-tokens",
+    "timeout-ms",
+    "max-current-code-chars",
+    "max-empty-retries",
+    "max-validation-retries",
+    "max-attempts"
+  ]);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") return { help: true };
@@ -78,6 +108,20 @@ function parseArgs(argv) {
   options.protocol = String(options.protocol || "chat").toLowerCase();
   if (!["chat", "responses"].includes(options.protocol)) throw new Error("--protocol must be chat or responses");
   if (!["managed", "byok"].includes(options.promptMode)) throw new Error("--prompt-mode must be managed or byok");
+  if (!["raw", "harness"].includes(options.policy)) throw new Error("--policy must be raw or harness");
+  if (!["full", "no-recent-chat", "no-current-code", "no-page-errors"].includes(options.context)) {
+    throw new Error("--context must be full, no-recent-chat, no-current-code, or no-page-errors");
+  }
+  if (!["head", "middle", "tail"].includes(options.currentCodeWindow)) {
+    throw new Error("--current-code-window must be head, middle, or tail");
+  }
+  if (!["pinned", "static-only"].includes(options.validation)) {
+    throw new Error("--validation must be pinned or static-only");
+  }
+  for (const key of ["maxCurrentCodeChars", "maxEmptyRetries", "maxValidationRetries", "maxAttempts"]) {
+    if (!Number.isInteger(options[key]) || options[key] < 0) throw new Error(`--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)} must be a non-negative integer`);
+  }
+  if (options.maxAttempts < 1) throw new Error("--max-attempts must be at least 1");
   return options;
 }
 
@@ -190,13 +234,27 @@ async function runPinnedMakeCodeValidation(code, target) {
   }
 }
 
-function buildPrompt(testCase, promptMode) {
-  const system = buildSystemPrompt(testCase.target, { conversational: promptMode === "byok" });
+function selectCurrentCodeWindow(value, maxChars, mode) {
+  const source = String(value || "");
+  if (!maxChars || source.length <= maxChars || mode === "head") return source;
+  if (mode === "tail") return source.slice(-maxChars);
+  const start = Math.max(0, Math.floor((source.length - maxChars) / 2));
+  return source.slice(start, start + maxChars);
+}
+
+function buildPrompt(testCase, options) {
+  const sourceCode = options.context === "no-current-code" ? "" : (testCase.currentCode || "");
+  const currentCode = selectCurrentCodeWindow(sourceCode, options.maxCurrentCodeChars, options.currentCodeWindow);
+  const pageErrors = options.context === "no-page-errors" ? [] : (testCase.pageErrors || []);
+  const recentChat = options.context === "no-recent-chat" ? "" : (testCase.recentChat || "");
+  const system = buildSystemPrompt(testCase.target, { conversational: options.promptMode === "byok" });
   const user = buildUserPrompt({
     request: testCase.request,
-    currentCode: testCase.currentCode || "",
-    pageErrors: testCase.pageErrors || [],
-    conversionDialog: testCase.conversionDialog || null
+    currentCode,
+    pageErrors,
+    conversionDialog: options.context === "no-page-errors" ? null : (testCase.conversionDialog || null),
+    recentChat,
+    maxCurrentCodeChars: options.maxCurrentCodeChars
   });
   return { system, user };
 }
@@ -270,6 +328,55 @@ function estimateCost(usage, pricing) {
   return promptTokens * promptRate + completionTokens * completionRate;
 }
 
+function providerBody(messages, model, repetition, options) {
+  const serialized = serializeTranscript(messages);
+  const body = options.protocol === "responses"
+    ? {
+        model,
+        max_output_tokens: options.maxTokens,
+        input: messages
+      }
+    : {
+        model,
+        temperature: options.temperature,
+        max_tokens: options.maxTokens,
+        messages
+      };
+  if (options.protocol === "responses" && !/^gpt-/i.test(model)) body.temperature = options.temperature;
+  if (options.protocol === "chat" && Number.isInteger(options.seed)) body.seed = options.seed + repetition;
+  return { body, serialized };
+}
+
+async function callProvider({
+  messages,
+  model,
+  repetition,
+  options,
+  providerConfig,
+  apiKey,
+  modelSnapshot
+}) {
+  const { body, serialized } = providerBody(messages, model, repetition, options);
+  const { data, latencyMs } = await fetchJson(providerConfig.endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body)
+  }, options.timeoutMs);
+  const raw = options.protocol === "responses" ? extractResponsesText(data) : extractResponseText(data);
+  const usage = data.usage || null;
+  return {
+    raw,
+    latencyMs,
+    usage,
+    costUsd: estimateCost(usage, pricingFor(model, modelSnapshot)),
+    responseId: data.id || null,
+    resolvedModel: data.model || null,
+    finishReason: data.choices?.[0]?.finish_reason || data.status || null,
+    requestMessages: messages.map((message) => ({ role: message.role, content: String(message.content || "") })),
+    requestTranscriptSha256: sha256(`${serialized.system}\n${serialized.user}`)
+  };
+}
+
 function shuffledMatrix(models, cases, samples) {
   const rows = [];
   for (let repetition = 0; repetition < samples; repetition += 1) {
@@ -329,36 +436,18 @@ async function main() {
   const validationRecords = [];
   for (let index = 0; index < matrix.length; index += 1) {
     const { model, testCase, repetition } = matrix[index];
-    const { system, user } = buildPrompt(testCase, options.promptMode);
-    const body = options.protocol === "responses"
-      ? {
-          model,
-          max_output_tokens: options.maxTokens,
-          input: [
-            { role: "system", content: system },
-            { role: "user", content: user }
-          ]
-        }
-      : {
-          model,
-          temperature: options.temperature,
-          max_tokens: options.maxTokens,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user }
-          ]
-        };
-    if (options.protocol === "responses" && !/^gpt-/i.test(model)) {
-      body.temperature = options.temperature;
-    }
-    if (options.protocol === "chat" && Number.isInteger(options.seed)) body.seed = options.seed + repetition;
+    const { system, user } = buildPrompt(testCase, options);
 
     process.stdout.write(`[${index + 1}/${matrix.length}] ${model} ${testCase.id} #${repetition + 1} ... `);
     const base = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       provider: options.provider,
       endpoint: providerConfig.endpoint,
+      policy: options.policy,
+      context: options.context,
+      validationMode: options.validation,
       requestedModel: model,
+      model,
       caseId: testCase.id,
       target: testCase.target,
       targetBoard: testCase.targetBoard || null,
@@ -366,60 +455,205 @@ async function main() {
       repetition,
       temperature: options.temperature,
       promptMode: options.promptMode,
-      seed: body.seed ?? null,
+      seed: Number.isInteger(options.seed) ? options.seed + repetition : null,
       systemPromptSha256: sha256(system),
       userPromptSha256: sha256(user),
       corpusVersion: corpus.version
     };
     try {
-      const { data, latencyMs } = await fetchJson(providerConfig.endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify(body)
-      }, options.timeoutMs);
-      const raw = options.protocol === "responses" ? extractResponsesText(data) : extractResponseText(data);
-      const parsed = parseModelOutput(raw);
+      const providerAttempts = [];
+      const invoke = async (messages) => {
+        const attempt = await callProvider({
+          messages,
+          model,
+          repetition,
+          options,
+          providerConfig,
+          apiKey,
+          modelSnapshot
+        });
+        providerAttempts.push(attempt);
+        return attempt.raw;
+      };
+      let policyResult;
+      let pinned;
+      if (options.policy === "harness") {
+        policyResult = await runGenerationLoop({
+          target: testCase.target,
+          systemPrompt: system,
+          initialUserPrompt: user,
+          emptyRetries: options.maxEmptyRetries,
+          validationRetries: options.maxValidationRetries,
+          maxAttempts: options.maxAttempts,
+          callModel: invoke,
+          runDecompile: options.validation === "pinned"
+            ? async (code, target) => (await runPinnedMakeCodeValidation(code, target)).report
+            : undefined
+        });
+        const lastAttempt = policyResult.attempts[policyResult.attempts.length - 1] || null;
+        pinned = options.validation === "pinned" && lastAttempt?.decompile && !lastAttempt.decompile.skipped
+          ? {
+              report: lastAttempt.decompile,
+              score: scoreMakeCodeValidation(lastAttempt.decompile),
+              error: null
+            }
+          : null;
+      } else {
+        const raw = await invoke([
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ]);
+        const parsed = parseModelOutput(raw);
+        const compatibility = parsed.code
+          ? validateBlocksCompatibility(parsed.code, testCase.target)
+          : { ok: false, violations: ["empty output"] };
+        pinned = options.validation === "pinned"
+          ? await runPinnedMakeCodeValidation(parsed.code, testCase.target)
+          : null;
+        const reason = !String(parsed.code || "").trim()
+          ? "empty"
+          : (!compatibility.ok ? "invalid" : (pinned && !pinned.report.ok ? "decompile" : "ok"));
+        policyResult = {
+          code: parsed.code,
+          feedback: parsed.feedback,
+          validation: compatibility,
+          upstreamAttempts: 1,
+          outcome: reason === "ok" ? "ok" : "raw-invalid",
+          attempts: [{
+            raw,
+            code: parsed.code,
+            feedback: parsed.feedback,
+            validation: compatibility,
+            reason,
+            decompile: pinned?.report || null
+          }]
+        };
+      }
+
+      const finalProviderAttempt = providerAttempts[providerAttempts.length - 1];
+      const raw = finalProviderAttempt?.raw || "";
+      const parsed = { code: policyResult.code, feedback: policyResult.feedback };
       const contract = strictContract(raw);
-      const compatibility = parsed.code
-        ? validateBlocksCompatibility(parsed.code, testCase.target)
+      const compatibility = policyResult.code
+        ? validateBlocksCompatibility(policyResult.code, testCase.target)
         : { ok: false, violations: ["empty output"] };
-      const criteria = criteriaResult(parsed.code, testCase);
+      const criteria = criteriaResult(policyResult.code, testCase);
       const provisional = provisionalScore(contract, compatibility, criteria);
-      const usage = data.usage || null;
+      const fallback = String(policyResult.outcome).startsWith("stub-");
+      const makeCodeOk = options.validation === "static-only" ? compatibility.ok : Boolean(pinned?.report?.ok);
+      const harnessPass = !fallback && compatibility.ok && criteria.ok && makeCodeOk;
+      const hardPass = harnessPass && contract.ok;
+      const firstAttempt = policyResult.attempts[0] || null;
+      const firstCriteria = criteriaResult(firstAttempt?.code || "", testCase);
+      const firstMakeCodeOk = options.validation === "static-only"
+        ? Boolean(firstAttempt?.validation?.ok)
+        : Boolean(firstAttempt?.decompile?.ok);
+      const firstAttemptPass = Boolean(firstAttempt?.reason === "ok" && firstCriteria.ok && firstMakeCodeOk);
+      const repairEligible = Boolean(firstAttempt && firstAttempt.reason !== "ok");
+      const repaired = repairEligible && harnessPass;
+      const finalReason = policyResult.attempts[policyResult.attempts.length - 1]?.reason || null;
+      const failureClass = harnessPass
+        ? (contract.ok ? null : "response-contract")
+        : (fallback ? `fallback-${finalReason || "unknown"}`
+          : (!compatibility.ok ? "compatibility"
+            : (!criteria.ok ? "task-criteria"
+              : (!makeCodeOk ? "decompile" : (!contract.ok ? "response-contract" : "unknown")))));
+      const latencyMs = providerAttempts.reduce((sum, attempt) => sum + attempt.latencyMs, 0);
+      const numericCosts = providerAttempts.map((attempt) => attempt.costUsd).filter(Number.isFinite);
+      const costUsd = numericCosts.length === providerAttempts.length
+        ? numericCosts.reduce((sum, value) => sum + value, 0)
+        : null;
+      const trajectory = providerAttempts.map((attempt, attemptIndex) => {
+        const harnessAttempt = policyResult.attempts[attemptIndex] || {};
+        return {
+          attempt: attemptIndex + 1,
+          requestMessages: attempt.requestMessages,
+          requestTranscriptSha256: attempt.requestTranscriptSha256,
+          rawCandidate: attempt.raw,
+          parsedCandidate: {
+            code: harnessAttempt.code || "",
+            feedback: harnessAttempt.feedback || []
+          },
+          failureClass: harnessAttempt.reason || "unknown",
+          latencyMs: attempt.latencyMs,
+          usage: attempt.usage,
+          costUsd: attempt.costUsd,
+          responseId: attempt.responseId,
+          resolvedModel: attempt.resolvedModel,
+          finishReason: attempt.finishReason
+        };
+      });
       const record = {
         ...base,
         status: "ok",
-        responseId: data.id || null,
-        resolvedModel: data.model || null,
-        finishReason: data.choices?.[0]?.finish_reason || data.status || null,
+        responseId: finalProviderAttempt?.responseId || null,
+        resolvedModel: finalProviderAttempt?.resolvedModel || null,
+        finishReason: finalProviderAttempt?.finishReason || null,
         latencyMs,
-        usage,
-        costUsd: estimateCost(usage, pricingFor(model, modelSnapshot)),
+        usage: providerAttempts.map((attempt) => attempt.usage),
+        costUsd,
         raw,
         parsed,
         contract,
         compatibility,
         criteria,
         provisional,
-        makeCodeValidation: null
+        outcome: policyResult.outcome,
+        upstreamAttempts: policyResult.upstreamAttempts,
+        trajectory,
+        makeCodeValidation: pinned?.report || null,
+        evaluation: {
+          hardPass,
+          harnessPass,
+          firstAttemptPass,
+          passWithinBudget: harnessPass,
+          repairEligible,
+          repaired,
+          fallback,
+          falseSuccess: !fallback && ["ok", "ok-unverified"].includes(policyResult.outcome) && !harnessPass,
+          failureClass,
+          latencyMs,
+          costUsd
+        }
       };
       records.push(record);
-      const pinned = await runPinnedMakeCodeValidation(parsed.code, testCase.target);
       validationRecords.push({
         requestedModel: model,
         caseId: testCase.id,
         repetition,
         target: testCase.target,
         targetBoard: testCase.targetBoard || null,
-        makeCodeValidation: pinned.report,
-        makeCodeScore: pinned.score,
-        totalScore: Number((provisional.score + pinned.score.score).toFixed(2)),
+        policy: options.policy,
+        outcome: policyResult.outcome,
+        makeCodeValidation: pinned?.report || null,
+        makeCodeScore: pinned?.score || { score: compatibility.ok ? 20 : 0, max: 20 },
+        totalScore: Number((provisional.score + (pinned?.score?.score || 0)).toFixed(2)),
         totalMax: 100,
-        error: pinned.error
+        evaluation: record.evaluation,
+        error: pinned?.error || null
       });
-      console.log(`${provisional.score}/${provisional.max} + ${pinned.score.score}/${pinned.score.max}, ${latencyMs}ms`);
+      const verdict = hardPass ? "HARD PASS" : (harnessPass ? `HARNESS PASS (${failureClass})` : failureClass);
+      console.log(`${policyResult.outcome}, ${policyResult.upstreamAttempts} attempt(s), ${verdict}, ${latencyMs}ms`);
     } catch (error) {
-      records.push({ ...base, status: "error", error: error.message, makeCodeValidation: null });
+      records.push({
+        ...base,
+        status: "error",
+        error: error.message,
+        makeCodeValidation: null,
+        evaluation: {
+          hardPass: false,
+          harnessPass: false,
+          firstAttemptPass: false,
+          passWithinBudget: false,
+          repairEligible: false,
+          repaired: false,
+          fallback: false,
+          falseSuccess: false,
+          failureClass: "transport-or-provider",
+          latencyMs: null,
+          costUsd: null
+        }
+      });
       validationRecords.push({
         requestedModel: model,
         caseId: testCase.id,
@@ -444,10 +678,18 @@ async function main() {
     ? Number((scored.reduce((sum, item) => sum + item.totalScore, 0) / scored.length).toFixed(2))
     : null;
   const summary = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     createdAt: new Date().toISOString(),
     provider: options.provider,
     protocol: options.protocol,
+    policy: options.policy,
+    context: options.context,
+    validationMode: options.validation,
+    maxCurrentCodeChars: options.maxCurrentCodeChars,
+    currentCodeWindow: options.currentCodeWindow,
+    maxEmptyRetries: options.maxEmptyRetries,
+    maxValidationRetries: options.maxValidationRetries,
+    maxAttempts: options.maxAttempts,
     endpoint: providerConfig.endpoint,
     corpus: path.relative(repoRoot, path.resolve(options.corpus)),
     corpusVersion: corpus.version,
@@ -460,7 +702,8 @@ async function main() {
     successfulRequests: records.filter((item) => item.status === "ok").length,
     errors: records.filter((item) => item.status === "error").length,
     meanTotalScore: meanTotal,
-    note: "results.jsonl is the immutable provider capture. Pinned compile and decompile scores live in makecode-validation.jsonl.",
+    metrics: summarizeRecords(records),
+    note: "results.jsonl is a local, immutable evaluation capture containing raw prompts, candidates, and retry trajectories; review it as potentially sensitive. Pinned compile/decompile results live in makecode-validation.jsonl.",
     results: "results.jsonl",
     makeCodeValidation: "makecode-validation.jsonl",
     modelSnapshot: "models-snapshot.json"
