@@ -50,8 +50,8 @@ const EXTENSION_BUILD = false;
   const STORAGE_MANAGED_SESSION = "__vibbit_managed_session";
   const STORAGE_MANAGED_SESSION_EXPIRES = "__vibbit_managed_session_expires";
   const CLASS_CODE_LENGTH = 10;
-  const EXTENSION_REQUEST_EVENT = "__vibbit_extension_request_v1";
-  const EXTENSION_RESPONSE_EVENT = "__vibbit_extension_response_v1";
+  const EXTENSION_REQUEST_EVENT_PREFIX = "__vibbit_extension_request_v2_";
+  const EXTENSION_RESPONSE_EVENT_PREFIX = "__vibbit_extension_response_v2_";
   const memoryProviderKeys = Object.create(null);
 
   const MODEL_PRESETS = {
@@ -143,6 +143,12 @@ const EXTENSION_BUILD = false;
 
   const extensionRequest = (type, payload, signal) => {
     if (!EXTENSION_BUILD) return Promise.reject(new Error("extension_bridge_unavailable"));
+    const bridgeToken = String(document.documentElement?.dataset?.vibbitBridgeToken || "");
+    if (!/^[A-Za-z0-9_-]{8,80}$/.test(bridgeToken)) {
+      return Promise.reject(new Error("extension_bridge_unavailable"));
+    }
+    const requestEvent = EXTENSION_REQUEST_EVENT_PREFIX + bridgeToken;
+    const responseEvent = EXTENSION_RESPONSE_EVENT_PREFIX + bridgeToken;
     const requestId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
       ? globalThis.crypto.randomUUID().replace(/-/g, "")
       : (Date.now().toString(36) + Math.random().toString(36).slice(2, 18));
@@ -151,7 +157,7 @@ const EXTENSION_BUILD = false;
       let timeout = 0;
       const cleanup = () => {
         clearTimeout(timeout);
-        document.removeEventListener(EXTENSION_RESPONSE_EVENT, onResponse);
+        document.removeEventListener(responseEvent, onResponse);
         if (signal) signal.removeEventListener("abort", onAbort);
       };
       const finish = (fn, value) => {
@@ -172,14 +178,14 @@ const EXTENSION_BUILD = false;
         }
       };
       const onAbort = () => {
-        document.dispatchEvent(new CustomEvent(EXTENSION_REQUEST_EVENT, {
+        document.dispatchEvent(new CustomEvent(requestEvent, {
           detail: { type: "vibbit:byok:cancel", requestId, payload: {} }
         }));
         finish(reject, createAbortError());
       };
       const onTimeout = () => {
         if (type === "vibbit:byok:generate") {
-          document.dispatchEvent(new CustomEvent(EXTENSION_REQUEST_EVENT, {
+          document.dispatchEvent(new CustomEvent(requestEvent, {
             detail: { type: "vibbit:byok:cancel", requestId, payload: {} }
           }));
         }
@@ -187,7 +193,7 @@ const EXTENSION_BUILD = false;
         error.code = error.message;
         finish(reject, error);
       };
-      document.addEventListener(EXTENSION_RESPONSE_EVENT, onResponse);
+      document.addEventListener(responseEvent, onResponse);
       if (signal) {
         if (signal.aborted) {
           onAbort();
@@ -196,7 +202,7 @@ const EXTENSION_BUILD = false;
         signal.addEventListener("abort", onAbort, { once: true });
       }
       timeout = setTimeout(onTimeout, type === "vibbit:byok:generate" ? 130000 : 10000);
-      document.dispatchEvent(new CustomEvent(EXTENSION_REQUEST_EVENT, {
+      document.dispatchEvent(new CustomEvent(requestEvent, {
         detail: { type, requestId, payload: payload && typeof payload === "object" ? payload : {} }
       }));
     });
@@ -473,6 +479,7 @@ const EXTENSION_BUILD = false;
   ui.appendChild(hiddenCompat);
 
   const runtimeStyle = document.createElement("style");
+  runtimeStyle.id = "vibbit-runtime-style";
   runtimeStyle.textContent = [
     "@keyframes vibbit-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}",
     "@keyframes vibbit-msg-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}",
@@ -517,6 +524,9 @@ const EXTENSION_BUILD = false;
     return true;
   };
 
+  let busy = false;
+  let generationController = null;
+
   const openPanel = function () {
     if (!ensureRuntimeMounted()) return;
     fab.style.display = "none";
@@ -532,6 +542,7 @@ const EXTENSION_BUILD = false;
 
   const closePanel = function () {
     if (!ensureRuntimeMounted()) return;
+    if (generationController && !generationController.signal.aborted) generationController.abort();
     backdrop.dataset.active = "";
     previewBar.style.display = "none";
     setTimeout(function () {
@@ -754,10 +765,8 @@ const EXTENSION_BUILD = false;
 
   /* ── state ───────────────────────────────────────────────── */
   let undoStack = [];
-  let busy = false;
   let logsCollapsed = true;
   let feedbackCollapsed = false;
-  let generationController = null;
   let queuedForcedRequest = "";
   let queuedForcedDialog = null;
   let lastConversionDialog = null;
@@ -1359,11 +1368,12 @@ const EXTENSION_BUILD = false;
   });
 
   /* Escape to close */
-  document.addEventListener("keydown", (e) => {
+  const handleDocumentKeydown = (e) => {
     if (e.key === "Escape" && backdrop.style.display !== "none" && !busy) {
       closePanel();
     }
-  });
+  };
+  document.addEventListener("keydown", handleDocumentKeydown);
 
   /* init empty state */
   renderEmptyState();
@@ -1711,6 +1721,8 @@ const EXTENSION_BUILD = false;
     return true;
   };
   const destroyRuntime = () => {
+    if (generationController && !generationController.signal.aborted) generationController.abort();
+    document.removeEventListener("keydown", handleDocumentKeydown);
     try {
       if (fab && fab.parentNode) fab.parentNode.removeChild(fab);
       if (previewBar && previewBar.parentNode) previewBar.parentNode.removeChild(previewBar);
@@ -1725,7 +1737,7 @@ const EXTENSION_BUILD = false;
     return true;
   };
   const runtimeApi = {
-    version: "1",
+    version: "2",
     open: openPanel,
     close: closePanel,
     toggle: togglePanel,
@@ -3556,7 +3568,8 @@ const EXTENSION_BUILD = false;
       validationRetries = 0,
       maxAttempts = 1,
       callModel,
-      runDecompile
+      runDecompile,
+      onAttempt
     } = {}) {
       const attemptLimit = Math.max(1, Math.trunc(Number(maxAttempts) || 1));
       let emptyLeft = Math.max(0, Math.trunc(Number(emptyRetries) || 0));
@@ -3598,6 +3611,7 @@ const EXTENSION_BUILD = false;
           decompile
         };
         attempts.push(last);
+        if (typeof onAttempt === "function") onAttempt(last, attempts.length);
 
         if (reason === "ok") break;
         if (attempts.length >= attemptLimit) break;

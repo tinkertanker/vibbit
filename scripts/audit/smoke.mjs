@@ -83,6 +83,7 @@ async function installFetchMock(page) {
       window.__smokeByokUrl = "";
       window.__smokeConnectCalls = 0;
       window.__smokeSessionToken = "";
+      window.__smokeManagedAbortObserved = false;
       window.fetch = (input, init) => {
         const url = typeof input === "string" ? input : (input && input.url ? input.url : "");
         const headers = (init && init.headers) || {};
@@ -110,6 +111,16 @@ async function installFetchMock(page) {
             }));
           }
           window.__smokeManagedCalls += 1;
+          if (window.__smokeDelayManaged) {
+            return new Promise((_resolve, reject) => {
+              const onAbort = () => {
+                window.__smokeManagedAbortObserved = true;
+                reject(new DOMException("Aborted", "AbortError"));
+              };
+              if (init?.signal?.aborted) onAbort();
+              else init?.signal?.addEventListener("abort", onAbort, { once: true });
+            });
+          }
           return Promise.resolve(new Response(JSON.stringify({
             code: "basic.showString(\"Managed\")",
             feedback: [],
@@ -173,6 +184,31 @@ async function runBuildAndPackage() {
   );
   const hostedScript = await readFile(path.join(repoRoot, "dist", "content-script.js"), "utf8");
   const hostedBackground = await readFile(path.join(repoRoot, "dist", "extension", "background.js"), "utf8");
+  const hostedForbiddenFiles = [
+    "page-bridge.js",
+    "options.html",
+    "options.js",
+    "extension/byok-arm.mjs",
+    "extension/byok-broker.mjs",
+    "extension/byok-config.mjs",
+    "extension/provider-transport.mjs",
+    "shared/makecode-compat-core.mjs"
+  ];
+  const hostedFilesMissing = (await Promise.all(hostedForbiddenFiles.map(async (name) => {
+    try {
+      await readFile(path.join(repoRoot, "dist", name));
+      return false;
+    } catch (error) {
+      if (error?.code === "ENOENT") return true;
+      throw error;
+    }
+  }))).every(Boolean);
+  const { stdout: zipEntries } = await runCommand(
+    "unzip",
+    ["-Z1", path.join(repoRoot, "artifacts", "vibbit-extension.zip")],
+    { cwd: repoRoot, stream: false }
+  );
+  const hostedZipStripped = hostedForbiddenFiles.every((name) => !zipEntries.split(/\r?\n/).includes(name));
   const hostedHasByokPerms = (hostedManifest.host_permissions || []).some((item) => (
     item.includes("api.openai.com")
     || item.includes("generativelanguage.googleapis.com")
@@ -187,8 +223,10 @@ async function runBuildAndPackage() {
       && !hostedHasByokPerms
       && !hostedManifest.options_page
       && !(hostedManifest.content_scripts || []).some((entry) => entry.js.includes("page-bridge.js"))
+      && hostedFilesMissing
+      && hostedZipStripped
       && (hostedManifest.host_permissions || []).includes("https://vibbit.tk.sg/*"),
-    `hostedManaged=${/const HOSTED_MANAGED = true;/.test(hostedScript)}, brokerDenied=${/const HOSTED_MANAGED = true;/.test(hostedBackground)}, byokPermsRemoved=${!hostedHasByokPerms}.`
+    `hostedManaged=${/const HOSTED_MANAGED = true;/.test(hostedScript)}, brokerDenied=${/const HOSTED_MANAGED = true;/.test(hostedBackground)}, byokPermsRemoved=${!hostedHasByokPerms}, byokFilesRemoved=${hostedFilesMissing && hostedZipStripped}.`
   );
   pushCheck("Build + package", true, "`npm run build` (neutral) and `npm run package` (hosted) succeeded.");
 }
@@ -357,6 +395,38 @@ async function runNeutralUiSmoke(page) {
     delete window.__smokeManagedOutcome;
     delete window.Blockly;
   });
+
+  const managedCallsBeforeClose = await page.evaluate(() => {
+    window.__smokeDelayManaged = true;
+    window.__smokeManagedAbortObserved = false;
+    return Number(window.__smokeManagedCalls || 0);
+  });
+  await page.fill("#p", "close-cancels active generation");
+  await page.click("#go");
+  await page.waitForFunction(
+    (before) => Number(window.__smokeManagedCalls || 0) > before,
+    managedCallsBeforeClose,
+    { timeout: 10000 }
+  );
+  await page.click("#x-main");
+  await page.waitForFunction(() => (
+    window.__smokeManagedAbortObserved === true
+      && document.querySelector("#vibbit-backdrop")?.style.display === "none"
+  ), { timeout: 10000 });
+  const closeCancellation = await page.evaluate(() => {
+    const result = {
+      aborted: window.__smokeManagedAbortObserved === true,
+      hidden: document.querySelector("#vibbit-backdrop")?.style.display === "none"
+    };
+    window.__smokeDelayManaged = false;
+    window.__vibbit.open();
+    return result;
+  });
+  pushCheck(
+    "08c Closing Vibbit cancels active generation",
+    closeCancellation.aborted && closeCancellation.hidden,
+    `providerAbortObserved=${closeCancellation.aborted}, panelHidden=${closeCancellation.hidden}.`
+  );
 
   await page.evaluate(() => {
     localStorage.setItem("__vibbit_mode", "byok");

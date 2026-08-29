@@ -531,7 +531,8 @@ export async function runHarnessEvaluation({
   userPrompt,
   options,
   callModel,
-  compileImpl = compileAndDecompile
+  compileImpl = compileAndDecompile,
+  onAttempt
 }) {
   let validationOutage = null;
   const policyResult = await runGenerationLoop({
@@ -542,6 +543,7 @@ export async function runHarnessEvaluation({
     validationRetries: options.maxValidationRetries,
     maxAttempts: options.maxAttempts,
     callModel,
+    onAttempt,
     runDecompile: options.validation === "pinned"
       ? async (code, requestedTarget) => {
           try {
@@ -651,6 +653,7 @@ async function main() {
       corpusVersion: corpus.version
     };
     const providerAttempts = [];
+    const completedHarnessAttempts = [];
     try {
       const invoke = async (messages) => {
         try {
@@ -679,7 +682,8 @@ async function main() {
           userPrompt: user,
           options,
           callModel: invoke,
-          compileImpl: compileAndDecompile
+          compileImpl: compileAndDecompile,
+          onAttempt: (attempt) => completedHarnessAttempts.push(attempt)
         }));
       } else {
         const raw = await invoke([
@@ -815,7 +819,9 @@ async function main() {
         usage: providerAttempts.map((attempt) => attempt.usage),
         normalizedUsage: totals.normalizedUsage,
         costUsd: totals.costUsd,
-        trajectory: buildTrajectory(providerAttempts),
+        totalScore: 0,
+        totalMax: 100,
+        trajectory: buildTrajectory(providerAttempts, { attempts: completedHarnessAttempts }),
         makeCodeValidation: null,
         evaluation: {
           staticPolicyPass: false,
@@ -851,18 +857,7 @@ async function main() {
   await writeFile(resultsPath, records.map((item) => JSON.stringify(item)).join("\n") + "\n");
   const validationPath = path.join(runDir, "makecode-validation.jsonl");
   await writeFile(validationPath, validationRecords.map((item) => JSON.stringify(item)).join("\n") + "\n");
-  const scoreByCase = new Map();
-  for (const item of validationRecords) {
-    if (!Number.isFinite(item.totalScore)) continue;
-    if (!scoreByCase.has(item.caseId)) scoreByCase.set(item.caseId, []);
-    scoreByCase.get(item.caseId).push(item.totalScore);
-  }
-  const caseMeans = [...scoreByCase.values()].map((scores) => (
-    scores.reduce((sum, score) => sum + score, 0) / scores.length
-  ));
-  const meanTotal = caseMeans.length
-    ? Number((caseMeans.reduce((sum, score) => sum + score, 0) / caseMeans.length).toFixed(2))
-    : null;
+  const metrics = summarizeRecords(records);
   const summary = {
     schemaVersion: 3,
     createdAt: new Date().toISOString(),
@@ -887,8 +882,8 @@ async function main() {
     requests: records.length,
     successfulRequests: records.filter((item) => item.status === "ok").length,
     errors: records.filter((item) => item.status === "error").length,
-    macroMeanTotalScore: meanTotal,
-    metrics: summarizeRecords(records),
+    macroMeanTotalScore: metrics.overall.macroMeanTotalScore,
+    metrics,
     note: "results.jsonl is a local, immutable evaluation capture containing raw prompts, candidates, and retry trajectories; review it as potentially sensitive. Pinned compile/decompile results live in makecode-validation.jsonl.",
     results: "results.jsonl",
     makeCodeValidation: "makecode-validation.jsonl",

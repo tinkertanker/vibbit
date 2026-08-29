@@ -1,14 +1,8 @@
 import { createByokBroker, publicBrokerError } from "./byok-broker.mjs";
+import { armMatchesDocument, armStorageKey, consumeArm, createArm } from "./byok-arm.mjs";
+import { currentDocument, isMakeCodeUrl, togglePageUi } from "./toolbar.mjs";
 
 const HOSTED_MANAGED = false;
-const MAKECODE_HOSTS = new Set([
-  "makecode.microbit.org",
-  "arcade.makecode.com",
-  "maker.makecode.com"
-]);
-const ARM_STORAGE_KEY_PREFIX = "vibbitByokArmV1:";
-const ARM_TTL_MS = 15 * 60 * 1000;
-const MAX_GENERATIONS_PER_ARM = 10;
 const REQUEST_TIMEOUT_MS = 120000;
 const REQUEST_ID_RE = /^[A-Za-z0-9_-]{8,80}$/;
 const activeRequests = new Map();
@@ -17,15 +11,6 @@ const broker = createByokBroker({ storageArea: chrome.storage.session });
 
 const accessLevelTask = chrome.storage.session.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" });
 if (accessLevelTask?.catch) accessLevelTask.catch(() => {});
-
-function isMakeCodeUrl(value) {
-  try {
-    const url = new URL(String(value || ""));
-    return url.protocol === "https:" && MAKECODE_HOSTS.has(url.hostname);
-  } catch {
-    return false;
-  }
-}
 
 function isExtensionPage(sender) {
   const extensionOrigin = `chrome-extension://${chrome.runtime.id}/`;
@@ -41,10 +26,6 @@ function isTrustedPageSender(sender) {
     && isMakeCodeUrl(sender.tab.url);
 }
 
-function armStorageKey(tabId) {
-  return `${ARM_STORAGE_KEY_PREFIX}${tabId}`;
-}
-
 async function readArm(tabId) {
   const key = armStorageKey(tabId);
   const stored = await chrome.storage.session.get(key);
@@ -53,14 +34,10 @@ async function readArm(tabId) {
 }
 
 async function armTab(tabId, documentId, url) {
-  if (!documentId) return false;
+  const arm = createArm({ documentId, url });
+  if (!arm) return false;
   const key = armStorageKey(tabId);
-  await chrome.storage.session.set({ [key]: {
-    documentId: String(documentId),
-    url: String(url || ""),
-    expiresAt: Date.now() + ARM_TTL_MS,
-    remaining: MAX_GENERATIONS_PER_ARM
-  } });
+  await chrome.storage.session.set({ [key]: arm });
   return true;
 }
 
@@ -69,81 +46,26 @@ async function getArm(sender, { consume = false } = {}) {
   if (!Number.isInteger(tabId)) return null;
   const key = armStorageKey(tabId);
   const arm = await readArm(tabId);
-  const documentMatches = Boolean(arm?.documentId && sender.documentId)
-    && arm.documentId === String(sender.documentId);
-  const valid = arm
-    && documentMatches
-    && arm.url === String(sender.tab.url || "")
-    && Number(arm.expiresAt) > Date.now()
-    && Number(arm.remaining) > 0;
+  const valid = armMatchesDocument(arm, {
+    documentId: sender.documentId,
+    url: sender.tab.url
+  });
   if (!valid) {
     if (arm) await chrome.storage.session.remove(key);
     return null;
   }
   if (consume) {
-    arm.remaining = Number(arm.remaining) - 1;
-    await chrome.storage.session.set({ [key]: arm });
+    const consumed = consumeArm(arm);
+    await chrome.storage.session.set({ [key]: consumed });
+    return consumed;
   }
   return { ...arm };
 }
 
-async function currentDocument(tabId) {
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "ISOLATED",
-    func: () => location.href
-  });
-  return results?.[0] || null;
-}
-
-async function togglePageUi(tabId) {
-  if (!HOSTED_MANAGED) {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "ISOLATED",
-      files: ["page-bridge.js"]
-    });
-  }
-  let state = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "MAIN",
-    func: () => ({
-      panel: Boolean(document.getElementById("vibbit-panel")),
-      visible: document.getElementById("vibbit-panel")?.style.display !== "none"
-    })
-  });
-  if (!state?.[0]?.result?.panel) {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      files: ["content-script.js"]
-    });
-    state = [{ result: { panel: true, visible: false } }];
-  }
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "MAIN",
-    func: () => {
-      const panel = document.getElementById("vibbit-panel");
-      const backdrop = document.getElementById("vibbit-backdrop");
-      const fab = document.getElementById("vibbit-fab");
-      const shouldOpen = !panel || panel.style.display === "none" || backdrop?.style.display === "none";
-      if (backdrop) {
-        backdrop.style.display = shouldOpen ? "flex" : "none";
-        backdrop.dataset.active = shouldOpen ? "true" : "";
-      }
-      if (panel) panel.style.display = "flex";
-      if (fab) fab.style.display = "none";
-    }
-  });
-}
-
 chrome.action.onClicked.addListener(async (tab) => {
   if (!Number.isInteger(tab.id) || !isMakeCodeUrl(tab.url)) return;
-  if (!HOSTED_MANAGED) {
-    const injection = await currentDocument(tab.id);
-    if (!await armTab(tab.id, injection?.documentId || "", tab.url)) return;
-  }
+  const injection = await currentDocument(tab.id);
+  if (!await armTab(tab.id, injection?.documentId || "", tab.url)) return;
   await togglePageUi(tab.id);
 });
 

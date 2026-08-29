@@ -38,6 +38,22 @@ function rate(records, field) {
   };
 }
 
+export function macroMeanTotalScore(records) {
+  const scoresByCase = new Map();
+  for (const record of records) {
+    if (!Number.isFinite(record.totalScore)) continue;
+    const caseId = record.caseId || record.case?.id || "unknown";
+    if (!scoresByCase.has(caseId)) scoresByCase.set(caseId, []);
+    scoresByCase.get(caseId).push(record.totalScore);
+  }
+  const caseMeans = [...scoresByCase.values()].map((scores) => (
+    scores.reduce((sum, score) => sum + score, 0) / scores.length
+  ));
+  return caseMeans.length
+    ? Number((caseMeans.reduce((sum, score) => sum + score, 0) / caseMeans.length).toFixed(2))
+    : null;
+}
+
 function summarizeGroup(records) {
   const latency = records.map((record) => record.evaluation?.latencyMs);
   const cost = records.map((record) => record.evaluation?.costUsd);
@@ -55,6 +71,7 @@ function summarizeGroup(records) {
   ), 0);
   return {
     count: records.length,
+    macroMeanTotalScore: macroMeanTotalScore(records),
     staticPolicyPass: rate(records, "staticPolicyPass"),
     automatedProxyPass: rate(records, "automatedProxyPass"),
     strictAutomatedProxyPass: rate(records, "strictAutomatedProxyPass"),
@@ -152,6 +169,7 @@ export function pairedBootstrap(records, iterations = 2000) {
 export function summarizeRecords(records) {
   return {
     overall: summarizeGroup(records),
+    byCandidate: groupBy(records, (record) => `${record.provider || "unknown"}/${record.model || record.requestedModel || "unknown"}`),
     byModel: groupBy(records, (record) => record.model),
     byProvider: groupBy(records, (record) => record.provider),
     byTarget: groupBy(records, (record) => record.target || record.case?.target),

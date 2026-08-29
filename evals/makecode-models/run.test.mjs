@@ -259,7 +259,11 @@ test("terminal provider failure preserves prior attempts without persisting echo
     assert.equal(record.error.status, 401);
     assert.equal(record.trajectory.length, 2);
     assert.match(record.trajectory[0].rawCandidate, /const bad/);
+    assert.equal(record.trajectory[0].parsedCandidate.code, "const bad = () => 1");
+    assert.deepEqual(record.trajectory[0].parsedCandidate.feedback, ["retry"]);
+    assert.equal(record.trajectory[0].failureClass, "invalid");
     assert.equal(record.trajectory[1].error.code, "provider_http_error");
+    assert.equal(record.totalScore, 0);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(temp, { recursive: true, force: true });

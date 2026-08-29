@@ -22,8 +22,8 @@ if (process.platform === "linux" && !process.env.DISPLAY && !process.env.VIBBIT_
 }
 
 const CANARY = "extension-secret-canary";
-const REQUEST_EVENT = "__vibbit_extension_request_v1";
-const RESPONSE_EVENT = "__vibbit_extension_response_v1";
+const REQUEST_EVENT_PREFIX = "__vibbit_extension_request_v2_";
+const RESPONSE_EVENT_PREFIX = "__vibbit_extension_response_v2_";
 const PROVIDER_URL = "https://api.openai.com/v1/responses";
 const runDir = await createAuditRunDir("extension-boundary");
 const profile = await mkdtemp(path.join(tmpdir(), "vibbit-extension-boundary-"));
@@ -45,25 +45,32 @@ function runBuild(script) {
 }
 
 async function installPageCanaries(page) {
-  await page.addInitScript(({ responseEvent, providerUrl }) => {
+  await page.addInitScript(({ providerUrl }) => {
     window.__vibbitBoundaryEvents = [];
     window.__vibbitBoundaryProviderFetches = [];
+    window.__vibbitBoundaryResponseTokens = [];
     const nativeFetch = window.fetch.bind(window);
     window.fetch = (...args) => {
       const url = String(args[0]?.url || args[0] || "");
       if (url.startsWith(providerUrl)) window.__vibbitBoundaryProviderFetches.push(url);
       return nativeFetch(...args);
     };
-    document.addEventListener(responseEvent, (event) => {
-      window.__vibbitBoundaryEvents.push(JSON.stringify(event.detail));
-    });
-  }, { responseEvent: RESPONSE_EVENT, providerUrl: PROVIDER_URL });
+  }, { providerUrl: PROVIDER_URL });
 }
 
 function request(page, type, requestId, payload = {}) {
-  return page.evaluate(({ eventName, type, requestId, payload }) => {
-    document.dispatchEvent(new CustomEvent(eventName, { detail: { type, requestId, payload } }));
-  }, { eventName: REQUEST_EVENT, type, requestId, payload });
+  return page.evaluate(({ requestPrefix, responsePrefix, type, requestId, payload }) => {
+    const bridgeToken = String(document.documentElement.dataset.vibbitBridgeToken || "");
+    if (!window.__vibbitBoundaryResponseTokens.includes(bridgeToken)) {
+      document.addEventListener(responsePrefix + bridgeToken, (event) => {
+        window.__vibbitBoundaryEvents.push(JSON.stringify(event.detail));
+      });
+      window.__vibbitBoundaryResponseTokens.push(bridgeToken);
+    }
+    document.dispatchEvent(new CustomEvent(requestPrefix + bridgeToken, {
+      detail: { type, requestId, payload }
+    }));
+  }, { requestPrefix: REQUEST_EVENT_PREFIX, responsePrefix: RESPONSE_EVENT_PREFIX, type, requestId, payload });
 }
 
 let context;
@@ -144,7 +151,7 @@ try {
   );
   const unarmedResponse = JSON.parse(await page.evaluate(() => window.__vibbitBoundaryEvents.at(-1)));
   check(
-    "Explicit arming gate",
+    "Explicit broker capability gate",
     unarmedResponse.ok === false && unarmedResponse.error?.code === "tab_not_armed" && providerCalls === 0,
     "An unarmed MakeCode document cannot spend provider quota."
   );
@@ -175,13 +182,13 @@ try {
     { requestId: bridgeProbeId, start: eventCountBeforeBridgeProbe }
   );
   check(
-    "Idempotent toolbar bridge recovery",
+    "Replaceable bridge injection",
     bridgeProbeCount === 1,
     "Repeated isolated-world bridge injection produced exactly one response for one request."
   );
 
-  // Playwright cannot click the browser toolbar action. Seed the same exact tab/document arm
-  // record after the unarmed assertion so the remaining checks exercise the real broker path.
+  // Browser toolbar chrome is outside Playwright's page surface. The pure arm contract is tested
+  // in byok-arm.test.mjs; seed its record here to exercise the real MV3 broker capability.
   const firstArm = await optionsPage.evaluate(async () => {
     const [tab] = await chrome.tabs.query({ url: "https://makecode.microbit.org/*" });
     const [injection] = await chrome.scripting.executeScript({
@@ -247,7 +254,7 @@ try {
     return (await chrome.storage.session.get(key))[key];
   }, firstArm.tabId);
   check(
-    "Fixed arm lifetime",
+    "Fixed broker capability lifetime",
     armAfterConsume?.remaining === 8 && armAfterConsume?.expiresAt === firstArm.expiresAt,
     "Successful generation decremented only the quota and preserved the toolbar gesture expiry."
   );
@@ -452,6 +459,69 @@ try {
       && armAfterClose === null,
     `In-flight provider work was bound to the document lifecycle and each tab capability was removed (started=${slowProviderCalls}, aborted=${abortedSlowProviderCalls}).`
   );
+
+  const recoveryPage = await context.newPage();
+  await installPageCanaries(recoveryPage);
+  await recoveryPage.goto("https://makecode.microbit.org/#bridge-recovery", {
+    waitUntil: "domcontentloaded",
+    timeout: 120000
+  });
+  await recoveryPage.waitForTimeout(3000);
+  const recoveryEventsBefore = await recoveryPage.evaluate(() => {
+    window.__vibbit.version = "1";
+    return window.__vibbitBoundaryEvents.length;
+  });
+  const extensionsPage = await context.newPage();
+  await extensionsPage.goto("chrome://extensions");
+  await extensionsPage.waitForTimeout(500);
+  const reloadTriggered = await extensionsPage.evaluate((targetExtensionId) => {
+    const manager = document.querySelector("extensions-manager");
+    const toolbar = manager?.shadowRoot?.querySelector("extensions-toolbar");
+    const developerMode = toolbar?.shadowRoot?.querySelector("#devMode");
+    if (developerMode && !developerMode.checked) developerMode.click();
+    const itemList = manager?.shadowRoot?.querySelector("#items-list");
+    const item = [...(itemList?.shadowRoot?.querySelectorAll("extensions-item") || [])]
+      .find((candidate) => candidate.getAttribute("id") === targetExtensionId);
+    const reloadButton = item?.shadowRoot?.querySelector("#dev-reload-button");
+    if (!reloadButton) return false;
+    reloadButton.click();
+    return true;
+  }, extensionId);
+  if (!reloadTriggered) throw new Error("Could not invoke the unpacked extension reload control");
+  await recoveryPage.waitForTimeout(1500);
+  const replacementExtensionPage = await context.newPage();
+  await replacementExtensionPage.goto(`chrome-extension://${extensionId}/options.html`, {
+    waitUntil: "domcontentloaded",
+    timeout: 30000
+  });
+  const recoveryTabId = await replacementExtensionPage.evaluate(async () => {
+    const tabs = await chrome.tabs.query({ url: "https://makecode.microbit.org/*" });
+    return tabs.find((tab) => String(tab.url || "").includes("#bridge-recovery"))?.id || null;
+  });
+  const toolbarRecovered = await replacementExtensionPage.evaluate(async (tabId) => {
+    const toolbar = await import(chrome.runtime.getURL("extension/toolbar.mjs"));
+    return toolbar.togglePageUi(tabId);
+  }, recoveryTabId);
+  const reloadProbeId = "boundary_reload_recovery";
+  await request(recoveryPage, "vibbit:byok:status", reloadProbeId);
+  await recoveryPage.waitForFunction(
+    (requestId) => window.__vibbitBoundaryEvents.some((item) => item.includes(requestId)),
+    reloadProbeId,
+    { timeout: 10000 }
+  );
+  const reloadProbeCount = await recoveryPage.evaluate(
+    ({ requestId, start }) => window.__vibbitBoundaryEvents.slice(start).filter((item) => item.includes(requestId)).length,
+    { requestId: reloadProbeId, start: recoveryEventsBefore }
+  );
+  const recoveredRuntimeVersion = await recoveryPage.evaluate(() => String(window.__vibbit?.version || ""));
+  check(
+    "Toolbar recovery after extension reload",
+    toolbarRecovered === true && recoveredRuntimeVersion === "2" && reloadProbeCount === 1,
+    `The exact toolbar UI helper replaced stale runtime/bridge contexts without reloading MakeCode (toolbar=${toolbarRecovered}, runtime=${recoveredRuntimeVersion}, responses=${reloadProbeCount}).`
+  );
+  await replacementExtensionPage.close();
+  await extensionsPage.close();
+  await recoveryPage.close();
 } catch (error) {
   check("Audit execution", false, String(error.message || error));
 } finally {
@@ -480,21 +550,41 @@ try {
     hostedProviderCalls += 1;
     await route.abort();
   });
-  const hostedOptions = await hostedContext.newPage();
-  await hostedOptions.goto(`chrome-extension://${extensionId}/options.html`);
-  await hostedOptions.waitForFunction(
-    () => /managed_only_build/.test(document.querySelector("#status")?.textContent || ""),
-    { timeout: 10000 }
-  );
-  const hostedStatus = await hostedOptions.locator("#status").textContent();
+  const hostedProbe = await hostedContext.newPage();
+  await hostedProbe.goto(`chrome-extension://${extensionId}/manifest.json`);
+  const hostedDenial = await hostedProbe.evaluate(() => chrome.runtime.sendMessage({
+    type: "vibbit:byok:config:get"
+  }));
+  const hostedForbiddenFiles = [
+    "page-bridge.js",
+    "options.html",
+    "options.js",
+    "extension/byok-arm.mjs",
+    "extension/byok-broker.mjs",
+    "extension/byok-config.mjs",
+    "extension/provider-transport.mjs",
+    "shared/makecode-compat-core.mjs"
+  ];
+  const hostedFilesMissing = (await Promise.all(hostedForbiddenFiles.map(async (name) => {
+    try {
+      await readFile(path.join(extensionPath, name));
+      return false;
+    } catch (error) {
+      if (error?.code === "ENOENT") return true;
+      throw error;
+    }
+  }))).every(Boolean);
   check(
     "Hosted-managed broker denial",
-    /managed_only_build/.test(hostedStatus || "")
+    hostedDenial?.ok === false
+      && hostedDenial.error?.code === "managed_only_build"
       && hostedProviderCalls === 0
       && !hostedManifest.options_page
-      && !(hostedManifest.content_scripts || []).some((entry) => entry.js.includes("page-bridge.js")),
-    "The hosted profile omits BYOK entry points and its service worker rejects direct extension-page broker access."
+      && !(hostedManifest.content_scripts || []).some((entry) => entry.js.includes("page-bridge.js"))
+      && hostedFilesMissing,
+    "The hosted profile strips BYOK modules/assets and its service worker rejects direct broker access."
   );
+  await hostedProbe.close();
 } catch (error) {
   check("Hosted-managed audit execution", false, String(error.message || error));
 } finally {
@@ -512,7 +602,7 @@ await writeFile(path.join(runDir, "results.json"), JSON.stringify({
   schemaVersion: 1,
   createdAt: new Date().toISOString(),
   passed,
-  note: "Toolbar arming is approximated only after an independent unarmed check; Playwright cannot click Chrome's extension action.",
+  note: "The browser audit seeds the pure arm contract because Playwright cannot click Chrome toolbar chrome; byok-arm.test.mjs verifies the exact 15-minute/10-generation document binding, and this audit invokes the shared toolbar helper after a real extension reload.",
   checks
 }, null, 2) + "\n");
 await writeText(path.join(runDir, "REPORT.md"), [
@@ -520,7 +610,7 @@ await writeText(path.join(runDir, "REPORT.md"), [
   "",
   buildMarkdownTable(checks),
   "",
-  "Playwright first proves that an unarmed document is rejected. It then seeds the exact tab/document arm record because browser toolbar chrome is outside Playwright's page automation surface.",
+  "Playwright first proves that an unarmed document is rejected. It then seeds the tested tab/document capability because browser toolbar chrome is outside Playwright's page automation surface, while separately exercising the exact toolbar UI helper after extension reload.",
   "",
   `Overall: **${passed ? "PASS" : "FAIL"}**`,
   ""

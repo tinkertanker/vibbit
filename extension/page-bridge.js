@@ -1,8 +1,8 @@
 (() => {
-  if (globalThis.__vibbitExtensionBridgeV1) return;
-  globalThis.__vibbitExtensionBridgeV1 = true;
-  const REQUEST_EVENT = "__vibbit_extension_request_v1";
-  const RESPONSE_EVENT = "__vibbit_extension_response_v1";
+  const previous = globalThis.__vibbitExtensionBridgeV2;
+  const bridgeToken = previous?.bridgeToken || crypto.randomUUID().replace(/-/g, "");
+  const REQUEST_EVENT = `__vibbit_extension_request_v2_${bridgeToken}`;
+  const RESPONSE_EVENT = `__vibbit_extension_response_v2_${bridgeToken}`;
   const ALLOWED = new Set([
     "vibbit:byok:generate",
     "vibbit:byok:cancel",
@@ -11,7 +11,11 @@
   ]);
   const requestIdPattern = /^[A-Za-z0-9_-]{8,80}$/;
 
-  document.addEventListener(REQUEST_EVENT, (event) => {
+  if (typeof previous?.listener === "function") {
+    document.removeEventListener(previous.requestEvent, previous.listener);
+  }
+
+  const listener = (event) => {
     if (!(event instanceof CustomEvent)) return;
     const detail = event.detail && typeof event.detail === "object" ? event.detail : {};
     const type = String(detail.type || "");
@@ -38,5 +42,8 @@
         detail: { requestId, ok: false, value: null, error: { code: "bridge_error", status: 0 } }
       }));
     });
-  });
+  };
+  document.addEventListener(REQUEST_EVENT, listener);
+  document.documentElement.dataset.vibbitBridgeToken = bridgeToken;
+  globalThis.__vibbitExtensionBridgeV2 = { bridgeToken, listener, requestEvent: REQUEST_EVENT };
 })();

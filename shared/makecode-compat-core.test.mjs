@@ -381,6 +381,28 @@ test("generation loop retries invalid output and the next user turn includes FAI
   assert.ok(second[3].content.includes("arrow functions"));
 });
 
+test("generation loop reports completed attempts before a later provider failure", async () => {
+  const completed = [];
+  let calls = 0;
+  await assert.rejects(runGenerationLoop({
+    target: "microbit",
+    systemPrompt: "sys",
+    initialUserPrompt: "show a heart",
+    validationRetries: 1,
+    maxAttempts: 2,
+    callModel: async () => {
+      calls += 1;
+      if (calls === 1) return jsonOutput(ARROW_UNSAFE, ["arrow"]);
+      throw new Error("provider unavailable");
+    },
+    onAttempt: (attempt, attemptNumber) => completed.push({ attempt, attemptNumber })
+  }), /provider unavailable/);
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].attemptNumber, 1);
+  assert.equal(completed[0].attempt.code, ARROW_UNSAFE);
+  assert.equal(completed[0].attempt.reason, "invalid");
+});
+
 test("generation loop accepts legal programmes whose strings mention forbidden tokens", async () => {
   const legal = 'basic.showString("press => to continue")';
   const result = await runGenerationLoop({

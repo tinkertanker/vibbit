@@ -1360,7 +1360,8 @@ export async function runGenerationLoop({
   validationRetries = 0,
   maxAttempts = 1,
   callModel,
-  runDecompile
+  runDecompile,
+  onAttempt
 } = {}) {
   const attemptLimit = Math.max(1, Math.trunc(Number(maxAttempts) || 1));
   let emptyLeft = Math.max(0, Math.trunc(Number(emptyRetries) || 0));
@@ -1402,6 +1403,7 @@ export async function runGenerationLoop({
       decompile
     };
     attempts.push(last);
+    if (typeof onAttempt === "function") onAttempt(last, attempts.length);
 
     if (reason === "ok") break;
     if (attempts.length >= attemptLimit) break;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { pairedBootstrap, quantile, summarizeRecords, wilsonInterval } from "./metrics.mjs";
+import { macroMeanTotalScore, pairedBootstrap, quantile, summarizeRecords, wilsonInterval } from "./metrics.mjs";
 
 function record(model, caseId, pass, overrides = {}) {
   return {
@@ -11,6 +11,7 @@ function record(model, caseId, pass, overrides = {}) {
     category: "sensors",
     caseId,
     repetition: 0,
+    totalScore: pass ? 100 : 0,
     normalizedUsage: {
       inputTokens: 10,
       outputTokens: 5,
@@ -71,7 +72,27 @@ test("summarizeRecords reports policy, repair, outcome, latency, and failure met
   assert.equal(summary.overall.costUsd.totalKnown, 0.03);
   assert.equal(summary.overall.tokens.input, 20);
   assert.equal(summary.overall.failureClasses.decompile, 1);
+  assert.equal(summary.overall.macroMeanTotalScore, 50);
+  assert.equal(summary.byCandidate["test-provider/a"].macroMeanTotalScore, 50);
   assert.equal(summary.byTarget.microbit.count, 2);
+});
+
+test("macro score weights cases within each candidate rather than repetitions or other models", () => {
+  const candidateA = [
+    { ...record("a", "one", true), repetition: 0 },
+    { ...record("a", "one", true), repetition: 1 },
+    { ...record("a", "one", true), repetition: 2 },
+    { ...record("a", "two", false), repetition: 0 }
+  ];
+  const candidateB = [
+    { ...record("b", "one", false), totalScore: 20 },
+    { ...record("b", "two", false), totalScore: 20 }
+  ];
+  const summary = summarizeRecords([...candidateA, ...candidateB]);
+  assert.equal(macroMeanTotalScore(candidateA), 50);
+  assert.equal(summary.byCandidate["test-provider/a"].macroMeanTotalScore, 50);
+  assert.equal(summary.byCandidate["test-provider/b"].macroMeanTotalScore, 20);
+  assert.equal(summary.overall.macroMeanTotalScore, 45);
 });
 
 test("pairedBootstrap compares matched cases rather than unpaired totals", () => {

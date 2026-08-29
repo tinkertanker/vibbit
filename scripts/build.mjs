@@ -98,11 +98,16 @@ function assertExtensionCredentialBoundary(source) {
   }
 }
 
+function wrapExtensionRuntime(source) {
+  return `(() => {\n${source}\n})();\n`;
+}
+
 async function build() {
-  const [rawClient, rawManifest, rawBackground, frogSvgMarkup] = await Promise.all([
+  const [rawClient, rawManifest, rawBackground, rawManagedBackground, frogSvgMarkup] = await Promise.all([
     readFile(sourcePath, "utf8"),
     readFile(manifestPath, "utf8"),
     readFile(path.join(root, "extension", "background.js"), "utf8"),
+    readFile(path.join(root, "extension", "background-managed.js"), "utf8"),
     readFile(frogSvgPath, "utf8")
   ]);
 
@@ -135,7 +140,9 @@ async function build() {
   builtClient = overrideConst(builtClient, "EXTENSION_BUILD", true);
   builtClient = stripPageByokTransport(builtClient);
   assertExtensionCredentialBoundary(builtClient);
-  const builtBackground = overrideConst(rawBackground, "HOSTED_MANAGED", hostedManagedEnabled);
+  const builtBackground = hostedManagedEnabled
+    ? rawManagedBackground
+    : overrideConst(rawBackground, "HOSTED_MANAGED", false);
 
   if (hostedManagedEnabled) {
     delete manifest.options_page;
@@ -164,25 +171,31 @@ async function build() {
       ...optionalByokPermissions
     ])];
   }
+  builtClient = wrapExtensionRuntime(builtClient);
 
   await rm(distDir, { recursive: true, force: true });
   await mkdir(distDir, { recursive: true });
 
   const extensionModuleDir = path.join(distDir, "extension");
   const sharedModuleDir = path.join(distDir, "shared");
-  await Promise.all([
-    mkdir(extensionModuleDir, { recursive: true }),
-    mkdir(sharedModuleDir, { recursive: true })
-  ]);
-  await Promise.all([
-    copyFile(path.join(root, "extension", "byok-broker.mjs"), path.join(extensionModuleDir, "byok-broker.mjs")),
-    copyFile(path.join(root, "extension", "byok-config.mjs"), path.join(extensionModuleDir, "byok-config.mjs")),
-    copyFile(path.join(root, "extension", "provider-transport.mjs"), path.join(extensionModuleDir, "provider-transport.mjs")),
-    copyFile(path.join(root, "extension", "page-bridge.js"), path.join(distDir, "page-bridge.js")),
-    copyFile(path.join(root, "extension", "options.html"), path.join(distDir, "options.html")),
-    copyFile(path.join(root, "extension", "options.js"), path.join(distDir, "options.js")),
-    copyFile(path.join(root, "shared", "makecode-compat-core.mjs"), path.join(sharedModuleDir, "makecode-compat-core.mjs"))
-  ]);
+  await mkdir(extensionModuleDir, { recursive: true });
+  const supportCopies = [
+    copyFile(path.join(root, "extension", "toolbar.mjs"), path.join(extensionModuleDir, "toolbar.mjs"))
+  ];
+  if (!hostedManagedEnabled) {
+    await mkdir(sharedModuleDir, { recursive: true });
+    supportCopies.push(
+      copyFile(path.join(root, "extension", "byok-arm.mjs"), path.join(extensionModuleDir, "byok-arm.mjs")),
+      copyFile(path.join(root, "extension", "byok-broker.mjs"), path.join(extensionModuleDir, "byok-broker.mjs")),
+      copyFile(path.join(root, "extension", "byok-config.mjs"), path.join(extensionModuleDir, "byok-config.mjs")),
+      copyFile(path.join(root, "extension", "provider-transport.mjs"), path.join(extensionModuleDir, "provider-transport.mjs")),
+      copyFile(path.join(root, "extension", "page-bridge.js"), path.join(distDir, "page-bridge.js")),
+      copyFile(path.join(root, "extension", "options.html"), path.join(distDir, "options.html")),
+      copyFile(path.join(root, "extension", "options.js"), path.join(distDir, "options.js")),
+      copyFile(path.join(root, "shared", "makecode-compat-core.mjs"), path.join(sharedModuleDir, "makecode-compat-core.mjs"))
+    );
+  }
+  await Promise.all(supportCopies);
 
   // Copy icons
   const iconsDir = path.join(distDir, "icons");

@@ -47,10 +47,21 @@ function metric(deltas) {
   };
 }
 
+function indexUnique(records, label) {
+  const indexed = new Map();
+  for (const record of records) {
+    const key = pairKey(record);
+    if (indexed.has(key)) throw new Error(`${label} run contains duplicate provider/model/case/repetition rows`);
+    indexed.set(key, record);
+  }
+  return indexed;
+}
+
 export function compareRuns(leftRecords, rightRecords) {
-  const leftByKey = new Map(leftRecords.map((record) => [pairKey(record), record]));
-  const pairs = rightRecords.map((right) => ({ left: leftByKey.get(pairKey(right)), right }))
-    .filter((pair) => pair.left);
+  const leftByKey = indexUnique(leftRecords, "left");
+  const rightByKey = indexUnique(rightRecords, "right");
+  const pairs = [...rightByKey.entries()].map(([key, right]) => ({ left: leftByKey.get(key), right }))
+    .filter(({ left }) => left);
   const passDeltas = pairs.map(({ left, right }) => (
     Number(right.evaluation?.strictAutomatedProxyPass === true)
       - Number(left.evaluation?.strictAutomatedProxyPass === true)
@@ -63,6 +74,8 @@ export function compareRuns(leftRecords, rightRecords) {
     leftRows: leftRecords.length,
     rightRows: rightRecords.length,
     pairedRows: pairs.length,
+    unmatchedLeftRows: [...leftByKey.keys()].filter((key) => !rightByKey.has(key)).length,
+    unmatchedRightRows: [...rightByKey.keys()].filter((key) => !leftByKey.has(key)).length,
     strictAutomatedProxyPass: metric(passDeltas),
     totalScore: metric(scoreDeltas)
   };

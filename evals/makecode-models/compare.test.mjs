@@ -20,6 +20,19 @@ test("compareRuns pairs equivalent rows across policy or context runs", () => {
     [row("one", true, 80), row("two", true, 85), row("right-only", false, 0)]
   );
   assert.equal(result.pairedRows, 2);
+  assert.equal(result.unmatchedLeftRows, 1);
+  assert.equal(result.unmatchedRightRows, 1);
   assert.equal(result.strictAutomatedProxyPass.rightMinusLeft, 0.5);
   assert.equal(result.totalScore.rightMinusLeft, 7.5);
+});
+
+test("compareRuns rejects duplicate pairing keys", () => {
+  assert.throws(
+    () => compareRuns([row("one", true, 100), row("one", false, 0)], [row("one", true, 100)]),
+    /left run contains duplicate/
+  );
+  assert.throws(
+    () => compareRuns([row("one", true, 100)], [row("one", true, 100), row("one", false, 0)]),
+    /right run contains duplicate/
+  );
 });

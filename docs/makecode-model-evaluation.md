@@ -42,7 +42,7 @@ There is one case per category per target:
 7. unsupported or invented APIs;
 8. valid-looking TypeScript constructs that compile in ordinary TypeScript but do not become native Blocks.
 
-Each case has conservative required and forbidden patterns. They test explicit semantics such as exact pins, timing, event kinds, and prohibited behaviour. They are not an oracle: equivalent code can miss a textual pattern, and matching every pattern does not prove correctness. Any pattern change is a corpus-version change and should be reviewed against known-good target output.
+Each case has conservative required and forbidden patterns. They are textual proxies for requested constructs and behaviours such as exact pins, timing calls, event names, and prohibited APIs. They are not a semantic oracle: equivalent code can miss a textual pattern, and matching every pattern does not prove correctness. Any pattern change is a corpus-version change and should be reviewed against known-good target output.
 
 ### Target constraints
 
@@ -60,7 +60,7 @@ Score a response out of 100 only when pinned validation is available. Provider/t
 |---|---:|---|
 | Strict JSON contract | 10 | Raw response is exactly one JSON object with only `feedback` (non-empty string array) and non-empty string `code`; no fences or prose. |
 | Vibbit static prefilter | 10 | `validateBlocksCompatibility(code, target)` reports no violation. |
-| Prompt/repair adherence | 20 | Pro-rate the case's required and forbidden semantic checks. Review failures before changing patterns. |
+| Prompt/repair adherence | 20 | Pro-rate the case's required and forbidden textual proxy criteria. Review failures before changing patterns. |
 | Target compile | 20 | Pinned target compilation succeeds with no error diagnostics. |
 | TypeScript-to-Blocks decompile | 25 | Decompiler succeeds, emits non-empty `main.blocks`, and has no error diagnostics. |
 | Native Blocks only | 10 | No `typescript_statement` or `typescript_expression` XML. |
@@ -68,7 +68,7 @@ Score a response out of 100 only when pinned validation is available. Provider/t
 
 The first three dimensions are the harness's **40-point provisional score**. Never rank production candidates on that score alone.
 
-An **automated proxy pass** requires all of the following, regardless of weighted score:
+A **strict automated proxy pass** requires all of the following, regardless of weighted score:
 
 - successful provider request and non-empty code;
 - strict JSON contract;
@@ -76,17 +76,17 @@ An **automated proxy pass** requires all of the following, regardless of weighte
 - successful decompilation;
 - zero grey TypeScript statement/expression blocks;
 - all required and forbidden case criteria;
-- for repair cases, the reported bad construct is absent and intended behaviour remains.
+- for repair cases, the textual proxy criteria for removing the reported bad construct and retaining requested behaviour pass.
 
 Report:
 
-- macro-average score (each of 24 cases equal weight), automated-proxy pass rate, and pass rate by target and category;
+- macro-average score per model-plus-route candidate (each of 24 cases equal weight), automated-proxy pass rate, and pass rate by target and category;
 - JSON, compile, decompile, grey-block, unsupported-API, and adherence failure rates separately;
 - median and p95 latency, input/output/reasoning token totals, known/unknown cost counts, total known cost, and cost per strict automated-proxy pass when accounting is complete;
 - 95% Wilson intervals for pass rates and paired bootstrap confidence intervals for score/pass-rate differences, resampling by case and repetition;
 - worst-case results. Do not let strong micro:bit results hide a Maker or repair failure.
 
-`summary.json` calculates these policy metrics overall and by model, provider, target, and category. `staticPolicyPass` reports the bounded policy and regex checks. `automatedProxyPass` additionally requires pinned compile/decompile/native Blocks. `strictAutomatedProxyPass` additionally requires the strict two-key JSON contract. These names are deliberate: corpus regexes are proxies and can pass semantically wrong programmes (for example, incrementing a counter outside an empty button handler).
+`summary.json` calculates these policy metrics overall and by model-plus-route candidate, model, provider, target, and category. `staticPolicyPass` reports the bounded policy and regex checks. `automatedProxyPass` additionally requires pinned compile/decompile/native Blocks. `strictAutomatedProxyPass` additionally requires the strict two-key JSON contract. These names are deliberate: corpus regexes are proxies and can pass semantically wrong programmes (for example, incrementing a counter outside an empty button handler).
 
 An automated threshold is not a release gate by itself. Pre-register thresholds before unblinding, require no statistically or practically meaningful regression versus the incumbent, and perform blinded semantic review of finalist outputs—especially state/event relationships and adversarial cases—before a model or prompt change can ship.
 
