@@ -125,7 +125,9 @@ async function installFetchMock(page) {
           window.__smokeByokCalls += 1;
           window.__smokeByokUrl = url;
           try { window.__smokeByokBody = JSON.parse((init && init.body) || "null"); } catch {}
-          const generated = "{\"feedback\":[],\"code\":\"basic.showString(\\\"BYOK\\\")\"}";
+          const generated = window.__smokeForceInvalid
+            ? "{\"feedback\":[\"retry\"],\"code\":\"const bad = () => 1\"}"
+            : "{\"feedback\":[],\"code\":\"basic.showString(\\\"BYOK\\\")\"}";
           const responseBody = url.endsWith("/responses")
             ? { output: [{ content: [{ type: "output_text", text: generated }] }] }
             : { choices: [{ message: { content: generated } }] };
@@ -303,7 +305,7 @@ async function runNeutralUiSmoke(page) {
   await page.click("#go");
   await page.waitForFunction(() => {
     const status = document.querySelector("#status")?.textContent?.trim() || "";
-    return status === "Done" || status === "Error";
+    return ["Done", "Applied, unverified", "Fallback applied", "Error"].includes(status);
   }, { timeout: 30000 });
 
   const managedGenerationState = await page.evaluate(() => {
@@ -319,7 +321,7 @@ async function runNeutralUiSmoke(page) {
   await page.screenshot({ path: screenshots.managedFeedback, fullPage: false });
   pushCheck(
     "08 Managed mocked generation",
-    managedGenerationState.status === "Done"
+    managedGenerationState.status === "Applied, unverified"
       && managedGenerationState.connectCalls === 1
       && managedGenerationState.managedCalls === 1
       && managedGenerationState.pastedCode.includes("basic.showString(\"Managed\")"),
@@ -330,8 +332,6 @@ async function runNeutralUiSmoke(page) {
     localStorage.setItem("__vibbit_mode", "byok");
     localStorage.setItem("__vibbit_provider", "opencode");
     localStorage.setItem("__vibbit_model", "go/hy3");
-    localStorage.setItem("__vibbit_key_openai", "smoke-dummy-key");
-    localStorage.setItem("__vibbit_key_opencode", "smoke-dummy-key");
   });
   await page.click("#gear");
   await page.waitForSelector("#set-mode", { timeout: 10000 });
@@ -357,6 +357,8 @@ async function runNeutralUiSmoke(page) {
   );
   await page.selectOption("#set-prov", "openai");
   await page.selectOption("#set-model", "gpt-5.2");
+  await page.fill("#set-key", "smoke-dummy-key");
+  await page.click("#save");
   const unsupportedThinkingHidden = await page.locator("#think-harder-wrap").evaluate((element) => element.style.display === "none");
   await page.selectOption("#set-model", "gpt-5.6-luna");
   const supportedThinkingVisible = await page.locator("#think-harder-wrap").evaluate((element) => element.style.display === "inline-flex");
@@ -374,7 +376,7 @@ async function runNeutralUiSmoke(page) {
   await page.click("#go");
   await page.waitForFunction(() => {
     const status = document.querySelector("#status")?.textContent?.trim() || "";
-    return status === "Done" || status === "Error";
+    return ["Done", "Applied, unverified", "Fallback applied", "Error"].includes(status);
   }, { timeout: 30000 });
 
   const byokGenerationState = await page.evaluate(() => {
@@ -394,7 +396,7 @@ async function runNeutralUiSmoke(page) {
   await page.screenshot({ path: screenshots.byokFeedback, fullPage: false });
   pushCheck(
     "11 OpenAI Responses generation",
-    byokGenerationState.status === "Done"
+    byokGenerationState.status === "Applied, unverified"
       && byokGenerationState.pastedCode.includes("basic.showString(\"BYOK\")")
       && byokGenerationState.byokCalls >= 1
       && byokGenerationState.byokUrl === "https://api.openai.com/v1/responses"
@@ -410,11 +412,13 @@ async function runNeutralUiSmoke(page) {
   await page.click("#gear");
   await page.selectOption("#set-prov", "opencode");
   await page.selectOption("#set-model", "go/hy3");
+  await page.fill("#set-key", "smoke-dummy-key");
+  await page.click("#save");
   await page.click("#back");
   await page.fill("#p", "Create a tiny OpenCode byok program");
   await page.click("#go");
   await page.waitForFunction(() => Number(window.__smokeByokCalls || 0) >= 2, { timeout: 30000 });
-  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Done", { timeout: 30000 });
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Applied, unverified", { timeout: 30000 });
   const openCodeChatState = await page.evaluate(() => ({
     url: window.__smokeByokUrl,
     body: window.__smokeByokBody
@@ -434,7 +438,7 @@ async function runNeutralUiSmoke(page) {
   await page.fill("#p", "Create another tiny byok program");
   await page.click("#go");
   await page.waitForFunction(() => Number(window.__smokeByokCalls || 0) >= 3, { timeout: 30000 });
-  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Done", { timeout: 30000 });
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Applied, unverified", { timeout: 30000 });
   const responsesState = await page.evaluate(() => ({
     url: window.__smokeByokUrl,
     body: window.__smokeByokBody,
@@ -448,6 +452,26 @@ async function runNeutralUiSmoke(page) {
       && responsesState.body?.reasoning?.effort === "xhigh"
       && responsesState.code.includes("basic.showString(\"BYOK\")"),
     `url='${responsesState.url}', model='${responsesState.body?.model || ""}', maxOutputTokens=${responsesState.body?.max_output_tokens || 0}.`
+  );
+
+  const callsBeforeFallback = await page.evaluate(() => {
+    window.__smokeForceInvalid = true;
+    return Number(window.__smokeByokCalls || 0);
+  });
+  await page.fill("#p", "Exercise exhausted validation retries");
+  await page.click("#go");
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Fallback applied", { timeout: 30000 });
+  const fallbackState = await page.evaluate(() => ({
+    calls: Number(window.__smokeByokCalls || 0),
+    code: window.__smokeMonacoValue || "",
+    warning: [...document.querySelectorAll(".vibbit-msg-error")].map((node) => node.textContent || "").join(" ")
+  }));
+  pushCheck(
+    "15 Exhausted retries expose fallback outcome",
+    fallbackState.calls === callsBeforeFallback + 3
+      && fallbackState.code === 'basic.showString("Hi")'
+      && /minimal fallback was applied/i.test(fallbackState.warning),
+    `calls=${fallbackState.calls - callsBeforeFallback}, code='${fallbackState.code}', warning=${/minimal fallback was applied/i.test(fallbackState.warning)}.`
   );
 }
 
@@ -467,8 +491,16 @@ async function runHostedUiSmoke(browser) {
 
     const hostedRuntime = await readFile(path.join(repoRoot, "dist", "content-script.js"), "utf8");
     await page.addScriptTag({ content: hostedRuntime });
-    await page.waitForSelector("#vibbit-fab", { timeout: 20000 });
-    await page.click("#vibbit-fab");
+    await page.waitForSelector("#vibbit-panel", { state: "attached", timeout: 20000 });
+    await page.evaluate(() => {
+      const backdrop = document.querySelector("#vibbit-backdrop");
+      const panel = document.querySelector("#vibbit-panel");
+      if (backdrop) {
+        backdrop.style.display = "flex";
+        backdrop.dataset.active = "true";
+      }
+      if (panel) panel.style.display = "flex";
+    });
     await page.waitForSelector("#setup-go", { timeout: 20000 });
     await page.screenshot({ path: screenshots.hostedPanel, fullPage: false });
 
@@ -487,7 +519,7 @@ async function runHostedUiSmoke(browser) {
       };
     });
     pushCheck(
-      "15 Hosted-managed UI is code-only",
+      "16 Hosted-managed UI is code-only",
       hostedSetup.modeValue === "managed"
         && hostedSetup.modeRowHidden
         && hostedSetup.byokHidden
@@ -505,7 +537,7 @@ async function runHostedUiSmoke(browser) {
       badge: document.querySelector("#classroom-badge")?.textContent || ""
     }));
     pushCheck(
-      "16 Hosted join verifies classroom code",
+      "17 Hosted join verifies classroom code",
       hostedJoin.connectCalls === 1 && hostedJoin.badge.includes("Smoke Classroom"),
       `connectCalls=${hostedJoin.connectCalls}, badge='${hostedJoin.badge}'.`
     );

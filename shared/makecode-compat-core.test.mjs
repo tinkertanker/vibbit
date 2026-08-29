@@ -36,7 +36,9 @@ test("system prompt keeps the four-block skeleton with front and end anchors", (
 test("system prompt grounds the model in target-specific APIs only", () => {
   assert.ok(buildSystemPrompt("microbit").includes("basic:"));
   assert.ok(buildSystemPrompt("arcade").includes("sprites:"));
-  assert.ok(buildSystemPrompt("maker").includes("loops:"));
+  assert.ok(buildSystemPrompt("maker").includes("pins.LED.digitalWrite(boolean)"));
+  assert.ok(buildSystemPrompt("maker").includes("input.buttonA.onEvent(ButtonEvent.Click"));
+  assert.doesNotMatch(buildSystemPrompt("maker"), /loops\.forever\(function|DigitalPin\.P0/);
   const microbit = buildSystemPrompt("microbit");
   assert.ok(!microbit.includes("onStart(handler)"));
   assert.ok(!/onstart functions/i.test(microbit));
@@ -60,7 +62,8 @@ test("block-safe examples stay within each target's API surface", () => {
   assert.ok(blockSafe(arcade).includes("game.onUpdate"));
   assert.ok(!blockSafe(arcade).includes("input.onButtonPressed"));
   assert.ok(!blockSafe(arcade).includes("basic.forever"));
-  assert.ok(blockSafe(maker).includes("loops.forever"));
+  assert.ok(blockSafe(maker).includes("forever(function"));
+  assert.ok(blockSafe(maker).includes("input.buttonA.onEvent"));
   assert.ok(!blockSafe(maker).includes("game.onUpdate"));
   assert.ok(!blockSafe(maker).includes("basic.forever"));
 });
@@ -98,6 +101,28 @@ test("few-shot response parses as the model output contract and stays block-safe
     const result = validateBlocksCompatibility(parsed.code, target);
     assert.ok(result.ok, `${target} parsed example violations: ${result.violations.join(", ")}`);
   }
+});
+
+test("permissive production parsing recovers fenced and malformed JSON-shaped output", () => {
+  const fenced = parseModelOutput("```json\n{\"feedback\":[\"ok\"],\"code\":\"basic.showNumber(1)\"}\n```");
+  assert.equal(fenced.code, "basic.showNumber(1)");
+  assert.deepEqual(fenced.feedback, ["ok"]);
+
+  const malformed = parseModelOutput("Here is the code:\n```typescript\nbasic.showNumber(2)\n```");
+  assert.equal(malformed.code, "basic.showNumber(2)");
+  assert.deepEqual(malformed.feedback, []);
+});
+
+test("permissive production parsing uses the first valid object from multiple candidates", () => {
+  const output = [
+    "preface",
+    JSON.stringify({ ignored: true }),
+    JSON.stringify({ feedback: ["first"], code: "basic.showNumber(1)" }),
+    JSON.stringify({ feedback: ["second"], code: "basic.showNumber(2)" })
+  ].join("\n");
+  const parsed = parseModelOutput(output);
+  assert.equal(parsed.code, "basic.showNumber(1)");
+  assert.deepEqual(parsed.feedback, ["first"]);
 });
 
 test("fallback stub is block-safe for its target", () => {
@@ -492,7 +517,7 @@ test("generation loop retries a headless decompile miss using the same retry bud
   assert.ok(calls[1][3].content.includes("Grey block count: 1."));
 });
 
-test("generation loop fails open when the decompiler throws", async () => {
+test("generation loop labels a decompiler outage as unverified without stubbing", async () => {
   const result = await runGenerationLoop({
     target: "microbit",
     systemPrompt: "sys",
@@ -505,7 +530,7 @@ test("generation loop fails open when the decompiler throws", async () => {
     },
     callModel: async () => jsonOutput(VALID_HEART, ["ok"])
   });
-  assert.equal(result.outcome, "ok");
+  assert.equal(result.outcome, "ok-unverified");
   assert.equal(result.upstreamAttempts, 1);
   assert.equal(result.code, VALID_HEART);
   assert.equal(result.attempts[0].decompile.skipped, true);

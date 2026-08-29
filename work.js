@@ -1,6 +1,7 @@
 const BACKEND = "https://vibbit.tk.sg";
 const HOSTED_MANAGED = false;
 const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
+const EXTENSION_BUILD = false;
 
 (function () {
   const existingRuntime = window.__vibbit;
@@ -49,6 +50,9 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const STORAGE_MANAGED_SESSION = "__vibbit_managed_session";
   const STORAGE_MANAGED_SESSION_EXPIRES = "__vibbit_managed_session_expires";
   const CLASS_CODE_LENGTH = 10;
+  const EXTENSION_REQUEST_EVENT = "__vibbit_extension_request_v1";
+  const EXTENSION_RESPONSE_EVENT = "__vibbit_extension_response_v1";
+  const memoryProviderKeys = Object.create(null);
 
   const MODEL_PRESETS = {
     openai: [
@@ -123,13 +127,68 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const keyStorageForProvider = (provider) => STORAGE_KEY_PREFIX + (provider || "openai");
 
-  const getStoredProviderKey = (provider) => storageGet(keyStorageForProvider(provider)) || "";
+  const getStoredProviderKey = (provider) => memoryProviderKeys[provider || "openai"] || "";
 
   const setStoredProviderKey = (provider, value) => {
     const normalized = String(value || "").trim();
-    const key = keyStorageForProvider(provider);
-    if (normalized) storageSet(key, normalized);
-    else storageRemove(key);
+    const name = provider || "openai";
+    if (normalized) memoryProviderKeys[name] = normalized;
+    else delete memoryProviderKeys[name];
+  };
+
+  let purgedLegacyProviderKeys = 0;
+  for (const providerName of Object.keys(MODEL_PRESETS)) {
+    const legacyKey = keyStorageForProvider(providerName);
+    if (storageGet(legacyKey)) purgedLegacyProviderKeys += 1;
+    storageRemove(legacyKey);
+  }
+
+  const extensionRequest = (type, payload, signal) => {
+    if (!EXTENSION_BUILD) return Promise.reject(new Error("extension_bridge_unavailable"));
+    const requestId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
+      ? globalThis.crypto.randomUUID().replace(/-/g, "")
+      : (Date.now().toString(36) + Math.random().toString(36).slice(2, 18));
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        document.removeEventListener(EXTENSION_RESPONSE_EVENT, onResponse);
+        if (signal) signal.removeEventListener("abort", onAbort);
+      };
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn(value);
+      };
+      const onResponse = (event) => {
+        const detail = event && event.detail && typeof event.detail === "object" ? event.detail : {};
+        if (detail.requestId !== requestId) return;
+        if (detail.ok) finish(resolve, detail.value);
+        else {
+          const error = new Error(String(detail.error && detail.error.code || "extension_bridge_error"));
+          error.code = error.message;
+          error.status = Number(detail.error && detail.error.status) || 0;
+          finish(reject, error);
+        }
+      };
+      const onAbort = () => {
+        document.dispatchEvent(new CustomEvent(EXTENSION_REQUEST_EVENT, {
+          detail: { type: "vibbit:byok:cancel", requestId, payload: {} }
+        }));
+        finish(reject, createAbortError());
+      };
+      document.addEventListener(EXTENSION_RESPONSE_EVENT, onResponse);
+      if (signal) {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+      document.dispatchEvent(new CustomEvent(EXTENSION_REQUEST_EVENT, {
+        detail: { type, requestId, payload: payload && typeof payload === "object" ? payload : {} }
+      }));
+    });
   };
 
   const bookmarkletConfig = window.__vibbitBookmarkletConfig && typeof window.__vibbitBookmarkletConfig === "object"
@@ -241,6 +300,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '  <div id="setup-byok-key" style="display:grid;gap:4px">'
     + '    <div style="' + S_LABEL + '">API Key</div>'
     + '    <input id="setup-key" type="password" placeholder="Paste your API key" style="' + S_INPUT + '">'
+    + '    <div id="setup-key-note" style="font-size:11px;color:#9bb1dd">Kept in memory only; page scripts can observe bookmarklet inputs.</div>'
     + '  </div>'
 
     /* Managed: server URL */
@@ -351,6 +411,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     + '      <input id="set-key" type="password" placeholder="API key" style="flex:1;padding:8px;border-radius:8px;border:1px solid #29324e;background:#0b1020;color:#e6e8ef">'
     + '      <button id="save" style="padding:8px 12px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-weight:600;cursor:pointer;white-space:nowrap">Save Key</button>'
     + '    </div>'
+    + '    <div id="set-key-note" style="font-size:11px;color:#9bb1dd">Kept in memory only; page scripts can observe bookmarklet inputs.</div>'
     + '  </div>'
 
     /* Managed: server URL */
@@ -441,7 +502,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     if (!document.head.contains(runtimeStyle)) document.head.appendChild(runtimeStyle);
     if (!document.body.contains(backdrop)) document.body.appendChild(backdrop);
     if (!document.body.contains(previewBar)) document.body.appendChild(previewBar);
-    if (!document.body.contains(fab)) document.body.appendChild(fab);
+    if (!EXTENSION_BUILD && !document.body.contains(fab)) document.body.appendChild(fab);
     return true;
   };
 
@@ -464,7 +525,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     previewBar.style.display = "none";
     setTimeout(function () {
       backdrop.style.display = "none";
-      fab.style.display = "flex";
+      fab.style.display = EXTENSION_BUILD ? "none" : "flex";
     }, 200);
   };
 
@@ -481,7 +542,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     openPanel();
   };
 
-  fab.onclick = openPanel;
+  if (!EXTENSION_BUILD) fab.onclick = openPanel;
   if (launchPanelOnLoad) {
     openPanel();
   } else {
@@ -557,6 +618,19 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const saveBtn = $("#save");
   const backBtn = $("#back");
 
+  if (EXTENSION_BUILD) {
+    setupKey.value = "";
+    setupKey.disabled = true;
+    setupKey.placeholder = "Managed in Vibbit extension settings";
+    setKey.value = "";
+    setKey.disabled = true;
+    setKey.placeholder = "Stored only in extension session storage";
+    saveBtn.textContent = "Open BYOK Settings";
+    saveBtn.style.background = "#3454D1";
+    $("#setup-key-note").textContent = "Stored in extension session storage; never exposed to this page.";
+    $("#set-key-note").textContent = "Provider, model, and key are managed in extension settings.";
+  }
+
   /* ── view switching ──────────────────────────────────────── */
   const showView = (name) => {
     Object.keys(views).forEach((key) => {
@@ -592,8 +666,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── mode-dependent field visibility ─────────────────────── */
   const setModeVisibility = (mode, refs) => {
     const isByok = mode === "byok";
-    refs.byokProvider.style.display = isByok ? "grid" : "none";
-    refs.byokModel.style.display = isByok ? "grid" : "none";
+    refs.byokProvider.style.display = isByok && !EXTENSION_BUILD ? "grid" : "none";
+    refs.byokModel.style.display = isByok && !EXTENSION_BUILD ? "grid" : "none";
     refs.byokKey.style.display = isByok ? "grid" : "none";
     refs.managedServer.style.display = isByok ? "none" : "grid";
     if (refs.managedServerUrl) {
@@ -653,12 +727,19 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const refreshThinkHarderVisibility = () => {
+    if (EXTENSION_BUILD) {
+      thinkHarderWrap.style.display = "none";
+      return;
+    }
     const mode = coerceMode(storageGet(STORAGE_MODE) || "byok");
     const provider = storageGet(STORAGE_PROVIDER) || "openai";
     const model = storageGet(STORAGE_MODEL) || "";
     const supportsThinking = supportsThinkHarder(provider, model);
     thinkHarderWrap.style.display = mode === "byok" && supportsThinking ? "inline-flex" : "none";
   };
+
+  const getExtensionByokStatus = () => extensionRequest("vibbit:byok:status", {});
+  const openExtensionByokSettings = () => extensionRequest("vibbit:byok:open-options", {});
 
   /* ── state ───────────────────────────────────────────────── */
   let undoStack = [];
@@ -821,6 +902,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   const ALLOWED_ASSISTANT_STATUSES = {
     generating: true,
     done: true,
+    fallback: true,
+    unverified: true,
     error: true,
     cancelled: true,
     "convert-error": true
@@ -915,6 +998,24 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         });
       }
       html += '<div class="vibbit-msg-success">' + CHECK_SVG + ' Code applied to MakeCode</div>';
+      if (!actionsHidden) {
+        html += '<div class="vibbit-msg-actions">';
+        html += '<button class="vibbit-btn-preview" data-action="preview">Preview</button>';
+        if (undoStack.length > 0) {
+          html += '<button class="vibbit-btn-undo" data-action="undo">Undo</button>';
+        }
+        html += '</div>';
+      }
+    } else if (status === "fallback" || status === "unverified") {
+      if (msg.feedback && msg.feedback.length) {
+        msg.feedback.forEach(function (line) {
+          html += '<div class="vibbit-feedback-line">' + escapeHTML(line) + '</div>';
+        });
+      }
+      const outcomeText = status === "fallback"
+        ? "A minimal fallback was applied; it may not satisfy the request."
+        : "Code was applied, but native Blocks validation was unavailable.";
+      html += '<div class="vibbit-msg-error">' + outcomeText + '</div>';
       if (!actionsHidden) {
         html += '<div class="vibbit-msg-actions">';
         html += '<button class="vibbit-btn-preview" data-action="preview">Preview</button>';
@@ -1072,7 +1173,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     for (let i = 0; i < chatMessages.length; i++) {
       const msg = chatMessages[i];
       if (!msg || msg.role !== "assistant") continue;
-      if (msg.status !== "done" && msg.status !== "convert-error") continue;
+      if (!["done", "fallback", "unverified", "convert-error"].includes(msg.status)) continue;
       if (msg.actionsHidden) continue;
       msg.actionsHidden = true;
       const wrapper = chatMessageEls[i];
@@ -1419,6 +1520,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   setupProv.onchange = () => {
+    if (EXTENSION_BUILD) return;
     populateModels(setupModel, setupProv.value, null);
     setupKey.value = getStoredProviderKey(setupProv.value);
   };
@@ -1445,16 +1547,31 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     setupMode.value = mode;
     showSetupError("");
     if (mode === "byok") {
+      if (EXTENSION_BUILD) {
+        try {
+          const extensionStatus = await getExtensionByokStatus();
+          if (!extensionStatus || !extensionStatus.hasKey) {
+            showSetupError("Add a provider key in Vibbit extension settings, then return here.");
+            await openExtensionByokSettings();
+            return;
+          }
+        } catch {
+          showSetupError("Could not reach Vibbit extension settings. Reload the extension and this page.");
+          return;
+        }
+      }
       const key = setupKey.value.trim();
-      if (!key) {
+      if (!EXTENSION_BUILD && !key) {
         setupKey.style.borderColor = "#ef4444";
         setupKey.focus();
         return;
       }
       setupKey.style.borderColor = "#29324e";
-      storageSet(STORAGE_PROVIDER, setupProv.value);
-      storageSet(STORAGE_MODEL, setupModel.value);
-      setStoredProviderKey(setupProv.value, key);
+      if (!EXTENSION_BUILD) {
+        storageSet(STORAGE_PROVIDER, setupProv.value);
+        storageSet(STORAGE_MODEL, setupModel.value);
+        setStoredProviderKey(setupProv.value, key);
+      }
     } else {
       const server = hostedManaged
         ? DEFAULT_SERVER
@@ -1492,7 +1609,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     setMode.value = mode;
     setProv.value = setupProv.value;
     populateModels(setModel, setupProv.value, setupModel.value);
-    setKey.value = getStoredProviderKey(setupProv.value);
+    setKey.value = EXTENSION_BUILD ? "" : getStoredProviderKey(setupProv.value);
     setServer.value = setupServer.value;
     setClassCode.value = setupClassCode.value;
     applySettingsMode();
@@ -1510,6 +1627,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   setProv.onchange = () => {
+    if (EXTENSION_BUILD) return;
     populateModels(setModel, setProv.value, null);
     storageSet(STORAGE_PROVIDER, setProv.value);
     /* select the default and persist */
@@ -1519,19 +1637,26 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   setModel.onchange = () => {
+    if (EXTENSION_BUILD) return;
     storageSet(STORAGE_MODEL, setModel.value);
     refreshThinkHarderVisibility();
   };
 
   thinkHarder.onchange = () => {
+    if (EXTENSION_BUILD) return;
     storageSet(STORAGE_THINK_HARDER, thinkHarder.checked ? "1" : "0");
   };
 
-  saveBtn.onclick = () => {
+  saveBtn.onclick = async () => {
     try {
+      if (EXTENSION_BUILD) {
+        await openExtensionByokSettings();
+        setStatus("Settings opened");
+        return;
+      }
       setStoredProviderKey(setProv.value, setKey.value.trim());
-      setStatus("Key saved");
-      logLine("BYOK API key saved in this browser.");
+      setStatus("Key held for this page");
+      logLine("BYOK API key is held only in memory until this page reloads.");
     } catch (error) {
       logLine("Save failed: " + error);
     }
@@ -2016,12 +2141,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
           }
           if (!probe.checked) {
             logLine("Live decompile check unavailable in this session.");
-            return;
+            return { validation: "unavailable" };
           }
           if (!probe.ok) {
             throw createGreyBlockError(probe);
           }
           logLine("Live decompile check passed (no grey blocks).");
+          return { validation: "verified" };
         });
       });
     });
@@ -2059,6 +2185,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   /* ── shared compat core (generated) ───────────────────── */
   // BEGIN_SHARED_COMPAT_CORE
   const {
+    DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
     sanitizeMakeCode,
     normaliseFeedback,
     resolvePromptTargetContext,
@@ -2113,8 +2240,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       }
       if (target === "maker") {
         return {
-          targetName: "Maker",
-          namespaceList: "pins,input,loops,music"
+          targetName: "Maker (Adafruit Circuit Playground Express)",
+          namespaceList: "pins,input,music plus global forever and pause"
         };
       }
       return {
@@ -2124,6 +2251,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
 
     const DEFAULT_CURRENT_CODE_TRUNCATION_MARKER = "\n// ... CURRENT_CODE_TRUNCATED ...\n";
+    const DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS = 12000;
 
     function boundCurrentCodeForPrompt(currentCode, {
       maxChars = 0,
@@ -2157,7 +2285,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       pageErrors,
       conversionDialog,
       recentChat,
-      maxCurrentCodeChars = 0,
+      maxCurrentCodeChars = DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
       truncationMarker = DEFAULT_CURRENT_CODE_TRUNCATION_MARKER
     } = {}) {
       const blocks = [];
@@ -2953,25 +3081,22 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         ].join("\n")
       },
       maker: {
-        name: "Maker",
+        name: "Maker for Adafruit Circuit Playground Express",
         apis: [
-          "pins: digitalReadPin(DigitalPin), digitalWritePin(DigitalPin, value), analogReadPin(AnalogPin), analogWritePin(AnalogPin, value), servoWritePin(AnalogPin, value), map(value, fromLow, fromHigh, toLow, toHigh)",
-          "input: onButtonPressed(handler), buttonIsPressed(), temperature(), lightLevel()",
-          "loops: forever(handler), pause(ms)",
-          "music: playTone(freq, ms), ringTone(freq), rest(ms), setTempo(bpm)"
+          "fixed pins: pins.LED.digitalWrite(boolean), pins.LED.digitalRead(); pins.A0/A1/A2/A3/A4/A5/A6/A7.digitalWrite(boolean), .digitalRead(), .analogWrite(value), .analogRead(), .servoWrite(degrees)",
+          "built-in buttons: input.buttonA.onEvent(ButtonEvent.Click, handler), input.buttonB.onEvent(ButtonEvent.Click, handler), .isPressed()",
+          "sensors: input.temperature(TemperatureUnit.Celsius), input.lightLevel()",
+          "loops are global functions: forever(handler), pause(ms). Do not use loops.forever or loops.pause.",
+          "No DigitalPin/AnalogPin enums, pins.digitalWritePin/analogReadPin/analogWritePin/servoWritePin, input.onButtonPressed, or pins.map on this pinned board. Scale values with block-safe arithmetic."
         ].join("\n"),
-        request: "blink the LED on pin P0 on and off",
-        feedback: ["Toggles P0 every half second so the LED blinks."],
+        request: "blink the built-in LED on and off",
+        feedback: ["Blinks the Circuit Playground Express built-in LED every half second."],
         example: [
-          "let on = false",
-          "loops.forever(function () {",
-          "    on = !(on)",
-          "    if (on) {",
-          "        pins.digitalWritePin(DigitalPin.P0, 1)",
-          "    } else {",
-          "        pins.digitalWritePin(DigitalPin.P0, 0)",
-          "    }",
-          "    loops.pause(500)",
+          "forever(function () {",
+          "    pins.LED.digitalWrite(true)",
+          "    pause(500)",
+          "    pins.LED.digitalWrite(false)",
+          "    pause(500)",
           "})"
         ].join("\n")
       }
@@ -3001,8 +3126,8 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       }
       if (targetKey === "maker") {
         return [
-          "Use event handlers and loops, e.g. input.onButtonPressed(function () { }), loops.forever(function () { }).",
-          "Match each block's exact argument count and use only valid Maker enums (e.g. DigitalPin.P0).",
+          "Use Circuit Playground Express handlers and global loops, e.g. input.buttonA.onEvent(ButtonEvent.Click, function () { }) and forever(function () { }).",
+          "Use fixed pin objects such as pins.LED, pins.A3, pins.A0, and pins.A1; match each method's exact argument count.",
           ...common
         ];
       }
@@ -3485,12 +3610,13 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       const upstreamAttempts = attempts.length;
 
       if (last && last.reason === "ok") {
+        const outcome = last.decompile && last.decompile.skipped ? "ok-unverified" : "ok";
         return {
           code: last.code,
           feedback: normaliseFeedback(lastFeedback),
           validation: lastValidation,
           upstreamAttempts,
-          outcome: "ok",
+          outcome,
           attempts
         };
       }
@@ -3536,6 +3662,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     }
 
     return {
+      DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
       sanitizeMakeCode,
       normaliseFeedback,
       resolvePromptTargetContext,
@@ -3562,7 +3689,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
   const sysFor = (target) => buildSystemPrompt(target, { conversational: true });
 
-  const MAX_CURRENT_CODE_PROMPT_CHARS = 12000;
+  const MAX_CURRENT_CODE_PROMPT_CHARS = DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS;
   const CURRENT_CODE_TRUNCATION_MARKER = "\n// ... CURRENT_CODE_TRUNCATED ...\n";
 
   const userFor = (request, currentCode, pageErrors, conversionDialog, recentChat) => {
@@ -3589,9 +3716,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       new Promise((_, reject) => setTimeout(() => reject(new Error((label || "request") + " timeout")), ms))
     ]);
   };
-
-
-
+  // BEGIN_PAGE_BYOK_TRANSPORT
   const parseModelList = (model) => {
     if (!model) return [];
     return model.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
@@ -3662,7 +3787,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
   };
 
   const callGemini = (key, model, system, user, signal) => {
-    const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model || "gemini-3-flash-preview") + ":generateContent?key=" + encodeURIComponent(key);
+    const url = "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model || "gemini-3-flash-preview") + ":generateContent";
     const body = {
       contents: [{ role: "user", parts: [{ text: system + "\n\n" + user }] }],
       generationConfig: { temperature: BASE_TEMP, maxOutputTokens: MAXTOK }
@@ -3670,7 +3795,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     return withTimeout(
       fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify(body),
         signal
       })
@@ -3692,7 +3817,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       Authorization: "Bearer " + key
     };
     try { headers["HTTP-Referer"] = location && location.origin ? location.origin : ""; } catch (error) {}
-    try { if (document && document.title) headers["X-Title"] = document.title; } catch (error) {}
+    headers["X-Title"] = "Vibbit";
 
     const sendForModel = (modelId) => {
       const thinkHarderEnabled = storageGet(STORAGE_THINK_HARDER) === "1"
@@ -3804,6 +3929,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
       "OpenCode " + access + " " + modelId
     );
   };
+  // END_PAGE_BYOK_TRANSPORT
 
   const askValidated = (provider, apiKey, model, system, user, target, signal) => {
     const providers = { openai: callOpenAI, gemini: callGemini, openrouter: callOpenRouter, opencode: callOpenCode };
@@ -4108,6 +4234,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
     let lastGeneratedCode = "";
     let lastGeneratePassedOracle = false;
     let finalFeedback = [];
+    let finalOutcome = "unknown";
 
     const runGenerationAttempt = (forcedRequest, forcedDlg, options) => {
       const shouldSnapshot = !options || options.snapshot !== false;
@@ -4201,6 +4328,18 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
             }, signal);
           }
 
+          if (EXTENSION_BUILD) {
+            logLine("Mode: BYOK extension broker.");
+            return extensionRequest("vibbit:byok:generate", {
+              target,
+              request: effectiveRequest,
+              currentCode,
+              pageErrors,
+              conversionDialog,
+              recentChat: recentChatContext
+            }, signal);
+          }
+
           const provider = storageGet(STORAGE_PROVIDER) || "openai";
           const apiKey = getStoredProviderKey(provider).trim();
           if (!apiKey) throw new Error("Enter API key for BYOK mode (open Settings).");
@@ -4215,6 +4354,7 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
 
           const code = extractCode(result && result.code ? result.code : "");
           lastGeneratedCode = code;
+          finalOutcome = String(result && result.outcome || "unknown");
           lastGeneratePassedOracle = generatePassedStaticOracle(result, code);
           if (result && (result.outcome || result.validationOk != null)) {
             logLine("Generate outcome=" + (result.outcome || "unknown") + " validationOk=" + (result.validationOk === false ? "0" : "1") + ".");
@@ -4258,17 +4398,25 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
               }
               logLine("Live decompile check failed: " + message);
               logLine("Applying minimal fallback stub.");
+              finalOutcome = "stub-live";
               finalFeedback = normaliseFeedback(finalFeedback.concat(["Live editor fallback: " + message]));
-              return pasteToMakeCode(stubForTarget(target), { snapshot: false, signal });
+              lastGeneratedCode = stubForTarget(target);
+              return pasteToMakeCode(lastGeneratedCode, { snapshot: false, signal });
             })
-            .then(() => {
+            .then((pasteResult) => {
               throwIfAborted(signal);
               finalFeedback = normaliseFeedback(finalFeedback, DEFAULT_FEEDBACK_MESSAGE);
               renderFeedback(finalFeedback);
               hideFixConvertButton();
-              setStatus("Done");
-              logLine("Pasted and switched back to Blocks.");
-              updateAssistantMessage(assistantIdx, { status: "done", feedback: finalFeedback, code: lastGeneratedCode, content: "" });
+              const usedFallback = /^stub-/.test(finalOutcome);
+              const unverified = finalOutcome === "ok-unverified"
+                || (pasteResult && pasteResult.validation === "unavailable");
+              const assistantStatus = usedFallback ? "fallback" : (unverified ? "unverified" : "done");
+              setStatus(usedFallback ? "Fallback applied" : (unverified ? "Applied, unverified" : "Done"));
+              logLine(usedFallback
+                ? "Minimal fallback pasted and switched to Blocks."
+                : (unverified ? "Code pasted; native Blocks validation was unavailable." : "Pasted and verified in Blocks."));
+              updateAssistantMessage(assistantIdx, { status: assistantStatus, feedback: finalFeedback, code: lastGeneratedCode, content: "" });
             });
         });
     };
@@ -4313,7 +4461,18 @@ const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
         return;
       }
 
-      const message = error && error.message ? error.message : String(error);
+      const rawMessage = error && error.message ? error.message : String(error);
+      const extensionMessages = {
+        tab_not_armed: "Click the Vibbit toolbar icon to authorize BYOK generation for this tab.",
+        missing_key: "Add a provider key in Vibbit extension settings.",
+        request_in_progress: "A BYOK provider request is already running in this tab.",
+        request_too_large: "The request is too large for the BYOK broker.",
+        current_code_too_large: "The current project is too large for the BYOK broker.",
+        bridge_error: "The Vibbit extension bridge is unavailable. Reload the extension and this page."
+      };
+      const message = EXTENSION_BUILD && extensionMessages[rawMessage]
+        ? extensionMessages[rawMessage]
+        : rawMessage;
       setStatus("Error");
       finalFeedback = normaliseFeedback(finalFeedback, DEFAULT_FAILURE_FEEDBACK);
       renderFeedback(finalFeedback);

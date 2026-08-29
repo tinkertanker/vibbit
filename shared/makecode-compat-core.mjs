@@ -1,4 +1,5 @@
 export const SHARED_COMPAT_EXPORT_NAMES = [
+  "DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS",
   "sanitizeMakeCode",
   "normaliseFeedback",
   "resolvePromptTargetContext",
@@ -54,8 +55,8 @@ export function resolvePromptTargetContext(target) {
   }
   if (target === "maker") {
     return {
-      targetName: "Maker",
-      namespaceList: "pins,input,loops,music"
+      targetName: "Maker (Adafruit Circuit Playground Express)",
+      namespaceList: "pins,input,music plus global forever and pause"
     };
   }
   return {
@@ -65,6 +66,7 @@ export function resolvePromptTargetContext(target) {
 }
 
 export const DEFAULT_CURRENT_CODE_TRUNCATION_MARKER = "\n// ... CURRENT_CODE_TRUNCATED ...\n";
+export const DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS = 12000;
 
 export function boundCurrentCodeForPrompt(currentCode, {
   maxChars = 0,
@@ -98,7 +100,7 @@ export function buildUserPrompt({
   pageErrors,
   conversionDialog,
   recentChat,
-  maxCurrentCodeChars = 0,
+  maxCurrentCodeChars = DEFAULT_MAX_CURRENT_CODE_PROMPT_CHARS,
   truncationMarker = DEFAULT_CURRENT_CODE_TRUNCATION_MARKER
 } = {}) {
   const blocks = [];
@@ -894,25 +896,22 @@ export const TARGET_API_CATALOG = {
     ].join("\n")
   },
   maker: {
-    name: "Maker",
+    name: "Maker for Adafruit Circuit Playground Express",
     apis: [
-      "pins: digitalReadPin(DigitalPin), digitalWritePin(DigitalPin, value), analogReadPin(AnalogPin), analogWritePin(AnalogPin, value), servoWritePin(AnalogPin, value), map(value, fromLow, fromHigh, toLow, toHigh)",
-      "input: onButtonPressed(handler), buttonIsPressed(), temperature(), lightLevel()",
-      "loops: forever(handler), pause(ms)",
-      "music: playTone(freq, ms), ringTone(freq), rest(ms), setTempo(bpm)"
+      "fixed pins: pins.LED.digitalWrite(boolean), pins.LED.digitalRead(); pins.A0/A1/A2/A3/A4/A5/A6/A7.digitalWrite(boolean), .digitalRead(), .analogWrite(value), .analogRead(), .servoWrite(degrees)",
+      "built-in buttons: input.buttonA.onEvent(ButtonEvent.Click, handler), input.buttonB.onEvent(ButtonEvent.Click, handler), .isPressed()",
+      "sensors: input.temperature(TemperatureUnit.Celsius), input.lightLevel()",
+      "loops are global functions: forever(handler), pause(ms). Do not use loops.forever or loops.pause.",
+      "No DigitalPin/AnalogPin enums, pins.digitalWritePin/analogReadPin/analogWritePin/servoWritePin, input.onButtonPressed, or pins.map on this pinned board. Scale values with block-safe arithmetic."
     ].join("\n"),
-    request: "blink the LED on pin P0 on and off",
-    feedback: ["Toggles P0 every half second so the LED blinks."],
+    request: "blink the built-in LED on and off",
+    feedback: ["Blinks the Circuit Playground Express built-in LED every half second."],
     example: [
-      "let on = false",
-      "loops.forever(function () {",
-      "    on = !(on)",
-      "    if (on) {",
-      "        pins.digitalWritePin(DigitalPin.P0, 1)",
-      "    } else {",
-      "        pins.digitalWritePin(DigitalPin.P0, 0)",
-      "    }",
-      "    loops.pause(500)",
+      "forever(function () {",
+      "    pins.LED.digitalWrite(true)",
+      "    pause(500)",
+      "    pins.LED.digitalWrite(false)",
+      "    pause(500)",
       "})"
     ].join("\n")
   }
@@ -942,8 +941,8 @@ function buildBlockSafeDoRules(target) {
   }
   if (targetKey === "maker") {
     return [
-      "Use event handlers and loops, e.g. input.onButtonPressed(function () { }), loops.forever(function () { }).",
-      "Match each block's exact argument count and use only valid Maker enums (e.g. DigitalPin.P0).",
+      "Use Circuit Playground Express handlers and global loops, e.g. input.buttonA.onEvent(ButtonEvent.Click, function () { }) and forever(function () { }).",
+      "Use fixed pin objects such as pins.LED, pins.A3, pins.A0, and pins.A1; match each method's exact argument count.",
       ...common
     ];
   }
@@ -1426,12 +1425,13 @@ export async function runGenerationLoop({
   const upstreamAttempts = attempts.length;
 
   if (last && last.reason === "ok") {
+    const outcome = last.decompile && last.decompile.skipped ? "ok-unverified" : "ok";
     return {
       code: last.code,
       feedback: normaliseFeedback(lastFeedback),
       validation: lastValidation,
       upstreamAttempts,
-      outcome: "ok",
+      outcome,
       attempts
     };
   }

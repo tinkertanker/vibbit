@@ -61,6 +61,43 @@ function readConstString(source, name) {
   return match ? match[1] : "";
 }
 
+function stripPageByokTransport(source) {
+  const startToken = "  // BEGIN_PAGE_BYOK_TRANSPORT";
+  const endToken = "  // END_PAGE_BYOK_TRANSPORT";
+  const start = source.indexOf(startToken);
+  const end = source.indexOf(endToken);
+  if (start < 0 || end <= start) throw new Error("Could not find page BYOK transport markers in work.js");
+  const disabled = [
+    startToken,
+    "  const extensionOnlyProviderCall = () => Promise.reject(new Error(\"extension_broker_required\"));",
+    "  const callOpenAI = extensionOnlyProviderCall;",
+    "  const callGemini = extensionOnlyProviderCall;",
+    "  const callOpenRouter = extensionOnlyProviderCall;",
+    "  const callOpenCode = extensionOnlyProviderCall;",
+    endToken
+  ].join("\n");
+  return source.slice(0, start) + disabled + source.slice(end + endToken.length);
+}
+
+function assertExtensionCredentialBoundary(source) {
+  const forbidden = [
+    "https://api.openai.com/v1/responses",
+    "https://api.openai.com/v1/chat/completions",
+    "https://generativelanguage.googleapis.com/v1beta/models/",
+    "https://openrouter.ai/api/v1/chat/completions",
+    "https://opencode.ai/zen/",
+    'Authorization: "Bearer " + key',
+    'storageSet(key, normalized)'
+  ];
+  const found = forbidden.filter((item) => source.includes(item));
+  if (found.length) {
+    throw new Error(`Extension MAIN-world bundle contains forbidden BYOK transport/key code: ${found.join(", ")}`);
+  }
+  if (!source.includes("const EXTENSION_BUILD = true;")) {
+    throw new Error("Extension MAIN-world bundle was not marked as an extension build");
+  }
+}
+
 async function build() {
   const [rawClient, rawManifest, frogSvgMarkup] = await Promise.all([
     readFile(sourcePath, "utf8"),
@@ -94,6 +131,9 @@ async function build() {
     ? true
     : parseBoolean(process.env.VIBBIT_HOSTED_MANAGED, false);
   builtClient = overrideConst(builtClient, "HOSTED_MANAGED", hostedManagedEnabled);
+  builtClient = overrideConst(builtClient, "EXTENSION_BUILD", true);
+  builtClient = stripPageByokTransport(builtClient);
+  assertExtensionCredentialBoundary(builtClient);
 
   if (backend) {
     builtClient = overrideConst(builtClient, "BACKEND", String(backend).trim());
@@ -119,9 +159,22 @@ async function build() {
   await rm(distDir, { recursive: true, force: true });
   await mkdir(distDir, { recursive: true });
 
-  // Copy background.js
-  const backgroundSrc = path.join(root, "extension", "background.js");
-  await copyFile(backgroundSrc, path.join(distDir, "background.js"));
+  const extensionModuleDir = path.join(distDir, "extension");
+  const sharedModuleDir = path.join(distDir, "shared");
+  await Promise.all([
+    mkdir(extensionModuleDir, { recursive: true }),
+    mkdir(sharedModuleDir, { recursive: true })
+  ]);
+  await Promise.all([
+    copyFile(path.join(root, "extension", "background.js"), path.join(extensionModuleDir, "background.js")),
+    copyFile(path.join(root, "extension", "byok-broker.mjs"), path.join(extensionModuleDir, "byok-broker.mjs")),
+    copyFile(path.join(root, "extension", "byok-config.mjs"), path.join(extensionModuleDir, "byok-config.mjs")),
+    copyFile(path.join(root, "extension", "provider-transport.mjs"), path.join(extensionModuleDir, "provider-transport.mjs")),
+    copyFile(path.join(root, "extension", "page-bridge.js"), path.join(distDir, "page-bridge.js")),
+    copyFile(path.join(root, "extension", "options.html"), path.join(distDir, "options.html")),
+    copyFile(path.join(root, "extension", "options.js"), path.join(distDir, "options.js")),
+    copyFile(path.join(root, "shared", "makecode-compat-core.mjs"), path.join(sharedModuleDir, "makecode-compat-core.mjs"))
+  ]);
 
   // Copy icons
   const iconsDir = path.join(distDir, "icons");

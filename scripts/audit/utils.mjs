@@ -154,7 +154,7 @@ export function providerConfigFromEnv() {
       provider,
       key: process.env.AUDIT_BYOK_GEMINI_KEY || "",
       model,
-      endpointRegex: /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/.+:generateContent\?key=/
+      endpointRegex: /^https:\/\/generativelanguage\.googleapis\.com\/v1beta\/models\/.+:generateContent$/
     };
   }
 

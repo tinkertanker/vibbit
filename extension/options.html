@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vibbit BYOK settings</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0b1020; color: #e6e8ef; }
+    body { max-width: 620px; margin: 0 auto; padding: 32px 20px; }
+    form { display: grid; gap: 16px; padding: 20px; border: 1px solid #21304f; border-radius: 14px; background: #111936; }
+    label { display: grid; gap: 6px; font-size: 13px; color: #c5d6ff; }
+    input, select, button { box-sizing: border-box; width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #29324e; font: inherit; }
+    input, select { background: #0b1020; color: #e6e8ef; }
+    button { cursor: pointer; border: 0; background: #3454d1; color: white; font-weight: 650; }
+    button.secondary { background: transparent; border: 1px solid #6b2737; color: #fecaca; }
+    .actions { display: flex; gap: 10px; }
+    .note, #status { font-size: 13px; line-height: 1.45; color: #9bb1dd; }
+    #status[data-error="true"] { color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <h1>Vibbit BYOK settings</h1>
+  <p class="note">Your provider key is kept in extension session storage. It is not exposed to MakeCode and is cleared when Chrome exits. Previously stored MakeCode-page keys should be rotated.</p>
+  <form id="settings">
+    <label>Provider <select id="provider"></select></label>
+    <label>Model <select id="model"></select></label>
+    <label>API key <input id="api-key" type="password" autocomplete="off" placeholder="Leave blank to keep the current session key"></label>
+    <label><span><input id="think-harder" type="checkbox" style="width:auto"> Think harder when supported</span></label>
+    <div class="actions">
+      <button type="submit">Save for this session</button>
+      <button id="forget" type="button" class="secondary">Forget provider key</button>
+    </div>
+    <div id="status" role="status"></div>
+  </form>
+  <script type="module" src="options.js"></script>
+</body>
+</html>
