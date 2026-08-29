@@ -2092,64 +2092,89 @@ const EXTENSION_RUNTIME_REVISION = "source";
     };
   };
 
-  const collectBlocklyWorkspaces = (rootWin) => {
-    const workspaces = [];
-    const queue = [rootWin, window];
+  const findMakeCodeProject = (monacoCtx) => {
+    const queue = [monacoCtx && monacoCtx.win, window];
     const seen = new Set();
-
     while (queue.length) {
       const ctx = queue.shift();
       if (!ctx || seen.has(ctx)) continue;
       seen.add(ctx);
-
       try {
-        const blockly = ctx.Blockly;
-        const ws = blockly && (typeof blockly.getMainWorkspace === "function" ? blockly.getMainWorkspace() : blockly.mainWorkspace);
-        if (ws && typeof ws.getAllBlocks === "function") workspaces.push(ws);
+        const project = ctx.E?.getEditor?.();
+        if (project) return { win: ctx, project };
       } catch (error) {
       }
-
       try {
-        const frames = ctx.document ? [...ctx.document.querySelectorAll("iframe")] : [];
-        for (const frame of frames) {
-          try {
-            if (frame.contentWindow) queue.push(frame.contentWindow);
-          } catch (error) {
-          }
+        for (const frame of ctx.document?.querySelectorAll?.("iframe") || []) {
+          if (frame.contentWindow) queue.push(frame.contentWindow);
         }
       } catch (error) {
       }
     }
-
-    return workspaces;
+    return null;
   };
 
-  const inspectGreyBlocks = (rootWin) => {
-    const workspaces = collectBlocklyWorkspaces(rootWin);
-    if (!workspaces.length) {
-      return { checked: false, ok: true, greyBlocks: 0, reason: "Blockly workspace unavailable" };
+  const normaliseSourceProof = (value) => String(value || "")
+    .replace(/\r\n/g, "\n")
+    .trim();
+
+  const inspectGreyBlocks = (proof) => {
+    if (!proof) return { checked: false, ok: true, greyBlocks: 0, reason: "MakeCode project API unavailable" };
+    if (!proof.sourceSaved) return { checked: false, ok: true, greyBlocks: 0, reason: "Pasted source could not be bound" };
+    if (!proof.switchRequested) return { checked: false, ok: true, greyBlocks: 0, reason: "Blocks switch could not be confirmed" };
+
+    const project = proof.project;
+    const blocksEditor = project?.blocksEditor;
+    const workspace = blocksEditor?.editor;
+    let active = false;
+    let sourceMatches = false;
+    try {
+      active = project.state?.header?.id === proof.projectId
+        && project.isBlocksActive?.() === true
+        && project.editor === blocksEditor
+        && project.editorFile?.name === "main.blocks"
+        && project.updatingEditorFile !== true
+        && blocksEditor.loadingXml !== true
+        && !blocksEditor.loadingXmlPromise
+        && blocksEditor.delayLoadXml == null
+        && blocksEditor.typeScriptSaveable === true
+        && workspace
+        && !workspace.isFlyout
+        && !workspace.isDisposed?.()
+        && typeof workspace.getAllBlocks === "function";
+      sourceMatches = proof.model.getVersionId?.() === proof.modelVersion
+        && normaliseSourceProof(proof.model.getValue?.()) === proof.expectedSource
+        && normaliseSourceProof(proof.sourceFile?.content) === proof.expectedSource;
+    } catch (error) {
+      active = false;
+      sourceMatches = false;
+    }
+    if (!active || !sourceMatches) {
+      return {
+        checked: false,
+        ok: true,
+        greyBlocks: 0,
+        reason: active ? "Blocks workspace source could not be attributed" : "Blocks conversion still pending"
+      };
     }
 
     let greyBlocks = 0;
     const snippets = [];
-
-    for (const ws of workspaces) {
-      let blocks = [];
-      try {
-        blocks = ws.getAllBlocks(false) || [];
-      } catch (error) {
-        blocks = [];
-      }
-      for (const block of blocks) {
-        if (!block || (block.type !== "typescript_statement" && block.type !== "typescript_expression")) continue;
-        greyBlocks += 1;
-        if (snippets.length < 3) {
-          let preview = "";
-          try { preview = (block.getFieldValue && block.getFieldValue("EXPRESSION")) || ""; } catch (error) {}
-          try { if (!preview && block.toString) preview = block.toString(); } catch (error) {}
-          preview = String(preview || "grey block").replace(/\s+/g, " ").trim();
-          snippets.push(preview.slice(0, 140));
-        }
+    let blocks = [];
+    try {
+      blocks = workspace.getAllBlocks(false) || [];
+    } catch (error) {
+      return { checked: false, ok: true, greyBlocks: 0, reason: "Blocks workspace unavailable" };
+    }
+    for (const block of blocks) {
+      if (!block || (block.type !== "typescript_statement" && block.type !== "typescript_expression")) continue;
+      greyBlocks += 1;
+      if (snippets.length < 3) {
+        let preview = "";
+        try { preview = (block.getFieldValue && block.getFieldValue("EXPRESSION")) || ""; } catch (error) {}
+        try { if (!preview && block.toString) preview = block.toString(); } catch (error) {}
+        preview = String(preview || "grey block").replace(/\s+/g, " ").trim();
+        snippets.push(preview.slice(0, 140));
       }
     }
 
@@ -2165,8 +2190,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
     return { checked: true, ok: true, greyBlocks: 0, snippets };
   };
 
-  const waitForDecompileProbe = (monacoCtx, timeoutMs = 6000, signal) => {
-    const rootWin = monacoCtx && monacoCtx.win ? monacoCtx.win : monacoCtx;
+  const waitForDecompileProbe = (monacoCtx, proof, timeoutMs = 6000, signal) => {
     const deadline = performance.now() + timeoutMs;
     const startedAt = performance.now();
     const minSettleMs = 1500;
@@ -2194,7 +2218,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
           }
         } catch (error) {
         }
-        const report = inspectGreyBlocks(rootWin);
+        const report = inspectGreyBlocks(proof);
         lastReport = report;
         const signature = [
           report.checked ? "checked" : "unchecked",
@@ -2248,18 +2272,70 @@ const EXTENSION_RUNTIME_REVISION = "source";
         logLine("Pasting generated code into editor.");
         ctx.model.setValue(code);
         throwIfAborted(signal);
+        const projectContext = findMakeCodeProject(ctx);
+        const project = projectContext?.project;
+        const projectId = String(project?.state?.header?.id || "");
+        const modelVersion = ctx.model.getVersionId?.();
+        const sourceFile = project?.editorFile;
+        const proofUnavailableReason = !project
+          ? "MakeCode project API unavailable"
+          : (sourceFile?.name !== "main.ts"
+            ? "active source is not main.ts"
+            : (typeof project.saveCurrentSourceAsync !== "function"
+              ? "source save API unavailable"
+              : (!projectId
+                ? "project identity unavailable"
+                : (!Number.isFinite(modelVersion) ? "model revision unavailable" : ""))));
+        const proof = project
+          && sourceFile?.name === "main.ts"
+          && typeof project.saveCurrentSourceAsync === "function"
+          && projectId
+          && Number.isFinite(modelVersion)
+          ? {
+              project,
+              projectId,
+              sourceFile,
+              model: ctx.model,
+              modelVersion,
+              expectedSource: normaliseSourceProof(code),
+              sourceSaved: false,
+              switchRequested: false
+            }
+          : null;
+        if (!proof) logLine("Live Blocks proof unavailable: " + proofUnavailableReason + ".");
         if (ctx.editor && ctx.editor.setPosition) {
           ctx.editor.setPosition({ lineNumber: 1, column: 1 });
         }
-        logLine("Switching back to Blocks.");
-        clickLike(ctx.win.document, ["blocks"]) || (function () {
-          const menu = ctx.win.document.querySelector("button[aria-label*='More'],button[aria-label*='Editor'],.menu-button,.more-button");
-          if (menu) {
-            menu.click();
-            return clickLike(ctx.win.document, ["blocks"]);
+        const saveSource = proof
+          ? Promise.resolve(project.saveCurrentSourceAsync())
+            .then(() => {
+              proof.sourceSaved = project.state?.header?.id === proof.projectId
+                && project.editorFile === sourceFile
+                && project.editorFile?.name === "main.ts"
+                && proof.model.getVersionId?.() === proof.modelVersion
+                && normaliseSourceProof(proof.model.getValue?.()) === proof.expectedSource
+                && normaliseSourceProof(sourceFile.content) === proof.expectedSource;
+              if (!proof.sourceSaved) logLine("Could not bind the live Blocks check to the pasted source.");
+            })
+            .catch((error) => {
+              logLine("Could not save pasted source before the live Blocks check.");
+            })
+          : Promise.resolve();
+        return saveSource.then(() => {
+          throwIfAborted(signal);
+          logLine("Switching back to Blocks.");
+          let blocksControl = clickLike(ctx.win.document, ["blocks"]);
+          if (!blocksControl) {
+            const menu = ctx.win.document.querySelector("button[aria-label*='More'],button[aria-label*='Editor'],.menu-button,.more-button");
+            if (menu) {
+              menu.click();
+              blocksControl = clickLike(ctx.win.document, ["blocks"]);
+            }
           }
-        })();
-        return waitWithAbort(120, signal).then(() => {
+          if (proof) proof.switchRequested = Boolean(blocksControl);
+          if (!blocksControl) logLine("Could not confirm the Blocks switch control.");
+          return waitWithAbort(120, signal);
+        }).then(() => {
           const conversionDialog = detectConversionDialog(ctx);
           if (conversionDialog) {
             logLine("MakeCode conversion dialog detected: " + (conversionDialog.title || "Cannot convert to Blocks."));
@@ -2268,7 +2344,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
             }
             throw createConversionDialogError(conversionDialog);
           }
-          return waitForDecompileProbe(ctx, 6000, signal);
+          return waitForDecompileProbe(ctx, proof, 6000, signal);
         }).then((probe) => {
           throwIfAborted(signal);
           if (probe && probe.conversionDialog) {
@@ -2279,7 +2355,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
             throw createConversionDialogError(probe.conversionDialog);
           }
           if (!probe.checked) {
-            logLine("Live decompile check unavailable in this session.");
+            logLine("Live decompile check unavailable in this session: " + (probe.reason || "provenance unavailable") + ".");
             return { validation: "unavailable" };
           }
           if (!probe.ok) {

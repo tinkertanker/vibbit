@@ -36,14 +36,20 @@ async function installFetchMock(page) {
     if (!window.__smokeMonacoStub) {
       const model = {
         __value: "",
+        __version: 1,
         getValue() {
           return this.__value;
         },
+        getVersionId() {
+          return this.__version;
+        },
         setValue(next) {
           this.__value = String(next || "");
+          this.__version += 1;
           window.__smokeMonacoValue = this.__value;
         }
       };
+      window.__smokeMonacoModel = model;
       const editor = {
         getModel() {
           return model;
@@ -454,17 +460,56 @@ async function runNeutralUiSmoke(page) {
 
   await page.evaluate(() => {
     window.__smokeManagedOutcome = "ok-unverified";
-    window.Blockly = {
-      getMainWorkspace() {
-        return { getAllBlocks() { return []; } };
+    const sourceFile = { name: "main.ts", content: "" };
+    const blocksFile = { name: "main.blocks", content: "<xml></xml>" };
+    const workspace = {
+      isFlyout: false,
+      isDisposed() { return false; },
+      getAllBlocks() { return []; }
+    };
+    const textEditor = {};
+    const blocksEditor = {
+      editor: workspace,
+      loadingXml: false,
+      loadingXmlPromise: null,
+      delayLoadXml: null,
+      typeScriptSaveable: true
+    };
+    const project = {
+      state: { header: { id: "smoke-live-project", editor: "tsprj" }, currFile: sourceFile },
+      editor: textEditor,
+      editorFile: sourceFile,
+      textEditor,
+      blocksEditor,
+      updatingEditorFile: false,
+      isBlocksActive() { return this.editor === blocksEditor; },
+      saveCurrentSourceAsync() {
+        sourceFile.content = window.__smokeMonacoModel.getValue();
+        return Promise.resolve();
       }
     };
+    window.__smokeLiveProject = project;
+    window.__smokeLiveTextEditor = textEditor;
+    window.__smokeLiveSourceFile = sourceFile;
+    window.__smokeOriginalE = window.E;
+    window.E = { getEditor() { return project; } };
+    window.__smokeBlocksClickHandler = (event) => {
+      const control = event.target?.closest?.("button,[role='tab'],a,[aria-label]");
+      const label = ((control?.textContent || "") + " " + (control?.getAttribute?.("aria-label") || "")).toLowerCase();
+      if (!label.includes("blocks") || label.includes("javascript")) return;
+      project.editor = blocksEditor;
+      project.editorFile = blocksFile;
+      project.state.currFile = blocksFile;
+      project.state.header.editor = "blocksprj";
+    };
+    document.addEventListener("click", window.__smokeBlocksClickHandler, true);
   });
   await page.fill("#p", "Verify the live editor can upgrade an upstream unverified result");
   await page.click("#go");
   await page.waitForFunction(() => (
-    document.querySelector("#status")?.textContent?.trim() === "Done"
-      && document.querySelector("#vibbit-live-status")?.textContent?.trim() === "Done"
+    ["Done", "Applied, unverified", "Fallback applied", "Error"].includes(
+      document.querySelector("#status")?.textContent?.trim()
+    )
   ), { timeout: 30000 });
   const liveUpgradeState = await page.evaluate(() => ({
     status: document.querySelector("#status")?.textContent?.trim() || "",
@@ -476,11 +521,42 @@ async function runNeutralUiSmoke(page) {
     liveUpgradeState.status === "Done"
       && liveUpgradeState.liveStatus === "Done"
       && /Live decompile check passed/.test(liveUpgradeState.log),
-    `status='${liveUpgradeState.status}', liveStatus='${liveUpgradeState.liveStatus}', liveProbePassed=${/Live decompile check passed/.test(liveUpgradeState.log)}.`
+    `status='${liveUpgradeState.status}', liveStatus='${liveUpgradeState.liveStatus}', liveProbePassed=${/Live decompile check passed/.test(liveUpgradeState.log)}, log='${liveUpgradeState.log.slice(-320)}'.`
+  );
+  await page.evaluate(() => {
+    document.removeEventListener("click", window.__smokeBlocksClickHandler, true);
+    const project = window.__smokeLiveProject;
+    project.editor = window.__smokeLiveTextEditor;
+    project.editorFile = window.__smokeLiveSourceFile;
+    project.state.currFile = window.__smokeLiveSourceFile;
+    project.state.header.editor = "tsprj";
+  });
+  await page.fill("#p", "Do not verify a stale Blocks workspace");
+  await page.click("#go");
+  await page.waitForFunction(() => (
+    ["Done", "Applied, unverified", "Fallback applied", "Error"].includes(
+      document.querySelector("#status")?.textContent?.trim()
+    )
+  ), { timeout: 30000 });
+  const staleWorkspaceState = await page.evaluate(() => ({
+    status: document.querySelector("#status")?.textContent?.trim() || "",
+    log: document.querySelector("#log")?.textContent || ""
+  }));
+  pushCheck(
+    "08c Stale Blocks workspace fails closed",
+    staleWorkspaceState.status === "Applied, unverified"
+      && /Live decompile check unavailable/.test(staleWorkspaceState.log),
+    `status='${staleWorkspaceState.status}', validationUnavailable=${/Live decompile check unavailable/.test(staleWorkspaceState.log)}.`
   );
   await page.evaluate(() => {
     delete window.__smokeManagedOutcome;
-    delete window.Blockly;
+    document.removeEventListener("click", window.__smokeBlocksClickHandler, true);
+    delete window.__smokeBlocksClickHandler;
+    delete window.__smokeLiveProject;
+    delete window.__smokeLiveTextEditor;
+    delete window.__smokeLiveSourceFile;
+    window.E = window.__smokeOriginalE;
+    delete window.__smokeOriginalE;
   });
 
   const managedCallsBeforeClose = await page.evaluate(() => {
@@ -512,7 +588,7 @@ async function runNeutralUiSmoke(page) {
     return result;
   });
   pushCheck(
-    "08c Closing Vibbit cancels active generation",
+    "08d Closing Vibbit cancels active generation",
     closeCancellation.aborted && closeCancellation.hidden && closeCancellation.liveStatus === "Cancelled",
     `providerAbortObserved=${closeCancellation.aborted}, panelHidden=${closeCancellation.hidden}, liveStatus='${closeCancellation.liveStatus}'.`
   );

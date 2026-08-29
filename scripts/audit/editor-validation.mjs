@@ -28,6 +28,7 @@ const DEFAULT_FIXTURES = [
     id: "microbit-compile-reject",
     target: "microbit",
     expect: "reject",
+    rejectVia: "compile",
     code: "input.onButtonPressed(Button.C, function () {\n    basic.showNumber(1, 2)\n})"
   },
   {
@@ -94,6 +95,7 @@ async function loadFixtures(inputPath) {
       id: String(row.id || row.caseId || `row-${index + 1}`),
       target: String(row.target || "microbit"),
       expect: row.expect === "reject" ? "reject" : "pass",
+      rejectVia: row.rejectVia === "compile" ? "compile" : "",
       code: String(row.code ?? row.parsed?.code ?? ""),
       model: String(row.model || ""),
       repetition: Number.isInteger(row.repetition) ? row.repetition : null,
@@ -147,36 +149,82 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
       null,
       { timeout: timeoutMs }
     );
-    await page.evaluate((code) => {
+    const sourceState = await page.evaluate(async (submittedCode) => {
       const models = window.monaco.editor.getModels();
       const mainModels = models.filter((item) => /main\.ts$/i.test(item.uri?.path || item.uri?.toString?.() || ""));
       if (mainModels.length !== 1) {
         throw new Error(`Expected exactly one main.ts model, found ${mainModels.length}`);
       }
       const [model] = mainModels;
-      model.setValue(code);
-    }, fixture.code);
-    await page.waitForTimeout(2500);
-
-    const sourceState = await page.evaluate((submittedCode) => {
-      const models = window.monaco?.editor?.getModels?.() || [];
-      const mainModels = models.filter((item) => /main\.ts$/i.test(item.uri?.path || item.uri?.toString?.() || ""));
-      if (mainModels.length !== 1) {
-        throw new Error(`Expected exactly one main.ts model, found ${mainModels.length}`);
+      const project = window.E?.getEditor?.();
+      if (!project
+        || typeof project.saveCurrentSourceAsync !== "function"
+        || typeof project.typecheckDebouncer?.func !== "function"
+        || typeof project.editor?.setDiagnostics !== "function") {
+        throw new Error("Released editor typecheck API is unavailable");
       }
-      const [model] = mainModels;
-      const value = String(model?.getValue?.() || "").replace(/\r\n/g, "\n");
+      model.setValue(submittedCode);
+      const submittedVersion = model.getVersionId();
+      const submittedModel = model;
+      const submittedUri = String(model.uri?.toString?.() || "");
+      const submittedHeader = String(project.state?.header?.id || "");
       const expected = String(submittedCode || "").replace(/\r\n/g, "\n");
-      const markers = model
-        ? (window.monaco.editor.getModelMarkers({ resource: model.uri }) || [])
+      await project.saveCurrentSourceAsync();
+      if (project.editorFile?.name !== "main.ts"
+        || String(project.editorFile?.content || "").replace(/\r\n/g, "\n") !== expected) {
+        throw new Error("Submitted main.ts was not saved before compile");
+      }
+      const sourceFile = project.editorFile;
+      const diagnosticsEditor = project.editor;
+      const originalSetDiagnostics = diagnosticsEditor.setDiagnostics;
+      let wrappedSetDiagnostics;
+      try {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error("Released editor typecheck timed out")), 30000);
+          wrappedSetDiagnostics = function (file, ...args) {
+            let result;
+            try {
+              result = originalSetDiagnostics.call(this, file, ...args);
+            } catch (error) {
+              clearTimeout(timeout);
+              reject(error);
+              throw error;
+            }
+            if (file === sourceFile) {
+              clearTimeout(timeout);
+              resolve();
+            }
+            return result;
+          };
+          diagnosticsEditor.setDiagnostics = wrappedSetDiagnostics;
+          clearTimeout(project.typecheckDebouncer.timeout);
+          project.typecheckDebouncer.timeout = null;
+          project.typecheckDebouncer.func();
+        });
+      } finally {
+        if (diagnosticsEditor.setDiagnostics === wrappedSetDiagnostics) {
+          diagnosticsEditor.setDiagnostics = originalSetDiagnostics;
+        }
+      }
+      const value = String(model.getValue() || "").replace(/\r\n/g, "\n");
+      if (window.monaco.editor.getModels().filter((item) => item === submittedModel).length !== 1
+        || model.getVersionId() !== submittedVersion
+        || String(model.uri?.toString?.() || "") !== submittedUri
+        || String(project.state?.header?.id || "") !== submittedHeader
+        || project.editorFile?.name !== "main.ts"
+        || value !== expected) {
+        throw new Error("Compile result no longer matches the submitted main.ts revision");
+      }
+      const diagnostics = Array.isArray(project.editorFile?.diagnostics)
+        ? project.editorFile.diagnostics
         : [];
-      const errorSeverity = window.monaco?.MarkerSeverity?.Error || 8;
       return {
         sourceMatches: value === expected,
-        modelUri: String(model?.uri?.toString?.() || ""),
-        compileErrors: markers
-          .filter((marker) => Number(marker.severity) >= errorSeverity)
-          .map((marker) => String(marker.message || "").slice(0, 240))
+        modelUri: submittedUri,
+        submittedVersion,
+        compileErrors: diagnostics
+          .filter((diagnostic) => Number(diagnostic.category) === 1)
+          .map((diagnostic) => String(diagnostic.messageText || diagnostic.message || "").slice(0, 240))
       };
     }, fixture.code);
 
@@ -270,12 +318,17 @@ async function validateFixture(browser, fixture, runDir, timeoutMs) {
       || blockState.greyTypes.length > 0
       || sourceState.compileErrors.length > 0
     );
-    const passed = fixture.expect === "pass" ? releasedEditorAccepted : releasedEditorRejected;
+    const passed = fixture.expect === "pass"
+      ? releasedEditorAccepted
+      : (fixture.rejectVia === "compile"
+        ? sourceState.sourceMatches && sourceState.compileErrors.length > 0
+        : releasedEditorRejected);
     await page.screenshot({ path: screenshot, fullPage: false });
     return {
       id: fixture.id,
       target: fixture.target,
       expect: fixture.expect,
+      rejectVia: fixture.rejectVia || null,
       passed,
       releasedEditorAccepted,
       releasedEditorRejected,
@@ -344,13 +397,16 @@ await writeFile(path.join(runDir, "results.json"), JSON.stringify({
 const report = [
   "# Released MakeCode editor validation",
   "",
-  "This audit writes each fixture into the real released Monaco editor, verifies the submitted `main.ts` model and compile markers, switches to Blocks, and requires exactly one visible workspace owned by the released editor's active Blocks component. Passing fixtures require native non-shadow blocks and no `typescript_statement` or `typescript_expression` grey blocks; rejection fixtures require a conversion dialog, compile error, or grey workspace block.",
+  "This audit writes each fixture into the real released Monaco editor, binds PXT typecheck diagnostics to the submitted `main.ts` revision, switches to Blocks, and requires exactly one visible workspace owned by the released editor's active Blocks component. Passing fixtures require native non-shadow blocks and no `typescript_statement` or `typescript_expression` grey blocks; rejection fixtures require a conversion dialog, compile error, or grey workspace block.",
   "",
   buildMarkdownTable(results.map((result) => ({
     step: `${result.target}/${result.id} (${result.expect})`,
     result: result.passed ? "PASS" : "FAIL",
     detail: trimForTable(
       result.error
+      || (result.rejectVia === "compile" && result.compileErrors?.length
+        ? `compile errors: ${result.compileErrors.join(" | ")}`
+        : "")
       || result.conversionDialog
       || `native=${result.nativeBlocks ?? "-"}, grey=${result.greyBlocks ?? "-"}, ${result.finalUrl || ""}`
     )
