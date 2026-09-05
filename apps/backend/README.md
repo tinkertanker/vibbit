@@ -232,9 +232,20 @@ Provider keys/models (legacy shared fallback):
 
 If these are omitted, set provider keys/models via `/admin` (legacy) or per-classroom in `/teacher`.
 
-## Deploy target (Railway)
+For local implementation/tests, prefer mocked upstreams, disposable fixture accounts, and an isolated
+`VIBBIT_STATE_FILE`. Real account save/test can call a provider and consume quota. Shared teacher/admin
+writes, classroom changes, outbound email, real-provider calls, and deployment require specific
+authorization; available credentials are not permission. Never expose keys, state, or sensitive
+school data in logs/artifacts, or weaken hosted security settings to make local tests pass.
 
-Railway is the supported hosted deployment target for this backend.
+## Railway deployment option
+
+The instructions below describe a deployment option, not verified infrastructure for the live site.
+Earlier root guidance named Docker/SSH at `tinkertanker@dev.tk.sg:Docker/vibbit` for `vibbit.tk.sg`;
+the local deployment files are gitignored. Confirm the current target/account and procedure with
+the operator before any authorized deployment. See [deployment target preflight](../../docs/release.md#deployment-target-preflight--unresolved-infrastructure-history).
+Do not guess or create/mutate infrastructure to resolve this ambiguity. The steps below require
+authorization for the specific deployment, configuration, and shared-state changes.
 
 Deploy button (placeholder until template is published):
 

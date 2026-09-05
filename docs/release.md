@@ -1,128 +1,111 @@
 # Vibbit Release Runbook
 
-Use this runbook when preparing or executing any Vibbit release that may touch the Chrome extension zip, bookmarklet artefacts, backend-hosted website pages, or download/install routes.
+Use this runbook for scoped preparation or execution of extension, bookmarklet, and backend/site releases.
 
-## Release surfaces
+## Authorization and release surfaces
 
-- `work.js` changes: treat as both extension and bookmarklet changes.
-- `extension/` changes: extension release required.
-- `apps/bookmarklet/` changes: bookmarklet rebuild required.
-- `apps/backend/` changes: backend/site deploy required.
-- Landing page, `/download/vibbit-extension.zip`, or `/bookmarklet` changes: deploy backend after the GitHub release asset is live if those pages point at `releases/latest`.
+Planning or preparing a release does not authorize merge/push, tagging, workflow dispatch,
+publication, deployment, rollback, or shared-state changes. Confirm approval for the exact
+operation and target before that boundary; do not re-ask for approval already granted.
+Verification alone permits no shared-state writes or real-provider quota use.
+Preserve the [privacy and shared-system boundaries](../AGENTS.md#privacy-and-shared-system-boundaries).
 
-## Preflight
+Use changed surfaces to determine what may need shipping, not as automatic instructions to ship:
 
-1. Confirm the scope:
-   - full release: extension + bookmarklet + backend/site
-   - extension-only release
-   - bookmarklet-only release
-   - backend/site-only release
-2. Pick the next unreleased version tag up front, for example `v0.2.3`.
-3. Increment the shipped extension version before building or tagging:
-   - update `package.json` `version`
-   - update `extension/manifest.json` `version`
-   - keep them in sync
-4. Merge releasable work to `main` first.
-5. Check the worktree:
-   - `git status --short`
-6. If the release touches UI/runtime behaviour, plan to run browser validation in MakeCode after building.
+- `work.js`: both extension and bookmarklet runtime.
+- `extension/`: extension distribution.
+- `apps/bookmarklet/`: bookmarklet build/distribution.
+- `apps/backend/`: backend/site, including backend-hosted bookmarklet routes.
+- Landing/download/install routes referencing `releases/latest`: publish and verify the required
+  GitHub asset **before** deploying dependent backend routes.
 
-## Build And Verify
+## Local preflight and verification
 
-1. Check the shared compat block:
-   - `npm run check:compat-core`
-2. Build and package the extension:
-   - `npm run package`
-3. Verify extension artefacts:
-   - `dist/content-script.js`
-   - `dist/manifest.json`
-   - `artifacts/vibbit-extension.zip`
-4. Build bookmarklet artefacts:
-   - `npm run build:bookmarklet`
-5. Verify bookmarklet artefacts:
-   - `artifacts/bookmarklet/vibbit-runtime.js`
-   - `artifacts/bookmarklet/bookmarklet-managed.txt`
-   - `artifacts/bookmarklet/install-managed.html`
-   - optional: `artifacts/bookmarklet/bookmarklet-byok.txt`
-   - optional: `artifacts/bookmarklet/install-byok.html`
-6. If production bookmarklets should point at a specific hosted runtime URL, rebuild with:
-   - `VIBBIT_BOOKMARKLET_RUNTIME_URL="https://your-runtime.example/vibbit-runtime.js" npm run build:bookmarklet`
-7. For higher-risk UI/runtime releases, run:
-   - `npm run audit:smoke`
+1. Identify affected surfaces, intended profile/target, source revision, and approved operations.
+   Inspect `git status --short`; preserve unrelated work.
+2. For an extension release, choose an unused version/tag and keep `package.json` and
+   `extension/manifest.json` versions in sync before the final build/tag. Do not bump extension
+   versions automatically for backend-only or bookmarklet-only work.
+3. Select affected tests using [browser/unit verification guidance](playwright-audits.md).
+   Shared compat edits require source synchronization/checking and consumer tests. Backend-only
+   logic changes need relevant backend tests, not an unrelated extension packaging itinerary.
+4. Build only required artifacts:
+   - Hosted extension: `npm run package` (compat check + hosted build + zip).
+   - Neutral extension: `npm run package:neutral`.
+   - Custom hosted target: follow [explicit profile overrides](../README.md#build-extension).
+   - Bookmarklet: `npm run build:bookmarklet`, setting `VIBBIT_BOOKMARKLET_RUNTIME_URL` in that
+     invocation if a specific hosted URL is required; see [bookmarklet outputs](../apps/bookmarklet/README.md).
+   - If `audit:smoke` already produced the intended unchanged hosted artifact, do not rebuild it
+     just to repeat this step. Audits may change `dist/`; verify the final profile before distribution.
+5. Verify extension `dist/content-script.js`, `dist/manifest.json`, and
+   `artifacts/vibbit-extension.zip` when applicable. Verify bookmarklet runtime, managed loader/install
+   HTML, optional BYOK loader/install HTML, and the embedded runtime URL when applicable.
+6. For affected browser behavior, exercise representative states from the audit guide. Test the
+   intended shipped profile: hosted must not expose BYOK; neutral must retain it. Reload the built
+   extension, then refresh affected MakeCode tabs. Do not overwrite a hosted test build with neutral
+   `npm run build` out of habit. Test the actual bookmarklet flow when it changes.
+7. Record commands, outcomes, artifact profile, and limitations. A mocked flow does not prove
+   real-provider success; live checks require separately authorized target/data/quota use.
 
-## Publish The Extension Release
+## Publish the extension release — only when authorized
 
-Only do this when the downloadable extension zip should change.
-
-1. Push `main`.
-2. Create and push the release tag:
+1. Integrate the verified release revision into `main` and push only with authorization for those
+   operations. Do not merge unrelated work or assume local `main` equals `origin/main`.
+2. Create/push the approved release tag on the verified revision:
    - `git tag vX.Y.Z`
    - `git push origin vX.Y.Z`
-3. Wait for `.github/workflows/release-extension.yml` to finish.
-4. Verify the GitHub release contains:
-   - `vibbit-extension.zip`
-   - `vibbit-extension.zip.sha256`
-   - `vibbit-extension-vX.Y.Z.zip`
-   - `vibbit-extension-vX.Y.Z.zip.sha256`
-5. Verify release metadata and asset presence:
-   - `gh release view vX.Y.Z`
-6. Remember the ordering rule:
-   - publish the GitHub release asset before deploying backend pages or redirects that point at `releases/latest`
+3. Wait for [the release workflow](../.github/workflows/release-extension.yml). A `v*` tag push
+   builds the hosted package and publishes GitHub assets; it is not merely a backup operation.
+   Manual workflow dispatch also requires approval and is not a substitute for this tag flow.
+4. Use `gh release view vX.Y.Z` and verify all four assets:
+   - `vibbit-extension.zip` and `vibbit-extension.zip.sha256`
+   - `vibbit-extension-vX.Y.Z.zip` and `vibbit-extension-vX.Y.Z.zip.sha256`
+   Check downloaded bytes against their checksum when validating the distributable.
+5. Only after required assets are live proceed to an authorized deployment of routes referencing
+   their `releases/latest` URLs. A custom-target local package is not what this hosted workflow builds.
 
-## Deploy Backend And Website
+## Deployment target preflight — unresolved infrastructure history
 
-Do this when backend behaviour, landing-page copy, bookmarklet install/runtime hosting, or download redirects changed.
+Earlier root guidance identifies production `vibbit.tk.sg` as Docker on
+`tinkertanker@dev.tk.sg:Docker/vibbit`. It describes gitignored `deploy.sh` (SSH, pull, rebuild,
+restart) and `docker-compose.yml` (external `devtksg` network). These files are not checked in
+and may not exist in an orb. The [backend guide](../apps/backend/README.md#railway-deployment-option)
+also contains Railway deployment instructions; this does not establish the live site's current host.
 
-1. Push the releasable `main` branch before any server-side pull-based deploy:
-   - `git push origin main`
-2. If bookmarklets use a separately hosted runtime URL, publish the rebuilt runtime first:
-   - upload `artifacts/bookmarklet/vibbit-runtime.js` to the production runtime URL referenced by `VIBBIT_BOOKMARKLET_RUNTIME_URL`
-3. Deploy from the local machine that has the infrastructure files:
-   - `./deploy.sh`
-4. Verify production routes:
-   - `GET /healthz`
-   - `GET /`
-   - `GET /download/vibbit-extension.zip`
-   - `GET /bookmarklet`
-   - `GET /bookmarklet/runtime.js`
-   - `GET /admin/status`
-5. If `/download/vibbit-extension.zip` should resolve to the new GitHub asset, confirm the redirect now points at the latest release.
-6. If the backend hosts the classroom bookmarklet/runtime, confirm `/bookmarklet` and `/bookmarklet/runtime.js` serve the new release.
-7. If bookmarklets use a separately hosted runtime, open the generated install page or bookmarklet link and confirm it loads the newly published runtime.
+Before an authorized deployment, confirm with the operator which environment/account, machine,
+source revision, infrastructure files, and rollback path are current. Do not guess Docker versus
+Railway, create replacement infrastructure, or SSH/deploy merely to resolve this documentation ambiguity.
+Preserve hosted authentication, encryption, origin/endpoint restrictions, and sensitive persisted
+teacher/admin state; do not migrate/delete/overwrite state as an incidental deployment step.
 
-## Browser Validation
+## Deploy backend and website — only for the approved target
 
-Run this after any user-facing extension or runtime change.
+1. Confirm the required source revision is available to the deployment mechanism. For a pull-based
+   deployment, an authorized push must precede the server pull; a local commit alone is insufficient.
+2. If bookmarklets reference a separately hosted runtime, publish that rebuilt runtime to the approved
+   URL before distributing dependent loaders. This publication is its own authorization boundary.
+3. Execute only the confirmed deployment procedure. If the operator confirms the documented Docker
+   setup, inspect the local infrastructure files and run `./deploy.sh` on the machine that owns them.
+   Otherwise follow the confirmed platform procedure, not an assumed fallback.
+4. Verify affected routes read-only: `/healthz`, `/`, `/download/vibbit-extension.zip`, `/bookmarklet`,
+   `/bookmarklet/runtime.js`; include `/admin/status` only with authorized operator access, without
+   exposing its credential or sensitive response. Do not turn a route check into an admin write.
+5. Confirm download redirects resolve to the intended asset and hosted runtime/install pages serve
+   the intended revision. Merely opening a page does not verify generation; real-provider calls and
+   classroom/account creation need their own authorization.
 
-1. Build the extension:
-   - `npm run build`
-2. Reload the unpacked extension from `dist/` in Brave or Chrome.
-3. Refresh any open MakeCode tabs after the extension reload.
-4. Run the smoke flow:
-   - managed generation
-   - revert
-   - compile-error auto-fix
-   - conversion-dialog auto-retry and manual fix
-   - BYOK generation
-5. If bookmarklet behaviour changed, test the bookmarklet flow on a MakeCode page too.
+## Release summary and rollback
 
-## Release Notes
+Record shipped scope/revision, tag/release URL if any, download/runtime status, validation evidence,
+remaining limitations, and the known-good rollback target. Distinguish prepared from published/deployed.
 
-Capture these before closing the release:
+Rollback also changes shared systems and needs explicit approval for its target/action:
 
-- scope shipped
-- tag and GitHub release URL
-- whether `/download/vibbit-extension.zip` now resolves to the new asset
-- whether `/bookmarklet` is updated
-- validation performed
-- any follow-up tasks or known risks
+- Extension: prepare a hotfix, or propose changing `VIBBIT_EXTENSION_DOWNLOAD_URL` to a verified
+  previous zip and redeploying the backend.
+- Backend/site or backend-hosted bookmarklet: propose redeploying a known-good revision with
+  compatible state; do not overwrite current credentials/classrooms.
+- Separately hosted bookmarklet: propose restoring the known-good runtime at its approved URL.
 
-## Rollback
-
-- Bad extension release: cut a hotfix release quickly, or temporarily point `VIBBIT_EXTENSION_DOWNLOAD_URL` at the last known-good zip and redeploy the backend.
-- Bad backend/site deploy: redeploy the previous known-good backend revision.
-- Bad bookmarklet runtime:
-  - backend-hosted bookmarklet: redeploy the previous backend revision
-  - separately hosted runtime: restore the previous `vibbit-runtime.js`
-
-When in doubt, restore the last known-good download/runtime endpoints first, then ship the corrective release.
+An incident does not itself authorize release, infrastructure, or data mutations. Preserve evidence
+and present the concrete recovery action if authorization is missing.

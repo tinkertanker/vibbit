@@ -1,231 +1,86 @@
 # Agent Notes
 
-This repository ships one school-facing runtime that supports both:
-
-- `Managed` mode (backend-driven)
-- `BYOK` mode (provider/model/key entered by the school)
-
-## Source of truth
-
-- Runtime script for shipping/testing: `work.js`
-- Extension build output: `dist/`
-- Packaged zip output: `artifacts/vibbit-extension.zip`
-- Managed backend core: `apps/backend/src/runtime.mjs`
-- Node adapter entrypoint: `apps/backend/src/server.mjs`
-
-`client.js` is legacy and not the primary build source.
-
-## Build a working browser-test version
-
-Use this exact flow when asked to prepare a testable build:
-
-1. Neutral dual-mode build (Managed + BYOK):
-   - `npm run build`
-2. Production code-only package (hosted Managed against `https://vibbit.tk.sg`):
-   - `npm run package` (uses `VIBBIT_BUILD_PROFILE=hosted-managed`)
-3. Verify outputs:
-   - `dist/content-script.js`
-   - `dist/manifest.json`
-   - `artifacts/vibbit-extension.zip`
-4. For local browser testing, load unpacked from `dist/` at `chrome://extensions`.
-   - Neutral: `npm run build` then load `dist/`
-   - Hosted/code-only: `npm run build:hosted` or `npm run package` then load `dist/`
-
-## Bookmarklet build flow
-
-Use this when packaging for users who cannot install browser extensions:
-
-1. Build bookmarklet artefacts (managed + BYOK by default):
-   - `npm run build:bookmarklet`
-2. Build managed-only bookmarklets if needed:
-   - `VIBBIT_BOOKMARKLET_ENABLE_BYOK=false npm run build:bookmarklet`
-3. Verify outputs:
-   - `artifacts/bookmarklet/vibbit-runtime.js`
-   - `artifacts/bookmarklet/bookmarklet-managed.txt`
-   - optional: `artifacts/bookmarklet/bookmarklet-byok.txt`
-
-Use `VIBBIT_BOOKMARKLET_RUNTIME_URL` when generating production bookmarklet links.
-
-## Supported keys and endpoints
-
-### Managed mode
-
-- Classroom auth flow:
-  - Teachers sign in at `{BACKEND}/teacher`, save an OpenAI-compatible API key + base URL, and mint a classroom code
-  - Students enter the classroom code in Vibbit (hosted/code-only builds bake the server URL; self-hosted builds may still show a server field)
-  - Extension calls `POST {BACKEND}/vibbit/connect` and receives a session token
-  - Generation uses that session token on `POST {BACKEND}/vibbit/generate` (routed with the classroom's key/URL)
-- Endpoints:
-  - `GET {BACKEND}/` (informational landing page)
-  - `GET {BACKEND}/healthz`
-  - `GET {BACKEND}/teacher` (teacher portal)
-  - `GET {BACKEND}/admin` (`?admin=<ADMINTOKEN>` operator panel)
-  - `GET {BACKEND}/admin/status`
-  - `GET {BACKEND}/download/vibbit-extension.zip`
-  - `GET {BACKEND}/bookmarklet`
-  - `GET {BACKEND}/bookmarklet/runtime.js`
-  - `GET {BACKEND}/vibbit/config`
-  - `POST {BACKEND}/vibbit/connect`
-  - `POST {BACKEND}/vibbit/generate`
-- Legacy optional app token:
-  - `APP_TOKEN` (Bearer token, only for `SERVER_APP_TOKEN` mode)
-- Payload supports:
-  - `target`, `request`, `currentCode`, `pageErrors`, `conversionDialog` (detected editor/page diagnostics + conversion modal details)
-  - optional managed overrides: `provider`, `model`
-
-### BYOK mode
-
-- OpenAI key -> `https://api.openai.com/v1/chat/completions`
-- Gemini key -> `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
-- OpenRouter key -> `https://openrouter.ai/api/v1/chat/completions`
-
-## Build-time overrides
-
-- `VIBBIT_BACKEND`
-- `VIBBIT_APP_TOKEN`
-
-Example:
-
-```bash
-VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" npm run package
-```
-
-## Managed backend in-repo
-
-- Start backend: `npm run backend:start`
-- Dev backend (watch): `npm run backend:dev`
-- Backend env template: `apps/backend/.env.example`
-- Teacher portal (`/teacher`) lets teachers mint classroom codes with their own OpenAI-compatible key + base URL (Google OAuth or local/dev login)
-- Admin panel can save shared fallback provider keys/models without env vars (persisted via `VIBBIT_STATE_FILE`) and is protected by an admin token (`/admin?admin=...`)
-
-## Deploying the managed backend
-
-Production target: `vibbit.tk.sg` (deployed via Docker on `tinkertanker@dev.tk.sg:Docker/vibbit`)
-
-### Local deployment files (gitignored)
-
-- `deploy.sh` - local script that SSHs to server, pulls latest, rebuilds Docker image, and restarts container
-- `docker-compose.yml` - local Docker Compose config (infrastructure-specific, uses external `devtksg` network)
-- `.codex/` - Claude Code settings and memory
-
-To deploy after any backend changes:
-
-```bash
-./deploy.sh
-```
-
-## Release runbook
-
-For coordinated release work across the extension zip, bookmarklet artefacts, and backend-hosted site/download routes:
-
-- Source of truth: `docs/release.md`
-- Project-local skill: `skills/vibbit-release/SKILL.md`
-
-If the backend download route should point at `releases/latest`, publish the GitHub release asset before deploying the backend update.
-
-## Smoke-test checklist
-
-1. Load extension from `dist/`.
-2. Open a MakeCode project page.
-3. Test `Managed` generation and `Revert`.
-4. Introduce a compile error and confirm generation includes/fixes detected page errors (including empty-prompt auto-fix flow).
-5. Trigger MakeCode's `problem converting your code` modal and confirm auto-retry + `Fix convert error` fallback.
-6. Test `BYOK` generation with at least one provider.
-7. Rebuild + extension reload before re-testing code changes.
-8. After reloading the extension, refresh any open MakeCode tabs before testing again.
-
-## Mandatory post-change browser validation
-
-After finishing any feature or fix that is worth human testing, always do all of the following:
-
-1. Build the extension (`npm run build`).
-2. Update/reload the extension in Chrome using DevTools MCP.
-3. Reload any open MakeCode page tabs before manual verification.
-
-## Auto-reload dev loop (Chrome)
-
-When iterating on extension UI/runtime code, prefer this loop so Chrome reloads the unpacked extension after edits:
-
-1. Start Chrome with remote debugging and a persistent profile, e.g.
-   - `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.chrome-debug-profile"`
-2. Load unpacked extension once from `dist/` at `chrome://extensions`.
-3. Ensure `Developer mode` is enabled (reload button required).
-4. Run:
-   - `npm run dev:watch-reload`
-
-Defaults:
-
-- CDP endpoint: `http://localhost:9222`
-- watched paths: `work.js`, `extension/`
-
-Optional env overrides:
-
-- `VIBBIT_DEVTOOLS_URL` (custom CDP URL)
-- `VIBBIT_EXTENSION_ID` (target extension id instead of manifest name)
-- `VIBBIT_WATCH_PATHS` (comma-separated watch paths)
-- `VIBBIT_RELOAD_DEBOUNCE_MS` (debounce in milliseconds)
-
-## Playwright audit scripts
-
-- `npm run audit:smoke` -> deterministic UI smoke run with screenshot artefacts.
-- `npm run audit:live` -> optional live managed/BYOK verification using secrets.
-- `npm run audit:install` -> installs Chromium for local Playwright runs.
-
-Audit output root:
-
-- `output/playwright/audits/`
-
-Secrets for live audits:
-
-- keep in `.env.audit` (gitignored) or process environment variables.
-- template: `.env.audit.example`.
-
-## Cursor Cloud specific instructions
-
-Cloud agent environment configuration lives in `.cursor/environment.json` and `.cursor/Dockerfile`. On startup, Cursor runs `npm ci && npm run audit:install` to hydrate Node dependencies and Playwright Chromium.
-
-### Quick verification after changes
-
-```bash
-npm run check:compat-core
-npm run build
-npm run package
-npm run audit:smoke
-```
-
-Expected artefacts:
-
-- `dist/content-script.js`
-- `dist/manifest.json`
-- `artifacts/vibbit-extension.zip`
-- `output/playwright/audits/<run>/REPORT.md` plus screenshots
-
-### Backend smoke checks
-
-The managed backend starts without a checked-in `.env` file:
-
-```bash
-npm run backend:start
-curl http://localhost:8787/healthz
-```
-
-Use a tmux session for long-running processes such as the backend dev server.
-
-### Cloud vs local browser validation
-
-Playwright smoke audits are the primary automated verification path in cloud agents. They inject the runtime into MakeCode and exercise managed/BYOK UI flows without a full Chrome extension install.
-
-The DevTools MCP + unpacked-extension loop in the sections above is for local desktop testing. In cloud agents, prefer `npm run audit:smoke` (and `npm run audit:live` when secrets are configured) instead of loading `dist/` in Chrome.
-
-### Secrets for live audits
-
-Add these as Cursor Cloud secrets (or export them in the agent shell) when running `npm run audit:live`:
-
-- `AUDIT_BYOK_OPENAI_KEY` / `AUDIT_BYOK_GEMINI_KEY` / `AUDIT_BYOK_OPENROUTER_KEY` (as needed)
-- `AUDIT_MANAGED_BACKEND` / `AUDIT_MANAGED_APP_TOKEN` (for managed live checks)
-
-See `.env.audit.example` for the full list.
-
-### Provider keys for backend live tests
-
-For end-to-end managed generation against a local backend, configure provider keys via `apps/backend/.env` (copy from `apps/backend/.env.example`) or the `/admin` panel after start.
+Vibbit ships one school-facing runtime with Managed (backend-driven) and BYOK modes.
+
+## Scope and ownership
+
+- `work.js` is the runtime source for both extension and bookmarklet; `client.js` is legacy.
+- `shared/makecode-compat-core.mjs` owns the generated compat block in `work.js`.
+  Edit the shared source, run `npm run sync:compat-core`, then `npm run check:compat-core`;
+  do not hand-edit the generated block. Backend and extension broker also consume this core.
+- `extension/` owns extension packaging inputs, toolbar, options, bridge, and provider broker.
+- `apps/backend/src/runtime.mjs` owns the managed backend; `server.mjs` there is its Node adapter.
+- `dist/` and `artifacts/` are generated outputs, not editing targets.
+  The extension zip is `artifacts/vibbit-extension.zip`.
+- Read the relevant owners and references for the task, not the entire repository by default.
+
+## Privacy and shared-system boundaries
+
+- Managed provider keys stay server-side. Extension BYOK credentials and provider transport
+  stay in trusted extension contexts, never MakeCode DOM/events/localStorage or MAIN-world fetches.
+  Preserve sender checks and toolbar/document-bound, quota-limited generation authorization.
+- Selecting Managed in a neutral build is not the hosted artifact's removal of BYOK capability.
+  Bookmarklet BYOK is page-memory-only, not extension-isolated; page scripts can observe its key.
+- Never expose keys, tokens, credential-bearing URLs, sensitive state, or student/teacher payloads
+  in source, logs, screenshots, or shared artifacts. Gitignored files are not safe to share.
+  Baked client tokens are readable distribution contents, not protected secrets.
+- Preserve hosted authentication, credential encryption, origin and outbound-endpoint restrictions.
+  Do not weaken safety controls to make tests pass. See [privacy details](README.md#supported-keys-and-endpoints).
+- A normal implementation request authorizes scoped local edits, builds, isolated fixture/mock tests,
+  and fixes for introduced failures without repeated permission prompts. Use disposable browser
+  profiles and local backend state; preserve unrelated work. A plan/review-only request authorizes no edits.
+- Obtain specific authorization before merge/push/tag publication, workflow dispatch, releases,
+  deployment/rollback, shared infrastructure/data changes, teacher/admin writes, classroom changes,
+  outbound email, or real-provider calls consuming quota or transmitting data. Local fixture state
+  is distinct from shared school/operator state. Existing credentials, a production URL in a build,
+  or a request to verify do not grant that authorization. Carry forward approval for the exact operation.
+
+## Local build profiles
+
+Run commands from the repository root, with build overrides selected intentionally.
+
+| Intended output | Command |
+| --- | --- |
+| Neutral Managed + BYOK unpacked extension | `npm run build` |
+| Hosted Managed unpacked extension, `https://vibbit.tk.sg` | `npm run build:hosted` |
+| Hosted Managed zip | `npm run package` |
+| Neutral dual-mode zip | `npm run package:neutral` |
+| Bookmarklet runtime and loaders | `npm run build:bookmarklet` |
+
+Extension builds overwrite the same `dist/`; verify `dist/content-script.js` and `dist/manifest.json`
+for the intended profile. Packaging also emits the zip and already checks compat/builds.
+Ordinary `build` does not check compat. Do not stack redundant build/package itineraries.
+`build:hosted`/`package` hardcode the hosted backend and reject a nonempty `VIBBIT_APP_TOKEN`;
+use [build override instructions](README.md#build-extension) for custom targets.
+Bookmarklet output/URL options and its weaker key boundary are in the [bookmarklet guide](apps/bookmarklet/README.md).
+Building a production-targeted artifact does not authorize contacting or deploying that target.
+
+## Task-scoped verification
+
+- Docs-only: check diff, links, commands against source, and policy consistency; no blanket build/browser suite.
+- Logic/backend: targeted `node --test` files; broaden to `npm test` for shared/security changes.
+  Shared compat edits require sync/check plus affected-consumer tests.
+- Runtime/UI: use `npm run audit:smoke` for mocked flows and profile checks. It already builds/packages.
+- Extension broker/options/permissions/manifest/reload: use `npm run audit:extension` with a display
+  or virtual display; smoke injection alone does not prove extension isolation.
+- Editor/Blocks compatibility: use `npm run audit:editor` with affected targets/fixtures.
+  Exercise bookmarklet loader/runtime separately when that behavior changes.
+- For installed-extension testing: build the intended profile, reload the extension, then refresh
+  affected MakeCode tabs before retesting. Use available desktop/cloud tooling, not a required MCP.
+- Inspect rendered affected UI states/screenshots and relevant DOM facts; report executed checks,
+  limitations, and final `dist/` profile. Skipped checks are not passes.
+- `audit:live` needs explicit authorization for real upstream traffic, not merely available secrets.
+  Its legacy managed-token packaging limitation and audit coverage are documented in the reference below.
+- Follow the environment's service lifecycle guidance for long-lived processes (supervised services
+  in Amp orbs); do not assume tmux preserves services in every environment.
+
+## Targeted references
+
+- [Browser audits and desktop/cloud setup](docs/playwright-audits.md)
+- [Backend setup, API, and hosted security configuration](apps/backend/README.md)
+- [Release runbook](docs/release.md) and [release skill](skills/vibbit-release/SKILL.md)
+  for release work only. Backend changes do not automatically authorize deployment.
+  Confirm the documented Docker/SSH versus Railway target ambiguity before an authorized deployment.
+  Publish release assets before deploying routes that depend on their `releases/latest` URLs.
+- Environment setup sources: [Amp orb setup](.agents/setup), [Cursor configuration](.cursor/environment.json),
+  and [Cursor image](.cursor/Dockerfile); do not duplicate their install itineraries here.

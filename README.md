@@ -78,15 +78,34 @@ Outputs:
 - `dist/content-script.js`
 - `dist/manifest.json`
 
-Build-time backend overrides:
+Ordinary builds are neutral Managed + BYOK under default build variables. For a self-hosted backend:
 
 ```bash
-VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="optional-token" npm run build
+VIBBIT_BACKEND="https://your-server.example" npm run build
 ```
+
+Legacy `VIBBIT_APP_TOKEN` overrides are supported by neutral builds for `SERVER_APP_TOKEN` mode,
+but baked tokens are readable in distributed JavaScript, not protected secrets. Never embed provider
+keys or confidential credentials; prefer classroom/session authentication.
+
+`npm run build:hosted` and `npm run package` explicitly target `https://vibbit.tk.sg`, overriding
+an outer `VIBBIT_BACKEND`, and reject a nonempty `VIBBIT_APP_TOKEN`. For a custom HTTPS hosted
+target, use the explicit profile instead (commands run from repository root):
+
+```bash
+npm run check:compat-core
+VIBBIT_BUILD_PROFILE=hosted-managed VIBBIT_BACKEND="https://your-server.example" VIBBIT_APP_TOKEN="" npm run build
+# Only if a zip is needed; package existing dist without rebuilding for vibbit.tk.sg:
+node scripts/package.mjs
+```
+
+All extension builds replace the same `dist/`. Verify the intended profile before loading or packaging.
+Use `npm run package:neutral` for a dual-mode zip; package commands already check compat and build,
+whereas ordinary `build` does not check compat. Local packaging does not publish or deploy anything.
 
 ## Distribute extension (website + GitHub)
 
-Extension packaging is built into the repo:
+Hosted Managed extension packaging is built into the repo:
 
 ```bash
 npm run package
@@ -104,7 +123,9 @@ By default, that backend route redirects to the latest GitHub release asset:
 
 - `https://github.com/tinkertanker/vibbit/releases/latest/download/vibbit-extension.zip`
 
-To ship a new downloadable version on GitHub:
+To ship a new downloadable version on GitHub, first follow the scope, version, verification,
+and operation-specific authorization steps in the [release runbook](docs/release.md).
+The publication mechanism is:
 
 1. Push a release tag (for example `v0.2.1`).
 2. GitHub Actions workflow `.github/workflows/release-extension.yml` builds and packages the extension.
@@ -125,7 +146,7 @@ For users who cannot install the Chrome extension, build bookmarklet artefacts:
 npm run build:bookmarklet
 ```
 
-Default output includes both managed and BYOK bookmarklets (matching the extension):
+Default output includes both Managed and BYOK loaders plus one shared runtime:
 
 - `artifacts/bookmarklet/vibbit-runtime.js`
 - `artifacts/bookmarklet/bookmarklet-managed.txt`
@@ -133,7 +154,7 @@ Default output includes both managed and BYOK bookmarklets (matching the extensi
 - `artifacts/bookmarklet/bookmarklet-byok.txt`
 - `artifacts/bookmarklet/install-byok.html`
 
-To emit managed-only output:
+To omit the BYOK loader/install page (not BYOK capability in the shared runtime):
 
 ```bash
 VIBBIT_BOOKMARKLET_ENABLE_BYOK=false npm run build:bookmarklet
@@ -145,7 +166,9 @@ Set the hosted runtime URL used inside the bookmarklet link:
 VIBBIT_BOOKMARKLET_RUNTIME_URL="https://cdn.example.com/vibbit-runtime.js" npm run build:bookmarklet
 ```
 
-Deploy `artifacts/bookmarklet/vibbit-runtime.js` to that URL, then distribute the generated bookmarklet text or install HTML.
+When publication is authorized, deploy `artifacts/bookmarklet/vibbit-runtime.js` to that URL before
+distributing dependent loaders. See the [bookmarklet guide](apps/bookmarklet/README.md) for its
+page-memory key exposure and baked-token warning; it does not provide extension credential isolation.
 
 ## Backend-hosted bookmarklet (Railway-friendly)
 
@@ -190,29 +213,11 @@ If provider keys are not set in env, open `/admin?admin=<ADMINTOKEN>` and config
 
 ## Deploy backend (monorepo)
 
-Supported hosted deployment target:
-
-- Railway
-
-Deploy button (placeholder until template is published):
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/REPLACE_WITH_TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=vibbit)
-
-See full backend setup and env docs here:
-
-- `apps/backend/README.md`
-
-Recommended teacher flow:
-
-1. Open [Railway New Project](https://railway.com/new) and deploy from GitHub.
-2. Set service root directory to `apps/backend`.
-3. Add required env vars from `apps/backend/.env.example`.
-4. Generate a public domain, mint a classroom code, and share the code (hosted extension students need only the code).
-
-Cheapest hosted option:
-
-- Use one Railway backend service only, attach a volume, and set `VIBBIT_STATE_FILE=/data/vibbit-state.json`.
-- Set Railway hard usage limit to `$1`.
+See [backend configuration and the Railway option](apps/backend/README.md#railway-deployment-option)
+and the [release runbook](docs/release.md). Historical Docker/SSH guidance and Railway instructions
+do not establish the live site's current deployment target; confirm it with the operator before an
+authorized deployment. A backend edit or local package does not authorize deployment, infrastructure
+changes, shared teacher/admin writes, classroom creation, or real-provider usage.
 
 ## Install extension in Chrome (unpacked)
 
@@ -229,36 +234,19 @@ Then:
 4. Click **Load unpacked**.
 5. Select the unzipped folder (or `dist/` for local builds) containing `manifest.json`.
 6. For updates, rebuild/re-download and click **Reload** on the extension card.
+7. Refresh affected MakeCode tabs after reloading the extension before testing again.
 
 ## Browser-test checklist
 
-1. Build/package:
-   - `npm run package`
-2. Confirm artefacts:
-   - `dist/content-script.js`
-   - `dist/manifest.json`
-   - `artifacts/vibbit-extension.zip`
-3. Managed checks after `npm run package` (hosted/code-only):
-   - enter classroom code only (server URL hidden; baked `https://vibbit.tk.sg`)
-   - generate and verify paste + `Revert`
-   - test error-aware flow (empty prompt + page errors)
-   - trigger conversion modal and verify retry + `Fix convert error`
-4. BYOK checks after `npm run build` (neutral dual-mode):
-   - click the toolbar action to arm the tab, then use **Open BYOK Settings** for provider + model + session key
-   - generation, paste, and error-context fixing
-5. Reload extension and refresh MakeCode tabs after each build
+Select affected flows from [representative behavior and evidence](docs/playwright-audits.md#representative-behavior-and-evidence),
+using the intended build profile. Prefer mocked providers and disposable profiles/state for local tests.
+Actual provider calls require authorization for the target/data/quota; credentials alone are not permission.
 
 ## Playwright audits
 
-- `npm run audit:smoke` -> deterministic UI smoke + screenshots
-- `npm run audit:extension` -> real unpacked-extension key/isolation/arming canary (uses Xvfb automatically in Linux orbs)
-- `npm run audit:editor` -> released MakeCode editor valid/invalid/grey-block conversion checks
-- `npm run audit:live` -> optional managed/BYOK live verification
-- `npm run audit:install` -> install Chromium
-
-Audit output:
-
-- `output/playwright/audits/`
+The [audit guide](docs/playwright-audits.md) owns command selection, desktop/cloud setup, coverage
+limits, output profiles, and the known `audit:live` hosted-token limitation. Do not run all audits
+or duplicate their internal build/package steps by default.
 
 Model and Harness policy evaluation, including raw-vs-retry runs, immutable trajectories, adversarial context cases, ablations, Wilson intervals, and paired model comparisons, is documented in `docs/makecode-model-evaluation.md`.
 

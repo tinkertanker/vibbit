@@ -10,8 +10,13 @@ Outputs are written to:
 - `artifacts/bookmarklet/bookmarklet-byok.txt`
 - `artifacts/bookmarklet/install-byok.html`
 
-BYOK-enabled outputs are included by default to match the extension feature set.
-Use `VIBBIT_BOOKMARKLET_ENABLE_BYOK=false` to build managed-only outputs.
+BYOK loader/install outputs are included by default. `VIBBIT_BOOKMARKLET_ENABLE_BYOK=false`
+omits those outputs; it does not strip BYOK code from the shared runtime or provide the
+hosted extension's capability boundary. Each build replaces the bookmarklet output directory.
+
+Bookmarklet BYOK keys live only in page memory until reload, but other scripts on that page
+can observe them. This is not the extension's trusted-context credential isolation.
+Managed provider keys stay on the backend. See [credential boundaries](../../README.md#supported-keys-and-endpoints).
 
 ## Build
 
@@ -29,7 +34,7 @@ You can also run the legacy BYOK variant command:
 npm run build:bookmarklet:byok
 ```
 
-To emit managed-only output:
+To emit only the Managed loader/install page (with the shared runtime unchanged):
 
 ```bash
 VIBBIT_BOOKMARKLET_ENABLE_BYOK=false npm run build:bookmarklet
@@ -45,3 +50,10 @@ Optional runtime overrides:
 
 - `VIBBIT_BACKEND`
 - `VIBBIT_APP_TOKEN`
+
+Baked tokens are readable in the distributed runtime, not protected secrets. Never bake provider
+keys or confidential credentials into a bookmarklet artifact; prefer the Managed classroom/session flow.
+Building artifacts is local preparation, not permission to publish the runtime, change shared hosting,
+or call real providers. Follow the authorized [release flow](../../docs/release.md) and exercise the
+actual loader/runtime on MakeCode when bookmarklet behavior changes. Do not substitute extension-only
+tests for bookmarklet coverage.
