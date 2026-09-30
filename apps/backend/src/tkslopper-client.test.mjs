@@ -823,3 +823,37 @@ test("no retry: an HTTP-date Retry-After uses the injected clock", async () => {
     return true;
   });
 });
+
+test("abort: an error status keeps its mapping when its body read is cut off", async () => {
+  const controller = new AbortController();
+  const fake = createFakeTkslopper({
+    inference: (_index, init) => {
+      setTimeout(() => controller.abort(), 5);
+      return stalledBodyResponse(429, init.signal);
+    }
+  });
+  const { client } = createClient(fake);
+  await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT, signal: controller.signal }), (error) => {
+    assert.ok(error instanceof TkslopperHttpError);
+    assert.equal(error.status, 429);
+    assert.equal(error.retryAfterSeconds, 30);
+    return true;
+  });
+});
+
+test("abort: a fully downloaded answer is kept even if the timer fires just after", async () => {
+  const controller = new AbortController();
+  const fake = createFakeTkslopper({
+    inference: () => ({
+      status: 200,
+      ok: true,
+      headers: new Headers(),
+      text: async () => {
+        controller.abort();
+        return JSON.stringify(chatBody({ content: "paid answer" }));
+      }
+    })
+  });
+  const { client } = createClient(fake);
+  assert.equal(await client.complete({ messages: REPAIR_TRANSCRIPT, signal: controller.signal }), "paid answer");
+});

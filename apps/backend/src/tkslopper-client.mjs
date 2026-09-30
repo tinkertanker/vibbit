@@ -125,7 +125,8 @@ function parseRetryAfterSeconds(headerValue, now = Date.now) {
   return TKSLOPPER_DEFAULT_RETRY_AFTER_SECONDS;
 }
 
-// An abort while the body downloads is still a timeout, never "malformed".
+// An abort that interrupts the body download is a timeout, never "malformed".
+// A body that finished downloading is kept even if the timer fires just after.
 async function readJsonBody(response, signal) {
   let text = "";
   try {
@@ -136,7 +137,6 @@ async function readJsonBody(response, signal) {
     }
     return { ok: false, value: null };
   }
-  throwIfAborted(signal);
   try {
     return { ok: true, value: JSON.parse(text) };
   } catch {
@@ -586,7 +586,14 @@ export function createTkslopperClient({
     }
 
     const headerRequestId = safeRequestId(response.headers.get("x-tkslopper-request-id"));
-    const parsed = await readJsonBody(response, signal);
+    let parsed;
+    try {
+      parsed = await readJsonBody(response, signal);
+    } catch (error) {
+      // The status already arrived; an error keeps its mapping (e.g. 429) if its body read is cut off.
+      if (response.ok) throw error;
+      parsed = { ok: false, value: null };
+    }
     const bodyRequestId = parsed.ok && isObject(parsed.value) ? safeRequestId(parsed.value.request_id) : "";
     const requestId = headerRequestId || bodyRequestId;
 
