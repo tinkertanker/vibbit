@@ -455,7 +455,7 @@ export function createTkslopperClient({
       parsed = await readJsonBody(response, signal);
     } catch {
       log({ event: "tkslopper.exchange", status: response.status, outcome: "timeout" });
-      throw new TkslopperUnavailableError({ status: response.status, phase: "exchange" });
+      throw new TkslopperUnavailableError({ status: 0, code: "exchange_timeout", phase: "exchange" });
     }
     const bodyRequestId = parsed.ok && isObject(parsed.value) ? safeRequestId(parsed.value.request_id) : "";
     const code = parsed.ok && isObject(parsed.value) && isObject(parsed.value.error)
@@ -557,16 +557,37 @@ export function createTkslopperClient({
   };
 
   const complete = async ({ messages, signal, context = {} } = {}) => {
-    const bodyText = JSON.stringify(buildBody(normaliseMessages(messages)));
     const logBase = {
       event: "tkslopper.inference",
       endpoint: selectedEndpoint,
       ...(context.classroomId ? { classroomId: String(context.classroomId) } : {}),
       ...(Number.isFinite(context.attempt) ? { attempt: context.attempt } : {})
     };
+    const tracker = { response: null };
+    try {
+      return await completeAttempt({ messages, signal, logBase, tracker });
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        // Timeouts need a log record too, with the request id when headers arrived.
+        const response = tracker.response;
+        const requestId = response ? safeRequestId(response.headers.get("x-tkslopper-request-id")) : "";
+        log({
+          ...logBase,
+          status: response ? response.status : 0,
+          outcome: "timeout",
+          requestId: requestId || undefined
+        });
+      }
+      throw error;
+    }
+  };
+
+  const completeAttempt = async ({ messages, signal, logBase, tracker }) => {
+    const bodyText = JSON.stringify(buildBody(normaliseMessages(messages)));
 
     let grant = await getGrant(signal);
     let response = await sendOnce(grant, bodyText, signal);
+    tracker.response = response;
     let resent = false;
 
     if (response && (response.status === 401 || response.status === 403)) {
@@ -575,8 +596,10 @@ export function createTkslopperClient({
       // Rejected before any provider call: refresh once and resend once.
       dropGrant(grant);
       await readJsonBody(response, signal);
+      tracker.response = null;
       grant = await getGrant(signal);
       response = await sendOnce(grant, bodyText, signal);
+      tracker.response = response;
       resent = true;
     }
 

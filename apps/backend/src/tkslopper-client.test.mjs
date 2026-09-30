@@ -719,9 +719,18 @@ test("abort: a timeout while the answer downloads is an AbortError, not a protoc
       return stalledBodyResponse(200, init.signal);
     }
   });
-  const { client } = createClient(fake);
-  await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT, signal: controller.signal }), { name: "AbortError" });
+  const { client, logs } = createClient(fake);
+  await assert.rejects(client.complete({
+    messages: REPAIR_TRANSCRIPT,
+    signal: controller.signal,
+    context: { classroomId: "cls_1", attempt: 2 }
+  }), { name: "AbortError" });
   assert.equal(fake.calls.inference.length, 1);
+  const timeoutLog = logs.find((record) => record.event === "tkslopper.inference");
+  assert.deepEqual(
+    { status: timeoutLog.status, outcome: timeoutLog.outcome, classroomId: timeoutLog.classroomId, attempt: timeoutLog.attempt },
+    { status: 200, outcome: "timeout", classroomId: "cls_1", attempt: 2 }
+  );
 });
 
 test("grants: a stalled exchange body times out instead of pinning the shared exchange", async () => {
@@ -731,7 +740,12 @@ test("grants: a stalled exchange body times out instead of pinning the shared ex
       : jsonResponse(200, { grant_id: "g2", access_token: "grant-token-2", token_type: "Bearer", expires_in: 900, capabilities: ["text.chat.v1"] }))
   });
   const { client } = createClient(fake, { exchangeTimeoutMs: 30 });
-  await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT }), TkslopperUnavailableError);
+  await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT }), (error) => {
+    assert.ok(error instanceof TkslopperUnavailableError);
+    assert.equal(error.status, 0);
+    assert.equal(error.code, "exchange_timeout");
+    return true;
+  });
   assert.equal(await client.complete({ messages: REPAIR_TRANSCRIPT }), modelJson());
   assert.equal(fake.calls.exchange.length, 2);
 });
