@@ -28,10 +28,21 @@ import {
   resolveManagedBaseUrlForProvider
 } from "./provider-registry.mjs";
 import { createRateLimitController } from "./rate-limit.mjs";
+import {
+  TkslopperHttpError,
+  TkslopperRefusalError,
+  TkslopperUnavailableError,
+  createAttemptBudget,
+  createTkslopperClient,
+  parseTkslopperConfig
+} from "./tkslopper-client.mjs";
 import { createUsageStore } from "./usage-store.mjs";
 import { compileAndDecompile } from "../../../shared/makecode-decompile.mjs";
 
 const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
+const TKSLOPPER_PROVIDER_LABEL = "managed";
+const TKSLOPPER_REFUSAL_MESSAGE = "The AI service declined this request. Try rephrasing it.";
+const TKSLOPPER_UNAVAILABLE_MESSAGE = "Managed AI is unavailable right now. Please try again later or ask your teacher.";
 const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter", "opencode"];
 const DEFAULT_CORS_HEADERS = "Content-Type, Authorization, X-Vibbit-Class-Code, X-Vibbit-Session";
 const MAX_JSON_BYTES = 256 * 1024;
@@ -471,6 +482,7 @@ function createRuntimeConfig(envInput = {}) {
   if (deployment.isHosted && authMode !== "classroom") {
     throw new Error("Hosted mode requires classroom auth.");
   }
+  const tkslopper = parseTkslopperConfig(env, { isHosted: deployment.isHosted });
 
   return {
     allowOrigin,
@@ -486,7 +498,26 @@ function createRuntimeConfig(envInput = {}) {
     classroomCode,
     classCodeLength,
     sessionTtlMs,
-    deployment
+    deployment,
+    tkslopper
+  };
+}
+
+function isTkslopperClassroom(runtimeConfig, classroomId) {
+  const tkslopper = runtimeConfig && runtimeConfig.tkslopper;
+  if (!tkslopper || !tkslopper.enabled || !classroomId) return false;
+  return tkslopper.allClassrooms || tkslopper.classroomIds.includes(String(classroomId));
+}
+
+function createTkslopperProviderConfig(tkslopper) {
+  return {
+    enabledProviders: [TKSLOPPER_PROVIDER_LABEL],
+    defaultProvider: TKSLOPPER_PROVIDER_LABEL,
+    allowedModels: {},
+    defaultModelFor: () => tkslopper.alias,
+    apiKeyFor: () => "",
+    baseUrlFor: () => "",
+    source: "tkslopper"
   };
 }
 
@@ -657,11 +688,17 @@ async function generateManaged(
   { target, request, currentCode, pageErrors, conversionDialog, provider, model, recentChat },
   runtimeConfig,
   providerConfig,
-  { onUpstreamAttempt, outboundUrlPolicy } = {}
+  { onUpstreamAttempt, outboundUrlPolicy, tkslopperClient, classroomId = "" } = {}
 ) {
   const effectiveProviderConfig = providerConfig || runtimeConfig.providerConfig;
-  const selected = resolveProviderSelection(effectiveProviderConfig, provider, model);
-  const providerBaseUrl = typeof effectiveProviderConfig.baseUrlFor === "function"
+  const useTkslopper = effectiveProviderConfig.source === "tkslopper";
+  if (useTkslopper && !tkslopperClient) {
+    throw new TkslopperUnavailableError({ phase: "config" });
+  }
+  const selected = useTkslopper
+    ? null
+    : resolveProviderSelection(effectiveProviderConfig, provider, model);
+  const providerBaseUrl = !useTkslopper && typeof effectiveProviderConfig.baseUrlFor === "function"
     ? effectiveProviderConfig.baseUrlFor(selected.provider)
     : "";
 
@@ -682,6 +719,15 @@ async function generateManaged(
   const fetchImpl = outboundUrlPolicy && typeof outboundUrlPolicy.fetchSafe === "function"
     ? (url, init) => outboundUrlPolicy.fetchSafe(url, init, { purpose: "managed provider endpoint" })
     : fetch;
+  // The browser gives up on /vibbit/generate after 60 s, so managed-gateway
+  // attempts share one wall-clock budget across the repair loop.
+  const budget = useTkslopper
+    ? createAttemptBudget({
+      attemptTimeoutMs: runtimeConfig.tkslopper.attemptTimeoutMs,
+      totalBudgetMs: runtimeConfig.tkslopper.totalBudgetMs,
+      minAttemptMs: runtimeConfig.tkslopper.minAttemptMs
+    })
+    : null;
 
   const result = await runGenerationLoop({
     target,
@@ -695,9 +741,14 @@ async function generateManaged(
       if (providerCalls >= maxAttempts) {
         throw new Error("Upstream attempt limit reached");
       }
+      const timeoutMs = budget ? budget.nextAttemptTimeoutMs() : runtimeConfig.requestTimeoutMs;
       providerCalls += 1;
+      const attempt = providerCalls;
       try {
         const raw = await withTimeout(async (signal) => {
+          if (useTkslopper) {
+            return tkslopperClient.complete({ messages, signal, context: { classroomId, attempt } });
+          }
           const flat = serializeTranscript(messages);
           return callManagedProvider({
             provider: selected.provider,
@@ -710,12 +761,20 @@ async function generateManaged(
             customBaseUrl: providerBaseUrl,
             fetchImpl
           });
-        }, runtimeConfig.requestTimeoutMs);
+        }, timeoutMs);
         if (typeof onUpstreamAttempt === "function") {
           await onUpstreamAttempt({ success: true, attempt: providerCalls });
         }
         return raw;
       } catch (error) {
+        if (budget && error && error.name === "AbortError" && error.timeoutMs == null) {
+          // Report the managed-gateway limit that fired, not VIBBIT_REQUEST_TIMEOUT_MS.
+          try {
+            error.timeoutMs = timeoutMs;
+          } catch {
+            // Frozen error objects keep the default message.
+          }
+        }
         if (typeof onUpstreamAttempt === "function") {
           await onUpstreamAttempt({ success: false, attempt: providerCalls, error });
         }
@@ -873,6 +932,9 @@ function buildAdminStatus(runtimeConfig, sessionStore, adminProviderState) {
   status.providerModels = providerModels;
   status.providerKeyConfigured = providerKeyConfigured;
   status.providerKeySource = providerKeySource;
+  status.managedGateway = {
+    enabled: Boolean(runtimeConfig.tkslopper && runtimeConfig.tkslopper.enabled)
+  };
   status.adminProviderConfig = {
     hasOverrides: hasAdminProviderOverrides(adminProviderState),
     updatedAt: adminProviderState && adminProviderState.updatedAt ? adminProviderState.updatedAt : null
@@ -1427,6 +1489,11 @@ function buildStartupInfo(runtimeConfig, { listenUrl, effectiveProviderConfig } 
   if (getAuthMode(runtimeConfig) === "app-token") {
     info.push("[Vibbit backend] SERVER_APP_TOKEN auth enabled");
   }
+  const tkslopper = runtimeConfig.tkslopper;
+  if (tkslopper && tkslopper.enabled) {
+    const scope = tkslopper.allClassrooms ? "all classrooms" : `${tkslopper.classroomIds.length} classroom(s)`;
+    info.push(`[Vibbit backend] Managed gateway enabled for ${scope}: endpoint=${tkslopper.endpoint} alias=${tkslopper.alias}`);
+  }
   return info;
 }
 
@@ -1435,7 +1502,7 @@ function classifyRequestError(error, runtimeConfig) {
   if (isTimeout) {
     return {
       status: 504,
-      message: `Generation timed out after ${runtimeConfig.requestTimeoutMs}ms`
+      message: `Generation timed out after ${Number.isFinite(error.timeoutMs) ? error.timeoutMs : runtimeConfig.requestTimeoutMs}ms`
     };
   }
 
@@ -1582,6 +1649,27 @@ export function createBackendRuntime(options = {}) {
     usageStore
   });
   const getEffectiveProviderConfig = () => buildEffectiveProviderConfig(runtimeConfig.providerConfig, adminProviderState);
+  const tkslopperConfig = runtimeConfig.tkslopper;
+  // Operator-configured endpoints, so they bypass the teacher endpoint policy.
+  const tkslopperClient = tkslopperConfig.enabled
+    ? createTkslopperClient({
+      controlPlaneUrl: tkslopperConfig.controlPlaneUrl,
+      gatewayUrl: tkslopperConfig.gatewayUrl,
+      serviceCredential: tkslopperConfig.serviceCredential,
+      endpoint: tkslopperConfig.endpoint,
+      alias: tkslopperConfig.alias,
+      maxOutputTokens: tkslopperConfig.maxOutputTokens,
+      temperature: tkslopperConfig.temperature,
+      grantTtlSeconds: tkslopperConfig.grantTtlSeconds,
+      fetchImpl: typeof options.tkslopperFetch === "function" ? options.tkslopperFetch : undefined,
+      now: typeof options.now === "function" ? options.now : undefined,
+      randomUUID: typeof options.randomUUID === "function" ? options.randomUUID : undefined,
+      logger: typeof options.tkslopperLogger === "function"
+        ? options.tkslopperLogger
+        : (record) => console.info("[Vibbit tkslopper]", JSON.stringify(record))
+    })
+    : null;
+  const tkslopperProviderConfig = tkslopperClient ? createTkslopperProviderConfig(tkslopperConfig) : null;
   const publicOriginFor = (request, requestUrl) => resolvePublicOrigin(request, requestUrl, deployment);
 
   const resolveProviderConfigForSession = async (session) => {
@@ -1598,6 +1686,9 @@ export function createBackendRuntime(options = {}) {
       || sessionVersion !== classroom.sessionVersion
     ) {
       throw Object.assign(new Error("Classroom session is no longer valid"), { statusCode: 401 });
+    }
+    if (tkslopperProviderConfig && isTkslopperClassroom(runtimeConfig, classroom.id)) {
+      return tkslopperProviderConfig;
     }
     const profile = teacherPortal.store.getEffectiveCredentialProfileForClassroom(classroom);
     if (!profile) {
@@ -1671,7 +1762,17 @@ export function createBackendRuntime(options = {}) {
       const classHeader = request.headers.get("x-vibbit-class-code");
       const candidateCode = providedCode || classHeader;
       const teacherClassroom = teacherPortal.store.findClassroomByCode(candidateCode);
-      if (teacherClassroom) {
+      if (teacherClassroom && tkslopperProviderConfig && isTkslopperClassroom(runtimeConfig, teacherClassroom.id)) {
+        // Managed-gateway classrooms do not need a tested teacher credential profile.
+        classroomId = teacherClassroom.id;
+        classroomName = String(teacherClassroom.name || "").trim().slice(0, 120);
+        publicProviderConfig = getPublicServerConfig(runtimeConfig, tkslopperProviderConfig);
+        sessionMeta = {
+          student: String((body && body.student) || "").trim().slice(0, 120),
+          classroomId,
+          sessionVersion: teacherClassroom.sessionVersion
+        };
+      } else if (teacherClassroom) {
         const effectiveProfile = teacherPortal.store.getEffectiveCredentialProfileForClassroom(teacherClassroom);
         if (!effectiveProfile) {
           return respondJson(503, {
@@ -1988,6 +2089,8 @@ export function createBackendRuntime(options = {}) {
             providerConfig,
             {
               outboundUrlPolicy,
+              tkslopperClient,
+              classroomId,
               onUpstreamAttempt: async ({ success }) => {
                 await usageStore.recordUpstreamAttempt(classroomId || "legacy", { success });
               }
@@ -2004,6 +2107,18 @@ export function createBackendRuntime(options = {}) {
           if (typeof reservation.release === "function") reservation.release();
         }
       } catch (error) {
+        if (error instanceof TkslopperRefusalError) {
+          return respondJson(422, { error: TKSLOPPER_REFUSAL_MESSAGE }, origin, runtimeConfig);
+        }
+        if (error instanceof TkslopperUnavailableError) {
+          return respondJson(503, { error: TKSLOPPER_UNAVAILABLE_MESSAGE }, origin, runtimeConfig);
+        }
+        if (error instanceof TkslopperHttpError && (error.status === 402 || error.status === 429)) {
+          return respondRateLimited(origin, {
+            reason: "managed_ai_limited",
+            retryAfterSeconds: error.retryAfterSeconds
+          });
+        }
         if (error && Number.isFinite(error.statusCode)) {
           return respondJson(error.statusCode, {
             error: error.message || "Request failed"
