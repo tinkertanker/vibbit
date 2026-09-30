@@ -767,6 +767,14 @@ async function generateManaged(
         }
         return raw;
       } catch (error) {
+        if (budget && error && error.name === "AbortError" && error.timeoutMs == null) {
+          // Report the managed-gateway limit that fired, not VIBBIT_REQUEST_TIMEOUT_MS.
+          try {
+            error.timeoutMs = timeoutMs;
+          } catch {
+            // Frozen error objects keep the default message.
+          }
+        }
         if (typeof onUpstreamAttempt === "function") {
           await onUpstreamAttempt({ success: false, attempt: providerCalls, error });
         }
@@ -1494,7 +1502,7 @@ function classifyRequestError(error, runtimeConfig) {
   if (isTimeout) {
     return {
       status: 504,
-      message: `Generation timed out after ${runtimeConfig.requestTimeoutMs}ms`
+      message: `Generation timed out after ${Number.isFinite(error.timeoutMs) ? error.timeoutMs : runtimeConfig.requestTimeoutMs}ms`
     };
   }
 

@@ -384,7 +384,9 @@ test("budget: each attempt is aborted at min(attempt timeout, remaining budget)"
   const elapsed = Date.now() - startedAt;
   assert.equal(result.response.status, 504);
   assert.equal(fake.calls.inference.length, 1);
-  assert.ok(elapsed < 4000, `attempt should stop near the 1000 ms budget, took ${elapsed} ms`);
+  assert.ok(elapsed < 2500, `attempt should stop near the 1000 ms budget, took ${elapsed} ms`);
+  assert.deepEqual(JSON.parse(result.text), { error: "Generation timed out after 1000ms" });
+  assert.equal(runtime.usageStore.getToday("cls_managed").failures, 1);
 });
 
 test("config: hosted mode rejects a missing or non-https tkslopper setting at startup", () => {
@@ -458,4 +460,60 @@ test("secrets: credential, grant and gateway URLs stay out of responses, status 
   assert.equal(attemptLog.requestId, "req_gateway_1");
   assert.deepEqual(attemptLog.usage, { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 });
   assert.equal(fake.calls.exchange.length, 1);
+});
+
+test("responses endpoint works end to end through the runtime", async () => {
+  const fake = createFakeTkslopper({
+    inference: () => jsonResponse(200, {
+      id: "resp_test",
+      object: "response",
+      model: "text.response.v1",
+      status: "completed",
+      output: [{
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: JSON.stringify({ feedback: ["ok"], code: OK_CODE }), annotations: [] }]
+      }]
+    })
+  });
+  const { runtime } = createRuntime({ env: { ...TKSLOPPER_ENV, VIBBIT_TKSLOPPER_ENDPOINT: "responses" }, fake });
+  const managed = await connect(runtime, "MANAG");
+  assert.equal(managed.body.defaultModel, "text.response.v1");
+  const result = await generate(runtime, managed.body.sessionToken);
+  assert.equal(result.response.status, 200, result.text);
+  assert.equal(JSON.parse(result.text).code, OK_CODE);
+  assert.equal(fake.calls.inference[0].url, `${GATEWAY_URL}/v1/responses`);
+  assert.deepEqual(Object.keys(fake.calls.inference[0].body).sort(), ["input", "max_output_tokens", "model", "stream"]);
+});
+
+test("errors: control-plane 5xx or network failure shows managed AI unavailable", async () => {
+  const exchanges = [
+    () => jsonResponse(503, { error: { message: "down", type: "error", code: "internal_error" } }),
+    () => { throw new TypeError("fetch failed"); }
+  ];
+  for (const exchange of exchanges) {
+    const fake = createFakeTkslopper({ exchange });
+    const { runtime } = createRuntime({ env: TKSLOPPER_ENV, fake });
+    const managed = await connect(runtime, "MANAG");
+    const result = await generate(runtime, managed.body.sessionToken);
+    assert.equal(result.response.status, 503);
+    assert.match(JSON.parse(result.text).error, /Managed AI is unavailable/);
+    assert.equal(fake.calls.inference.length, 0);
+  }
+});
+
+test("errors: a malformed gateway answer is a generic 500, recorded as a failed attempt", async () => {
+  const fake = createFakeTkslopper({
+    inference: () => jsonResponse(200, { choices: [] })
+  });
+  const { runtime } = createRuntime({ env: TKSLOPPER_ENV, fake });
+  const managed = await connect(runtime, "MANAG");
+  const result = await generate(runtime, managed.body.sessionToken);
+  assert.equal(result.response.status, 500);
+  assert.deepEqual(JSON.parse(result.text), { error: "Managed AI returned a malformed chat completion" });
+  assert.equal(fake.calls.inference.length, 1);
+  const usage = runtime.usageStore.getToday("cls_managed");
+  assert.equal(usage.upstreamAttempts, 1);
+  assert.equal(usage.failures, 1);
 });

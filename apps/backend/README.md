@@ -241,7 +241,7 @@ Managed gateway (tkslopper, optional, off by default):
 - `VIBBIT_TKSLOPPER_ENDPOINT` (`chat` default, or `responses`)
 - `VIBBIT_TKSLOPPER_ALIAS` (default `text.chat.v1`, or `text.response.v1` for `responses`)
 - `VIBBIT_TKSLOPPER_MAX_OUTPUT_TOKENS` (default `3072`)
-- `VIBBIT_TKSLOPPER_TEMPERATURE` (empty omits it; `0` to `2`)
+- `VIBBIT_TKSLOPPER_TEMPERATURE` (chat only; empty omits it; `0` to `2`)
 - `VIBBIT_TKSLOPPER_GRANT_TTL_SECONDS` (default `900`)
 - `VIBBIT_TKSLOPPER_ATTEMPT_TIMEOUT_MS` (default `45000`), `VIBBIT_TKSLOPPER_TOTAL_BUDGET_MS` (default `55000`), `VIBBIT_TKSLOPPER_MIN_ATTEMPT_MS` (default `10000`)
 
@@ -282,6 +282,12 @@ per classroom.
 - **Timeouts:** each attempt is aborted at `min(VIBBIT_TKSLOPPER_ATTEMPT_TIMEOUT_MS, remaining budget)`;
   a new attempt does not start once less than `VIBBIT_TKSLOPPER_MIN_ATTEMPT_MS` of
   `VIBBIT_TKSLOPPER_TOTAL_BUDGET_MS` remains, keeping the whole call inside the browser's 60 second limit.
+  The student then gets the usual `504` "Generation timed out" response. Set the attempt timeout a few
+  seconds above the gateway route deadline; a route deadline much above 45 seconds cannot fit the
+  browser limit.
+- **Outbound policy:** the control plane and gateway URLs are operator configuration, not teacher
+  input, so they do not pass through the teacher endpoint allow-list or DNS pinning. Both calls refuse
+  redirects, and hosted mode requires https. Configure only Tinkertanker-operated hosts.
 - **Logs:** per attempt, only classroom id, attempt number, HTTP status, finish reason or status, usage
   counts and the tkslopper request id.
 - **Status:** `/admin/status` reports `managedGateway.enabled` only. Connect responses for managed

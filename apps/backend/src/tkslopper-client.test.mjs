@@ -633,3 +633,193 @@ test("config: validates URLs, credential, endpoint, alias and numbers without ec
     /VIBBIT_TKSLOPPER_GATEWAY_URL must use https in hosted mode/
   );
 });
+
+function abortError() {
+  const error = new Error("aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+// A 200/401 whose body never finishes until the request signal aborts.
+function stalledBodyResponse(status, signal) {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers: new Headers(),
+    text: () => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(abortError()), { once: true });
+    })
+  };
+}
+
+test("abort: an already-aborted signal starts no exchange and no request", async () => {
+  const fake = createFakeTkslopper();
+  const { client } = createClient(fake);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT, signal: controller.signal }), { name: "AbortError" });
+  assert.equal(fake.calls.exchange.length, 0);
+  assert.equal(fake.calls.inference.length, 0);
+});
+
+test("abort: timeout during a 401 body read never leaves an unhandled rejection", async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const controller = new AbortController();
+    const fake = createFakeTkslopper({
+      inference: (_index, init) => {
+        setTimeout(() => controller.abort(), 5);
+        return stalledBodyResponse(401, init.signal);
+      },
+      exchange: (index) => (index === 1
+        ? jsonResponse(200, { grant_id: "g1", access_token: "grant-token-1", token_type: "Bearer", expires_in: 900, capabilities: ["text.chat.v1"] })
+        : jsonResponse(403, errorBody("authorization_failed")))
+    });
+    const { client } = createClient(fake);
+    await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT, signal: controller.signal }), { name: "AbortError" });
+    // A later caller may still trigger the failing exchange; it must reject to that caller only.
+    await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT }), TkslopperUnavailableError);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+    assert.equal(fake.calls.inference.length, 1);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("abort: a caller that stops waiting leaves no unhandled rejection when the exchange fails", async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const controller = new AbortController();
+    const fake = createFakeTkslopper({
+      exchange: () => new Promise((resolve) => {
+        setTimeout(() => resolve(jsonResponse(403, errorBody("authorization_failed"))), 20);
+      })
+    });
+    const { client } = createClient(fake);
+    setTimeout(() => controller.abort(), 5);
+    await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT, signal: controller.signal }), { name: "AbortError" });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.deepEqual(unhandled, []);
+    assert.equal(fake.calls.inference.length, 0);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("abort: a timeout while the answer downloads is an AbortError, not a protocol error", async () => {
+  const controller = new AbortController();
+  const fake = createFakeTkslopper({
+    inference: (_index, init) => {
+      setTimeout(() => controller.abort(), 5);
+      return stalledBodyResponse(200, init.signal);
+    }
+  });
+  const { client } = createClient(fake);
+  await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT, signal: controller.signal }), { name: "AbortError" });
+  assert.equal(fake.calls.inference.length, 1);
+});
+
+test("grants: a stalled exchange body times out instead of pinning the shared exchange", async () => {
+  const fake = createFakeTkslopper({
+    exchange: (index, init) => (index === 1
+      ? stalledBodyResponse(200, init.signal)
+      : jsonResponse(200, { grant_id: "g2", access_token: "grant-token-2", token_type: "Bearer", expires_in: 900, capabilities: ["text.chat.v1"] }))
+  });
+  const { client } = createClient(fake, { exchangeTimeoutMs: 30 });
+  await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT }), TkslopperUnavailableError);
+  assert.equal(await client.complete({ messages: REPAIR_TRANSCRIPT }), modelJson());
+  assert.equal(fake.calls.exchange.length, 2);
+});
+
+test("grants: invalid grant bodies surface as unavailable without inference", async () => {
+  const bodies = [
+    { access_token: "", expires_in: 900 },
+    { access_token: "grant-token-x", expires_in: 0 },
+    { access_token: "grant-token-x" },
+    { expires_in: 900 }
+  ];
+  for (const body of bodies) {
+    const fake = createFakeTkslopper({ exchange: () => jsonResponse(200, body) });
+    const { client } = createClient(fake);
+    await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT }), TkslopperUnavailableError);
+    assert.equal(fake.calls.inference.length, 0);
+  }
+  const nonJson = createFakeTkslopper({ exchange: () => new Response("<html>", { status: 200 }) });
+  await assert.rejects(createClient(nonJson).client.complete({ messages: REPAIR_TRANSCRIPT }), TkslopperUnavailableError);
+});
+
+test("grants: a short-lived grant is still reused for half its lifetime", async () => {
+  let clock = 5_000_000;
+  const fake = createFakeTkslopper({ expiresIn: 60 });
+  const { client } = createClient(fake, { now: () => clock });
+  await client.complete({ messages: REPAIR_TRANSCRIPT });
+  clock += 20_000;
+  await client.complete({ messages: REPAIR_TRANSCRIPT });
+  assert.equal(fake.calls.exchange.length, 1);
+  clock += 11_000;
+  await client.complete({ messages: REPAIR_TRANSCRIPT });
+  assert.equal(fake.calls.exchange.length, 2);
+});
+
+test("grants: a grant rejected on the resend is not reused by the next request", async () => {
+  const fake = createFakeTkslopper({
+    inference: [
+      () => jsonResponse(401, errorBody("authentication_failed")),
+      () => jsonResponse(401, errorBody("authentication_failed")),
+      () => gatewayOk()
+    ]
+  });
+  const { client } = createClient(fake);
+  await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT }), TkslopperUnavailableError);
+  await client.complete({ messages: REPAIR_TRANSCRIPT });
+  assert.equal(fake.calls.exchange.length, 3);
+  assert.equal(fake.calls.inference[2].headers.Authorization, "Bearer grant-token-3");
+});
+
+function gatewayOk() {
+  return jsonResponse(200, chatBody({ content: modelJson() }));
+}
+
+test("responses: temperature is never sent and is rejected in config", async () => {
+  const fake = createFakeTkslopper({ inference: () => jsonResponse(200, responsesBody()) });
+  const { client } = createClient(fake, { endpoint: "responses", alias: "text.response.v1", temperature: 0.5 });
+  await client.complete({ messages: REPAIR_TRANSCRIPT });
+  assert.equal("temperature" in fake.calls.inference[0].body, false);
+  assert.throws(() => parseTkslopperConfig({
+    VIBBIT_TKSLOPPER_ENABLED: "true",
+    VIBBIT_TKSLOPPER_CONTROL_PLANE_URL: CONTROL_PLANE_URL,
+    VIBBIT_TKSLOPPER_GATEWAY_URL: GATEWAY_URL,
+    VIBBIT_TKSLOPPER_SERVICE_CREDENTIAL: SERVICE_CREDENTIAL,
+    VIBBIT_TKSLOPPER_ENDPOINT: "responses",
+    VIBBIT_TKSLOPPER_TEMPERATURE: "0.5"
+  }), /chat endpoint only/);
+});
+
+test("config: base URLs that already end in /v1 are rejected", () => {
+  for (const key of ["VIBBIT_TKSLOPPER_CONTROL_PLANE_URL", "VIBBIT_TKSLOPPER_GATEWAY_URL"]) {
+    assert.throws(() => parseTkslopperConfig({
+      VIBBIT_TKSLOPPER_ENABLED: "true",
+      VIBBIT_TKSLOPPER_CONTROL_PLANE_URL: CONTROL_PLANE_URL,
+      VIBBIT_TKSLOPPER_GATEWAY_URL: GATEWAY_URL,
+      VIBBIT_TKSLOPPER_SERVICE_CREDENTIAL: SERVICE_CREDENTIAL,
+      [key]: "https://host.tkslopper.test/v1/"
+    }), /without \/v1/);
+  }
+});
+
+test("no retry: an HTTP-date Retry-After uses the injected clock", async () => {
+  const clock = Date.parse("2026-09-30T00:00:00Z");
+  const fake = createFakeTkslopper({
+    inference: () => jsonResponse(429, errorBody("rate_limit_exceeded"), { "Retry-After": "Wed, 30 Sep 2026 00:00:45 GMT" })
+  });
+  const { client } = createClient(fake, { now: () => clock });
+  await assert.rejects(client.complete({ messages: REPAIR_TRANSCRIPT }), (error) => {
+    assert.equal(error.retryAfterSeconds, 45);
+    return true;
+  });
+});

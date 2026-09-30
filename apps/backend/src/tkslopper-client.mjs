@@ -17,7 +17,7 @@ export const TKSLOPPER_SERVICE_CREDENTIAL_PATTERN = /^tksvc_[A-Za-z0-9_-]{8,64}_
 export const TKSLOPPER_DEFAULT_RETRY_AFTER_SECONDS = 30;
 
 const GRANT_REFRESH_MARGIN_MS = 60 * 1000;
-const EXCHANGE_TIMEOUT_MS = 10 * 1000;
+const DEFAULT_EXCHANGE_TIMEOUT_MS = 10 * 1000;
 const REQUEST_ID_PATTERN = /^[\x21-\x7E]{1,128}$/;
 const ERROR_CODE_PATTERN = /^[a-z_]{1,64}$/;
 
@@ -112,7 +112,7 @@ function safeErrorCode(value) {
   return ERROR_CODE_PATTERN.test(text) ? text : "";
 }
 
-function parseRetryAfterSeconds(headerValue) {
+function parseRetryAfterSeconds(headerValue, now = Date.now) {
   const text = String(headerValue || "").trim();
   if (!text) return TKSLOPPER_DEFAULT_RETRY_AFTER_SECONDS;
   if (/^\d+$/.test(text)) {
@@ -120,18 +120,23 @@ function parseRetryAfterSeconds(headerValue) {
   }
   const date = Date.parse(text);
   if (Number.isFinite(date)) {
-    return Math.min(3600, Math.max(1, Math.ceil((date - Date.now()) / 1000)));
+    return Math.min(3600, Math.max(1, Math.ceil((date - now()) / 1000)));
   }
   return TKSLOPPER_DEFAULT_RETRY_AFTER_SECONDS;
 }
 
-async function readJsonBody(response) {
+// An abort while the body downloads is still a timeout, never "malformed".
+async function readJsonBody(response, signal) {
   let text = "";
   try {
     text = await response.text();
-  } catch {
+  } catch (error) {
+    if ((error && error.name === "AbortError") || (signal && signal.aborted)) {
+      throw createAbortError("Managed AI attempt aborted");
+    }
     return { ok: false, value: null };
   }
+  throwIfAborted(signal);
   try {
     return { ok: true, value: JSON.parse(text) };
   } catch {
@@ -266,13 +271,14 @@ function parseServiceUrl(env, key, { requireHttps }) {
     throw new Error(`${key} must be an absolute URL.`);
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error(`${key} must use https.`);
+    throw new Error(`${key} must use http or https.`);
   }
   if (requireHttps && parsed.protocol !== "https:") {
     throw new Error(`${key} must use https in hosted mode.`);
   }
   if (parsed.username || parsed.password) throw new Error(`${key} must not include credentials.`);
   if (parsed.search || parsed.hash) throw new Error(`${key} must not include a query or hash.`);
+  if (/\/v1\/?$/i.test(parsed.pathname)) throw new Error(`${key} must be the base URL without /v1.`);
   return (parsed.origin + parsed.pathname).replace(/\/+$/, "");
 }
 
@@ -311,6 +317,9 @@ export function parseTkslopperConfig(envInput = {}, { isHosted = false } = {}) {
   const maxOutputTokens = parseStrictInteger(env, "VIBBIT_TKSLOPPER_MAX_OUTPUT_TOKENS", 3072, { min: 1, max: 131072 });
   const temperatureRaw = readEnvString(env, "VIBBIT_TKSLOPPER_TEMPERATURE");
   let temperature = null;
+  if (temperatureRaw && endpoint !== "chat") {
+    throw new Error("VIBBIT_TKSLOPPER_TEMPERATURE applies to the chat endpoint only.");
+  }
   if (temperatureRaw) {
     temperature = Number(temperatureRaw);
     if (!/^\d+(\.\d+)?$/.test(temperatureRaw) || temperature < 0 || temperature > 2) {
@@ -365,7 +374,9 @@ export function createAttemptBudget({
     nextAttemptTimeoutMs() {
       const remaining = totalBudgetMs - (now() - startedAt);
       if (remaining < minAttemptMs) {
-        throw createAbortError("Managed AI generate budget exhausted");
+        const error = createAbortError("Managed AI generate budget exhausted");
+        error.timeoutMs = totalBudgetMs;
+        throw error;
       }
       return Math.min(attemptTimeoutMs, remaining);
     }
@@ -384,7 +395,8 @@ export function createTkslopperClient({
   fetchImpl,
   now = Date.now,
   randomUUID = () => globalThis.crypto.randomUUID(),
-  logger = () => {}
+  logger = () => {},
+  exchangeTimeoutMs = DEFAULT_EXCHANGE_TIMEOUT_MS
 } = {}) {
   const selectedEndpoint = TKSLOPPER_ENDPOINTS.includes(endpoint) ? endpoint : "chat";
   const selectedAlias = String(alias || "").trim()
@@ -410,13 +422,22 @@ export function createTkslopperClient({
 
   const exchangeGrant = async () => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), EXCHANGE_TIMEOUT_MS);
+    // Covers headers and body, so a stalled control plane cannot pin the shared exchange.
+    const timeoutId = setTimeout(() => controller.abort(), exchangeTimeoutMs);
+    try {
+      return await exchangeGrantWithSignal(controller.signal);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
+  const exchangeGrantWithSignal = async (signal) => {
     let response;
     try {
       response = await doFetch(tokenUrl, {
         method: "POST",
         redirect: "error",
-        signal: controller.signal,
+        signal,
         headers: {
           Authorization: `Bearer ${credential}`,
           "Content-Type": "application/json"
@@ -426,12 +447,16 @@ export function createTkslopperClient({
     } catch {
       log({ event: "tkslopper.exchange", status: 0 });
       throw new TkslopperUnavailableError({ phase: "exchange" });
-    } finally {
-      clearTimeout(timeoutId);
     }
 
     const requestId = safeRequestId(response.headers.get("x-tkslopper-request-id"));
-    const parsed = await readJsonBody(response);
+    let parsed;
+    try {
+      parsed = await readJsonBody(response, signal);
+    } catch {
+      log({ event: "tkslopper.exchange", status: response.status, outcome: "timeout" });
+      throw new TkslopperUnavailableError({ status: response.status, phase: "exchange" });
+    }
     const bodyRequestId = parsed.ok && isObject(parsed.value) ? safeRequestId(parsed.value.request_id) : "";
     const code = parsed.ok && isObject(parsed.value) && isObject(parsed.value.error)
       ? safeErrorCode(parsed.value.error.code)
@@ -462,15 +487,20 @@ export function createTkslopperClient({
     ) {
       throw new TkslopperUnavailableError({ status: response.status, code: "invalid_grant", phase: "exchange" });
     }
+    const lifetimeMs = grant.expires_in * 1000;
     return {
       accessToken: grant.access_token,
-      expiresAt: now() + grant.expires_in * 1000
+      expiresAt: now() + lifetimeMs,
+      // Short-lived grants (capped by the environment) still get reused for half their life.
+      refreshMarginMs: Math.min(GRANT_REFRESH_MARGIN_MS, lifetimeMs / 2)
     };
   };
 
   // Single-flight: concurrent callers share one in-flight exchange.
   const getGrant = (signal) => {
-    if (cachedGrant && cachedGrant.expiresAt - now() > GRANT_REFRESH_MARGIN_MS) {
+    // Check before starting an exchange nobody would await.
+    throwIfAborted(signal);
+    if (cachedGrant && cachedGrant.expiresAt - now() > cachedGrant.refreshMarginMs) {
       return Promise.resolve(cachedGrant);
     }
     if (!inflightExchange) {
@@ -482,6 +512,8 @@ export function createTkslopperClient({
         .finally(() => {
           inflightExchange = null;
         });
+      // Callers may stop waiting; the shared promise must never reject unobserved.
+      inflightExchange.catch(() => {});
     }
     return raceWithSignal(inflightExchange, signal);
   };
@@ -496,7 +528,8 @@ export function createTkslopperClient({
     const body = selectedEndpoint === "responses"
       ? { model: selectedAlias, input: messages, max_output_tokens: maxOutputTokens, stream: false }
       : { model: selectedAlias, messages, max_tokens: maxOutputTokens, stream: false };
-    if (temperature != null) body.temperature = temperature;
+    // Temperature is a chat-only knob; the Responses body stays strict.
+    if (temperature != null && selectedEndpoint === "chat") body.temperature = temperature;
     return body;
   };
 
@@ -539,9 +572,9 @@ export function createTkslopperClient({
     if (response && (response.status === 401 || response.status === 403)) {
       const rejectedRequestId = safeRequestId(response.headers.get("x-tkslopper-request-id"));
       log({ ...logBase, status: response.status, requestId: rejectedRequestId || undefined });
-      await readJsonBody(response);
       // Rejected before any provider call: refresh once and resend once.
       dropGrant(grant);
+      await readJsonBody(response, signal);
       grant = await getGrant(signal);
       response = await sendOnce(grant, bodyText, signal);
       resent = true;
@@ -553,7 +586,7 @@ export function createTkslopperClient({
     }
 
     const headerRequestId = safeRequestId(response.headers.get("x-tkslopper-request-id"));
-    const parsed = await readJsonBody(response);
+    const parsed = await readJsonBody(response, signal);
     const bodyRequestId = parsed.ok && isObject(parsed.value) ? safeRequestId(parsed.value.request_id) : "";
     const requestId = headerRequestId || bodyRequestId;
 
@@ -569,10 +602,12 @@ export function createTkslopperClient({
         requestId: requestId || undefined
       });
       if (response.status === 401 || response.status === 403) {
+        // Do not hand the rejected grant to the next request.
+        dropGrant(grant);
         throw new TkslopperUnavailableError({ status: response.status, code, requestId });
       }
       const retryAfterSeconds = response.status === 402 || response.status === 429
-        ? parseRetryAfterSeconds(response.headers.get("retry-after"))
+        ? parseRetryAfterSeconds(response.headers.get("retry-after"), now)
         : 0;
       throw new TkslopperHttpError(`Managed AI request failed (HTTP ${response.status})`, {
         status: response.status,
