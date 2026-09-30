@@ -232,11 +232,67 @@ Provider keys/models (legacy shared fallback):
 
 If these are omitted, set provider keys/models via `/admin` (legacy) or per-classroom in `/teacher`.
 
+Managed gateway (tkslopper, optional, off by default):
+
+- `VIBBIT_TKSLOPPER_ENABLED` (default `false`)
+- `VIBBIT_TKSLOPPER_CLASSROOM_IDS` (comma list of teacher classroom ids, or `*`)
+- `VIBBIT_TKSLOPPER_CONTROL_PLANE_URL`, `VIBBIT_TKSLOPPER_GATEWAY_URL` (base URLs without `/v1`; https in hosted mode)
+- `VIBBIT_TKSLOPPER_SERVICE_CREDENTIAL` (secret `tksvc_<id>_<secret>`, backend only)
+- `VIBBIT_TKSLOPPER_ENDPOINT` (`chat` default, or `responses`)
+- `VIBBIT_TKSLOPPER_ALIAS` (default `text.chat.v1`, or `text.response.v1` for `responses`)
+- `VIBBIT_TKSLOPPER_MAX_OUTPUT_TOKENS` (default `3072`)
+- `VIBBIT_TKSLOPPER_TEMPERATURE` (empty omits it; `0` to `2`)
+- `VIBBIT_TKSLOPPER_GRANT_TTL_SECONDS` (default `900`)
+- `VIBBIT_TKSLOPPER_ATTEMPT_TIMEOUT_MS` (default `45000`), `VIBBIT_TKSLOPPER_TOTAL_BUDGET_MS` (default `55000`), `VIBBIT_TKSLOPPER_MIN_ATTEMPT_MS` (default `10000`)
+
+See [Managed gateway (tkslopper)](#managed-gateway-tkslopper) for behaviour and rollback.
+
 For local implementation/tests, prefer mocked upstreams, disposable fixture accounts, and an isolated
 `VIBBIT_STATE_FILE`. Real account save/test can call a provider and consume quota. Shared teacher/admin
 writes, classroom changes, outbound email, real-provider calls, and deployment require specific
 authorization; available credentials are not permission. Never expose keys, state, or sensitive
 school data in logs/artifacts, or weaken hosted security settings to make local tests pass.
+
+## Managed gateway (tkslopper)
+
+Vibbit can route selected teacher classrooms through Tinkertanker's shared inference gateway
+(tkslopper) instead of the teacher's credential profile. It is off by default and feature-flagged
+per classroom.
+
+- **What stays in Vibbit:** prompts, the repair loop, compile/decompile validation, `{feedback, code}`
+  parsing, class codes, sessions, per-classroom rate limits, usage counters and all user-facing errors.
+  Classroom sessions still cannot override provider or model.
+- **Credential:** one backend-only tkslopper service credential, exchanged at the control plane
+  (`POST /v1/token`) for a short-lived grant. The grant is cached in memory, refreshed when fewer than
+  60 seconds remain, and concurrent requests share one exchange. Neither the credential nor the grant
+  is logged, stored or returned. Browser code never holds tkslopper credentials.
+- **Quota:** every Vibbit request shares one tkslopper principal. Vibbit's own session and classroom
+  limits stay authoritative for fairness; tkslopper only enforces the outer budget.
+- **Requests:** `POST /v1/chat/completions` (or `/v1/responses`) with the capability alias as `model`,
+  explicit `max_tokens`, `stream: false`, the unmodified repair transcript, and a new `Idempotency-Key`
+  for every physical request. Temperature is sent only when configured.
+- **Outcomes:** only a complete answer is used. A truncated or incomplete answer counts as empty, so the
+  existing bounded empty retry runs. A refusal returns "The AI service declined this request. Try
+  rephrasing it." and is not repaired.
+- **No automatic retries:** a gateway `401`/`403` drops the grant, re-exchanges once and resends once;
+  a second rejection returns "Managed AI is unavailable". `402`/`429` return Vibbit's usual `429`
+  (`Retry-After` honoured, otherwise 30 seconds). Other failures, network errors and timeouts are
+  reported without retrying, because a provider attempt may already have been charged. There is no
+  fallback to a direct provider during a request.
+- **Timeouts:** each attempt is aborted at `min(VIBBIT_TKSLOPPER_ATTEMPT_TIMEOUT_MS, remaining budget)`;
+  a new attempt does not start once less than `VIBBIT_TKSLOPPER_MIN_ATTEMPT_MS` of
+  `VIBBIT_TKSLOPPER_TOTAL_BUDGET_MS` remains, keeping the whole call inside the browser's 60 second limit.
+- **Logs:** per attempt, only classroom id, attempt number, HTTP status, finish reason or status, usage
+  counts and the tkslopper request id.
+- **Status:** `/admin/status` reports `managedGateway.enabled` only. Connect responses for managed
+  classrooms report provider `managed` and the alias as the model.
+
+Startup fails if the flag is on and a URL, the credential or another setting is missing or invalid.
+
+**Rollback:** set `VIBBIT_TKSLOPPER_ENABLED=false` (or remove the classroom id) and restart. Classrooms
+return to their teacher credential profiles; no state migration is needed. If tkslopper operators
+kill-switch the Vibbit environment, students see "Managed AI is unavailable" rather than an error page.
+Roll out one classroom at a time and keep teacher credential profiles until canary acceptance.
 
 ## Railway deployment option
 

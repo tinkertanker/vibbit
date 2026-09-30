@@ -31,6 +31,7 @@ This repo ships one Vibbit runtime supporting both:
   - `GET {BACKEND}/bookmarklet`
   - `GET {BACKEND}/bookmarklet/runtime.js`
 - Teacher classrooms accept OpenAI, OpenRouter, OpenCode, Gemini, or a custom OpenAI-compatible base URL (LiteLLM / Claude-compatible proxies). Custom public hosts require `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST`; localhost/private gateways need self-hosted mode plus `VIBBIT_ALLOW_PRIVATE_ENDPOINTS=true`. The URL must expose a `/chat/completions` endpoint (or equivalent path normalised to `/v1`).
+- Optionally, operators can route allow-listed classrooms through Tinkertanker's managed gateway (tkslopper) with a backend-only service credential. It is off by default; see [Managed gateway (tkslopper)](apps/backend/README.md#managed-gateway-tkslopper).
 - Request payload supports:
   - `target`, `request`, `currentCode`, `pageErrors`, `conversionDialog`
   - optional managed overrides: `provider`, `model`
