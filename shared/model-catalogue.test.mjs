@@ -75,13 +75,23 @@ test("metadata cannot provide transport instructions and invalid configured orig
 test("Contributor disclosure survives renamed catalogue labels and offline saved/custom models", async () => {
   const id = "go/responses/muse-spark-1.2-contributor";
   const catalogue = createModelCatalogue({ origin: "https://gateway.test", fetchImpl: async () => Response.json({
-    object: "list", version: 1, data: [{ id: "muse-spark-1.2-contributor", provider: "opencode-go", display_name: "Muse", tier: "premium", is_default: false }]
+    object: "list", version: 1, data: [
+      { id: "deepseek-v4-flash", provider: "opencode-go", display_name: "DeepSeek", tier: "economy", is_default: true },
+      { id: "muse-spark-1.2-contributor", provider: "opencode-go", display_name: "Muse", tier: "premium", is_default: false }
+    ]
   }) });
-  assert.match((await catalogue.load()).opencode[0].label, /trains on data/);
+  assert.match((await catalogue.load()).opencode[1].label, /trains on data/);
   const offline = createModelCatalogue();
   assert.match(offline.labelFor(id, "Saved/custom · " + id), /trains on data/);
   assert.equal(offline.labelFor("gpt-6-luna", "Luna"), "Luna");
   assert.equal(offline.labelFor(id, "Muse (trains on data)"), "Muse (trains on data)");
+  assert.equal(offline.trainsOnData("meta/MUSE-SPARK-1.2-CONTRIBUTOR:free,openai/gpt-6-luna"), true);
+  for (const is_default of [true, false]) {
+    const unsafeDefault = createModelCatalogue({ origin: "https://gateway.test", fetchImpl: async () => Response.json({
+      object: "list", version: 1, data: [{ id: "muse-spark-1.2-contributor", provider: "opencode-go", display_name: "Muse", tier: "premium", is_default }]
+    }) });
+    assert.deepEqual(await unsafeDefault.load(), unsafeDefault.fallback, "Neither explicit nor first-row defaults may select a training model");
+  }
   const reserved = createModelCatalogue({ origin: "https://gateway.test", fetchImpl: async () => Response.json({
     object: "list", version: 1, data: [{ id: "responses", provider: "opencode-go", display_name: "Reserved", tier: "economy", is_default: true }]
   }) });

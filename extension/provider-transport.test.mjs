@@ -174,6 +174,19 @@ test("Anthropic separates system text, preserves correction turns, and returns o
 });
 
 test("Anthropic refuses to apply refused or truncated output", async () => {
+  for (const model of ["claude-3-haiku-20240307", "claude-sonnet-4-5", "custom-claude-id"]) {
+    assert.equal(await callByokProvider({
+      provider: "anthropic", model, apiKey: "fixture", messages: MESSAGES, thinkHarder: true,
+      fetchImpl: async (_, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.model, model);
+        assert.equal(body.thinking, undefined);
+        assert.equal(body.output_config, undefined);
+        assert.equal(body.max_tokens, 3072);
+        return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: "legacy answer" }] });
+      }
+    }), "legacy answer");
+  }
   for (const stop_reason of ["refusal", "max_tokens", "model_context_window_exceeded"]) {
     await assert.rejects(callByokProvider({
       provider: "anthropic", apiKey: "fixture", messages: MESSAGES,

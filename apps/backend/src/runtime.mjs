@@ -1294,7 +1294,7 @@ function renderBookmarkletInstallPage({ bookmarkletHref, runtimeUrl, byokEnabled
   ].join("");
 }
 
-function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken, modelPresets, managedModelLabel) {
+function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken, modelPresets, managedModelLabel, modelCatalogue) {
   const status = buildAdminStatus(runtimeConfig, sessionStore, adminProviderState);
   const authHint = adminAuthToken
     ? "Admin token auth is enabled. Open this page with <code>?admin=...</code>, or send <code>X-Vibbit-Admin-Token</code>, or <code>Authorization: Bearer ...</code>."
@@ -1379,7 +1379,7 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProvider
     "<div class=\"grid\">",
     `<div class=\"metric\"><div class=\"label\">Auth mode</div><div class=\"value\">${escapeHtml(status.authMode)}</div></div>`,
     `<div class=\"metric\"><div class=\"label\">Default provider</div><div class=\"value\">${escapeHtml(status.defaultProvider)}</div></div>`,
-    `<div class=\"metric\"><div class=\"label\">Default model</div><div class=\"value\">${escapeHtml(status.defaultModel)}</div></div>`,
+    `<div class=\"metric\"><div class=\"label\">Default model</div><div class=\"value\">${escapeHtml(modelCatalogue.labelFor(status.defaultModel))}</div></div>`,
     managedModelLabel ? `<div class="metric"><div class="label">Managed gateway model</div><div class="value">${escapeHtml(managedModelLabel)}</div></div>` : "",
     `<div class=\"metric\"><div class=\"label\">Active sessions</div><div class=\"value\">${escapeHtml(status.activeSessions)}</div></div>`,
     "</div>",
@@ -1387,6 +1387,7 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProvider
     "<div class=\"card\">",
     "<h2>Provider Setup</h2>",
     "<p>You can configure provider defaults and API keys here. Leave API key fields blank to keep the current value.</p>",
+    "<p>Muse Contributor trains on submitted data. Choose it only if your school permits this.</p>",
     saveNotice,
     `<form method="POST" action="${escapeHtml(saveConfigUrl)}">`,
     "<div class=\"grid\">",
@@ -2012,7 +2013,7 @@ export function createBackendRuntime(options = {}) {
         return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
       }
       const [presets, managedModelLabel] = await Promise.all([modelCatalogue.load(), getManagedModelLabel()]);
-      const html = renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken, presets, managedModelLabel);
+      const html = renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken, presets, managedModelLabel, modelCatalogue);
       return respondHtml(200, html, origin, runtimeConfig);
     }
 

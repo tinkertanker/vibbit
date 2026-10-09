@@ -601,6 +601,7 @@ function renderDashboardPage({
             <label>Default model
               <input type="text" name="defaultModel" list="current-models" value="${escapeHtml(profile.defaultModel)}" maxlength="160" required />
             </label>
+            <p class="hint">Muse Contributor trains on submitted data. Choose it only if your school permits this.</p>
             <label>API key ${profile.hasApiKey ? "(leave blank to keep the saved key)" : ""}
               <input type="password" name="apiKey" autocomplete="off" placeholder="${profile.hasApiKey ? "••••••••" : "sk-..."}" />
             </label>
@@ -761,6 +762,7 @@ function renderDashboardPage({
         <label>Default model (optional)
           <input type="text" name="defaultModel" value="" maxlength="160" list="current-models" placeholder="Leave blank for the provider default" />
         </label>
+        <p class="hint">Muse Contributor trains on submitted data. Choose it only if your school permits this.</p>
         <datalist id="current-models">
           ${Object.entries(modelPresets).flatMap(([provider, models]) => models.map((model) =>
             `<option value="${escapeHtml(model.id)}">${escapeHtml(providerDisplayName(provider) + " · " + model.label + (model.default ? " (default)" : ""))}</option>`

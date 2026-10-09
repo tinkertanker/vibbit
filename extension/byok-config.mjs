@@ -27,7 +27,7 @@ export function supportsByokThinkHarder(provider, model) {
   const safeProvider = normaliseByokProvider(provider);
   const safeModel = normaliseByokModel(safeProvider, model);
   if (safeProvider === "openai") return safeModel === "gpt-5.6-luna" || /^gpt-6[.-]/.test(safeModel);
-  if (safeProvider === "anthropic") return true;
+  if (safeProvider === "anthropic") return /^claude-(?:haiku|sonnet|opus)-5-5(?:-|$)/.test(safeModel);
   if (safeProvider === "gemini") return false;
   if (safeProvider === "openrouter") {
     return new Set([

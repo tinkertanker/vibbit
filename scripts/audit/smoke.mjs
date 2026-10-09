@@ -408,6 +408,13 @@ async function runNeutralUiSmoke(page) {
     `mode=${setupDefault.modeValue}, modeRowHidden=${setupDefault.modeRowHidden}, byokVisible=${setupDefault.byokProviderVisible}.`
   );
 
+  await page.selectOption("#setup-prov", "opencode");
+  await page.fill("#setup-model", "go/responses/muse-spark-1.2-contributor");
+  await page.locator("#setup-model").blur();
+  pushCheck("05a Setup Contributor disclosure", await page.locator("#setup-model-warning").isVisible(), "Training warning remains visible with the datalist closed.");
+  await page.screenshot({ path: path.join(runDir, "contributor-setup.png") });
+  await page.fill("#setup-model", "go/deepseek-v4-flash");
+  await page.selectOption("#setup-prov", "openai");
   await page.selectOption("#setup-mode", "managed");
   await page.waitForTimeout(400);
   const managedState = await page.evaluate(() => {
@@ -698,6 +705,12 @@ async function runNeutralUiSmoke(page) {
 
   await page.click("#gear");
   await page.selectOption("#set-prov", "opencode");
+  await page.fill("#set-model", "invalid model");
+  await page.dispatchEvent("#set-model", "change");
+  pushCheck("12a Bookmarklet invalid model feedback", await page.locator("#set-model").evaluate((input) => !input.validity.valid), "Invalid IDs are rejected instead of silently saved.");
+  await page.fill("#set-model", "");
+  await page.dispatchEvent("#set-model", "change");
+  pushCheck("12b Bookmarklet blank restores catalogue default", await page.locator("#set-model").inputValue() === "go/deepseek-v4-flash", "Visible selection agrees with the persisted catalogue default.");
   await page.fill("#set-model", "go/hy3");
   await page.dispatchEvent("#set-model", "change");
   await page.fill("#set-key", "smoke-dummy-key");
@@ -723,6 +736,9 @@ async function runNeutralUiSmoke(page) {
   await page.click("#gear");
   await page.fill("#set-model", "go/responses/muse-spark-1.2-contributor");
   await page.dispatchEvent("#set-model", "change");
+  await page.locator("#set-model").blur();
+  pushCheck("13a Settings Contributor disclosure", await page.locator("#set-model-warning").isVisible(), "Saved selection visibly discloses training outside the suggestion list.");
+  await page.screenshot({ path: path.join(runDir, "contributor-settings.png") });
   await page.click("#back");
   await page.fill("#p", "Create another tiny byok program");
   await page.click("#go");

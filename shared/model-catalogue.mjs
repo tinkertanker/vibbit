@@ -12,7 +12,8 @@ export function createModelCatalogue({ origin = "", fetchImpl = globalThis.fetch
     ]
   };
   const providers = ["openai", "anthropic", "gemini", "deepseek", "openrouter", "opencode-go", "opencode-zen"];
-  const labelFor = (id, label = id) => /(?:^|\/)muse-spark-1\.2-contributor$/.test(id) && !/trains on data/i.test(label)
+  const trainsOnData = (id) => String(id).split(/[\s,]+/).some((model) => /(?:^|\/)muse-spark-1\.2-contributor(?::[\w-]+)?$/i.test(model));
+  const labelFor = (id, label = id) => trainsOnData(id) && !/trains on data/i.test(label)
     ? `${label} (trains on data)` : label;
   const validId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/.test(value)
     && !value.includes("://") && !value.split("/").some((part) => !part || part === "." || part === "..");
@@ -51,6 +52,8 @@ export function createModelCatalogue({ origin = "", fetchImpl = globalThis.fetch
       const id = access ? `${access}/${responses ? "responses/" : ""}${item.id}` : item.id;
       (result[provider] ||= []).push({ id, label: labelFor(id, `${access ? (access === "go" ? "Go" : "Zen") + " · " : ""}${item.display_name} · ${item.tier}`), default: item.is_default && access !== "zen" });
     }
+    // Training models require an explicit choice, never a metadata-selected default.
+    if (Object.values(result).some((items) => trainsOnData((items.find((item) => item.default) || items[0]).id))) throw new Error("training_model_default");
     return { ...fallback, ...result };
   }
 
@@ -97,5 +100,5 @@ export function createModelCatalogue({ origin = "", fetchImpl = globalThis.fetch
     })();
     try { return await pending; } finally { pending = null; }
   }
-  return { fallback, load, validId, labelFor, gatewayOrigin };
+  return { fallback, load, validId, labelFor, trainsOnData, gatewayOrigin };
 }

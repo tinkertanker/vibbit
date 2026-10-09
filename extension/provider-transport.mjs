@@ -91,8 +91,10 @@ export async function callByokProvider({
         max_tokens: maxTokens,
         system: transcript.filter((turn) => turn.role === "system").map((turn) => turn.content).join("\n\n"),
         messages: conversation,
-        thinking: { type: "adaptive" },
-        output_config: { effort: harder ? "high" : "low" }
+        ...(supportsByokThinkHarder(safeProvider, safeModel) ? {
+          thinking: { type: "adaptive" },
+          output_config: { effort: harder ? "high" : "low" }
+        } : {})
       })
     }, safeProvider);
     if (["refusal", "max_tokens", "model_context_window_exceeded"].includes(data?.stop_reason)) {

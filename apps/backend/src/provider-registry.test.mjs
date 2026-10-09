@@ -309,6 +309,18 @@ test("Anthropic server credentials use native Messages and exclude thinking from
     }
   });
   assert.equal(text, "answer");
+  for (const model of ["claude-3-haiku-20240307", "claude-sonnet-4-5", "custom-claude-id"]) {
+    assert.equal(await callManagedProvider({
+      provider: "anthropic", model, apiKey: "fixture", system: "sys", user: "hello",
+      fetchImpl: async (_, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.model, model);
+        assert.equal(body.thinking, undefined);
+        assert.equal(body.output_config, undefined);
+        return Response.json({ stop_reason: "end_turn", content: [{ type: "text", text: "legacy answer" }] });
+      }
+    }), "legacy answer");
+  }
   for (const stop_reason of ["refusal", "max_tokens", "model_context_window_exceeded"]) {
     await assert.rejects(callManagedProvider({
       provider: "anthropic", apiKey: "fixture", system: "sys", user: "hello",

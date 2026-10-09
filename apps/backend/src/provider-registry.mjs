@@ -161,8 +161,10 @@ export async function callManagedProvider({
         max_tokens: maxTokens,
         system: transcript.filter((turn) => turn.role === "system").map((turn) => turn.content).join("\n\n"),
         messages: transcript.filter((turn) => turn.role !== "system"),
-        thinking: { type: "adaptive" },
-        output_config: { effort: "low" }
+        ...(/^claude-(?:haiku|sonnet|opus)-5-5(?:-|$)/.test(selectedModel) ? {
+          thinking: { type: "adaptive" },
+          output_config: { effort: "low" }
+        } : {})
       })
     });
     if (!response.ok) throw new Error(`Anthropic error (${response.status})`);

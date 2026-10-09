@@ -68,7 +68,8 @@ const EXTENSION_RUNTIME_REVISION = "source";
       ]
     };
     const providers = ["openai", "anthropic", "gemini", "deepseek", "openrouter", "opencode-go", "opencode-zen"];
-    const labelFor = (id, label = id) => /(?:^|\/)muse-spark-1\.2-contributor$/.test(id) && !/trains on data/i.test(label)
+    const trainsOnData = (id) => String(id).split(/[\s,]+/).some((model) => /(?:^|\/)muse-spark-1\.2-contributor(?::[\w-]+)?$/i.test(model));
+    const labelFor = (id, label = id) => trainsOnData(id) && !/trains on data/i.test(label)
       ? `${label} (trains on data)` : label;
     const validId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/.test(value)
       && !value.includes("://") && !value.split("/").some((part) => !part || part === "." || part === "..");
@@ -107,6 +108,8 @@ const EXTENSION_RUNTIME_REVISION = "source";
         const id = access ? `${access}/${responses ? "responses/" : ""}${item.id}` : item.id;
         (result[provider] ||= []).push({ id, label: labelFor(id, `${access ? (access === "go" ? "Go" : "Zen") + " · " : ""}${item.display_name} · ${item.tier}`), default: item.is_default && access !== "zen" });
       }
+      // Training models require an explicit choice, never a metadata-selected default.
+      if (Object.values(result).some((items) => trainsOnData((items.find((item) => item.default) || items[0]).id))) throw new Error("training_model_default");
       return { ...fallback, ...result };
     }
 
@@ -153,7 +156,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
       })();
       try { return await pending; } finally { pending = null; }
     }
-    return { fallback, load, validId, labelFor, gatewayOrigin };
+    return { fallback, load, validId, labelFor, trainsOnData, gatewayOrigin };
   }
   // END_MODEL_CATALOGUE
   const modelCatalogue = createModelCatalogue({ origin: TKSLOPPER_GATEWAY_ORIGIN });
@@ -168,7 +171,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
 
   const supportsThinkHarder = (provider, model) => {
     if (provider === "openai") return model === "gpt-5.6-luna" || /^gpt-6[.-]/.test(model);
-    if (provider === "anthropic") return true;
+    if (provider === "anthropic") return /^claude-(?:haiku|sonnet|opus)-5-5(?:-|$)/.test(model);
     if (provider === "openrouter") return OPENROUTER_THINK_MODELS.has(model);
     if (provider === "opencode") return true;
     return false;
@@ -390,7 +393,8 @@ const EXTENSION_RUNTIME_REVISION = "source";
     /* BYOK: model */
     + '  <div id="setup-byok-model" style="display:grid;gap:4px">'
     + '    <label for="setup-model" style="' + S_LABEL + '">Model</label>'
-    + '    <input id="setup-model" list="setup-model-options" maxlength="160" style="' + S_INPUT + '"><datalist id="setup-model-options"></datalist>'
+    + '    <input id="setup-model" list="setup-model-options" aria-describedby="setup-model-warning" maxlength="160" style="' + S_INPUT + '"><datalist id="setup-model-options"></datalist>'
+    + '    <span id="setup-model-warning" role="status" style="font-size:11px;color:#fbbf24" hidden>Muse Contributor trains on submitted data.</span>'
     + '  </div>'
 
     /* BYOK: API key */
@@ -499,7 +503,8 @@ const EXTENSION_RUNTIME_REVISION = "source";
     /* BYOK: model */
     + '  <div id="set-byok-model" style="display:grid;gap:4px">'
     + '    <label for="set-model" style="' + S_LABEL + '">Model</label>'
-    + '    <input id="set-model" list="set-model-options" maxlength="160" style="' + S_INPUT + '"><datalist id="set-model-options"></datalist>'
+    + '    <input id="set-model" list="set-model-options" aria-describedby="set-model-warning" maxlength="160" style="' + S_INPUT + '"><datalist id="set-model-options"></datalist>'
+    + '    <span id="set-model-warning" role="status" style="font-size:11px;color:#fbbf24" hidden>Muse Contributor trains on submitted data.</span>'
     + '  </div>'
 
     /* BYOK: API key */
@@ -833,6 +838,17 @@ const EXTENSION_RUNTIME_REVISION = "source";
     } else {
       selectEl.value = presets[0]?.id || "";
     }
+    $("#" + selectEl.id + "-warning").hidden = !modelCatalogue.trainsOnData(selectEl.value);
+  };
+
+  const normaliseModelInput = (input, provider) => {
+    input.value = input.value.trim();
+    if (!input.value) populateModels(input, provider);
+    const ids = provider === "openrouter" ? parseModelList(input.value) : [input.value];
+    const valid = ids.length > 0 && ids.every(modelCatalogue.validId);
+    input.setCustomValidity(valid ? "" : "Enter a model ID without spaces or a URL.");
+    if (!valid) input.reportValidity();
+    return valid;
   };
 
   /* ── mode-dependent field visibility ─────────────────────── */
@@ -1746,8 +1762,13 @@ const EXTENSION_RUNTIME_REVISION = "source";
     populateModels(setupModel, setupProv.value, modelSelections.get(setupProv.value));
     setupKey.value = getStoredProviderKey(setupProv.value);
   };
-  setupModel.oninput = () => modelSelections.set(setupProv.value, setupModel.value);
-  setModel.oninput = () => modelSelections.set(setProv.value, setModel.value);
+  for (const [input, provider] of [[setupModel, setupProv], [setModel, setProv]]) {
+    input.oninput = () => {
+      modelSelections.set(provider.value, input.value);
+      input.setCustomValidity("");
+      $("#" + input.id + "-warning").hidden = !modelCatalogue.trainsOnData(input.value);
+    };
+  }
 
   const showSetupError = (message) => {
     if (!setupError) return;
@@ -1792,6 +1813,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
       }
       setupKey.style.borderColor = "#29324e";
       if (!EXTENSION_BUILD) {
+        if (!normaliseModelInput(setupModel, setupProv.value)) return;
         storageSet(STORAGE_PROVIDER, setupProv.value);
         storageSet(STORAGE_MODEL, setupModel.value);
         setStoredProviderKey(setupProv.value, key);
@@ -1862,6 +1884,8 @@ const EXTENSION_RUNTIME_REVISION = "source";
 
   setModel.onchange = () => {
     if (EXTENSION_BUILD) return;
+    if (!normaliseModelInput(setModel, setProv.value)) return;
+    modelSelections.set(setProv.value, setModel.value);
     storageSet(STORAGE_MODEL, setModel.value);
     refreshThinkHarderVisibility();
   };
@@ -1878,6 +1902,8 @@ const EXTENSION_RUNTIME_REVISION = "source";
         setStatus("Settings opened");
         return;
       }
+      if (!normaliseModelInput(setModel, setProv.value)) return;
+      storageSet(STORAGE_MODEL, setModel.value);
       setStoredProviderKey(setProv.value, setKey.value.trim());
       setStatus("Key held for this page");
       logLine("BYOK API key is held only in memory until this page reloads.");
@@ -4128,7 +4154,9 @@ const EXTENSION_RUNTIME_REVISION = "source";
   };
 
   const callAnthropic = (key, model, system, user, signal) => {
-    const harder = storageGet(STORAGE_THINK_HARDER) === "1";
+    const selectedModel = model || "claude-haiku-5-5";
+    const adaptive = supportsThinkHarder("anthropic", selectedModel);
+    const harder = adaptive && storageGet(STORAGE_THINK_HARDER) === "1";
     return withTimeout(
       fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -4141,12 +4169,14 @@ const EXTENSION_RUNTIME_REVISION = "source";
           "anthropic-dangerous-direct-browser-access": "true"
         },
         body: JSON.stringify({
-          model: model || "claude-haiku-5-5",
+          model: selectedModel,
           max_tokens: harder ? 16384 : MAXTOK,
           system,
           messages: [{ role: "user", content: user }],
-          thinking: { type: "adaptive" },
-          output_config: { effort: harder ? "high" : "low" }
+          ...(adaptive ? {
+            thinking: { type: "adaptive" },
+            output_config: { effort: harder ? "high" : "low" }
+          } : {})
         })
       }).then((response) => {
         if (!response.ok) throw new Error("Anthropic error (" + response.status + ")");

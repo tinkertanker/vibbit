@@ -35,6 +35,7 @@ function populateModels(selected) {
     model.list.appendChild(option);
   }
   model.value = selected || presets.find((item) => item.default)?.id || presets[0]?.id || defaultByokModel(provider.value);
+  document.querySelector("#model-warning").hidden = !catalogue.trainsOnData(model.value);
 }
 
 function showStatus(message, error = false) {
@@ -63,7 +64,10 @@ async function load() {
   document.querySelector("#settings").inert = false;
 }
 
-model.addEventListener("input", () => selections.set(provider.value, model.value));
+model.addEventListener("input", () => {
+  selections.set(provider.value, model.value);
+  document.querySelector("#model-warning").hidden = !catalogue.trainsOnData(model.value);
+});
 provider.addEventListener("change", async () => {
   populateModels(selections.get(provider.value));
   try {

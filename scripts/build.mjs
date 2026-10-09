@@ -97,7 +97,7 @@ function replaceMarkedSection(source, name, replacement) {
 function stripHostedPageByokInternals(source) {
   let hosted = replaceMarkedSection(source, "PAGE_BYOK_CONFIG", [
     "  const MODEL_PRESETS = { openai: [], anthropic: [], gemini: [], openrouter: [], opencode: [] };",
-    "  const modelCatalogue = { labelFor: (id, label) => label || id };",
+    "  const modelCatalogue = { labelFor: (id, label) => label || id, trainsOnData: () => false };",
     "  const supportsThinkHarder = () => false;"
   ].join("\n"));
   hosted = replaceMarkedSection(hosted, "PAGE_BYOK_KEY_STATE", [
