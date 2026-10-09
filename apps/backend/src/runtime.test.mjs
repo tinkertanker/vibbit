@@ -16,6 +16,14 @@ async function fetchRuntime(pathname) {
   return runtime.fetch(new Request(`https://example.test${pathname}`));
 }
 
+test("Anthropic never inherits the generic provider key", async () => {
+  const runtime = createBackendRuntime({ env: { VIBBIT_API_KEY: "generic-fixture", VIBBIT_ADMIN_TOKEN: "fixture-admin" } });
+  const response = await runtime.fetch(new Request("https://example.test/admin/status", { headers: { "X-Vibbit-Admin-Token": "fixture-admin" } }));
+  const status = await response.json();
+  assert.equal(status.providerKeyConfigured.openai, true);
+  assert.equal(status.providerKeyConfigured.anthropic, false);
+});
+
 test("serves favicon svg for root and /api-prefixed requests", async () => {
   for (const pathname of ["/favicon.svg", "/api/favicon.svg"]) {
     const response = await fetchRuntime(pathname);

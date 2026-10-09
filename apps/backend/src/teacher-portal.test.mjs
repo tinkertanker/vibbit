@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import { createBackendRuntime } from "./runtime.mjs";
 import { normaliseApiBaseUrl } from "./classroom-store.mjs";
 import { followTeacherForm } from "./teacher-test-helpers.mjs";
@@ -28,6 +29,84 @@ test("normaliseApiBaseUrl adds /v1 for OpenAI-compatible and LiteLLM roots", () 
   assert.equal(normaliseApiBaseUrl("https://api.openai.com"), "https://api.openai.com/v1");
   assert.equal(normaliseApiBaseUrl("http://localhost:4000"), "http://localhost:4000/v1");
   assert.equal(normaliseApiBaseUrl("https://openrouter.ai/api/v1"), "https://openrouter.ai/api/v1");
+});
+
+test("new AI accounts resolve provider defaults while explicit saved models stay unchanged", async () => {
+  const runtime = createClassroomRuntime();
+  const login = await followTeacherForm(runtime, "/teacher/dev-login", { email: "models@example.test", name: "Fixture teacher" });
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), body: JSON.parse(init.body) });
+    return Response.json(String(url).endsWith("/messages")
+      ? { stop_reason: "end_turn", content: [{ type: "text", text: "OK" }] }
+      : { output_text: "OK" });
+  };
+  try {
+    for (const [provider, model, expected] of [
+      ["openai", "", "gpt-6-luna"],
+      ["anthropic", "", "claude-haiku-5-5"],
+      ["openai", "gpt-5.6-luna", "gpt-5.6-luna"]
+    ]) {
+      const result = await followTeacherForm(runtime, "/teacher/profiles", {
+        name: expected, provider, defaultModel: model, apiKey: "fixture-only"
+      }, login.cookieHeader);
+      assert.match(result.response.headers.get("Location"), /AI%20account%20tested/);
+      assert.equal(requests.at(-1).body.model, expected);
+      const profile = runtime.teacherPortal.store.listCredentialProfilesForTeacher("local:models@example.test")
+        .find((item) => item.name === expected);
+      assert.equal(profile.provider, provider);
+      assert.equal(profile.defaultModel, expected);
+      assert.equal(profile.lastTestOk, true);
+    }
+    assert.equal(requests[1].url, "https://api.anthropic.com/v1/messages");
+    assert.equal(requests[1].body.max_tokens, 1024);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("teacher and operator model suggestions use the public catalogue without replacing configured models", async () => {
+  const fixture = JSON.parse(await readFile(new URL("../../../scripts/audit/fixtures/model-catalogue.json", import.meta.url), "utf8"));
+  let catalogueCalls = 0;
+  const runtime = createBackendRuntime({
+    env: { VIBBIT_TEACHER_DEV_LOGIN: "true", VIBBIT_TKSLOPPER_GATEWAY_URL: "https://gateway.example.test",
+      VIBBIT_ADMIN_TOKEN: "fixture-admin", VIBBIT_OPENAI_MODEL: "saved-private-model" },
+    catalogueFetch: async (url, init) => {
+      catalogueCalls++;
+      assert.equal(url, "https://gateway.example.test/v1/model-catalogue");
+      assert.deepEqual(init.headers, { Accept: "application/json" });
+      assert.equal(init.credentials, "omit");
+      return Response.json(fixture);
+    },
+    dnsLookup: async () => [{ address: "203.0.113.10", family: 4 }]
+  });
+  const login = await followTeacherForm(runtime, "/teacher/dev-login", { email: "catalogue@example.test", name: "Fixture" });
+  const dashboard = await runtime.fetch(new Request("https://example.test/teacher", { headers: { Cookie: login.cookieHeader } }));
+  const html = await dashboard.text();
+  assert.match(html, /value="claude-opus-5-5"/);
+  assert.match(html, /value="go\/responses\/muse-spark-1.2-contributor"/);
+  assert.match(html, /trains on data/);
+  const admin = await runtime.fetch(new Request("https://example.test/admin", { headers: { "X-Vibbit-Admin-Token": "fixture-admin" } }));
+  const adminHtml = await admin.text();
+  assert.match(adminHtml, /value="saved-private-model"/);
+  assert.match(adminHtml, /value="claude-sonnet-5-5"/);
+  assert.equal(catalogueCalls, 1);
+  const originalFetch = globalThis.fetch;
+  const models = [];
+  globalThis.fetch = async (_, init) => {
+    models.push(JSON.parse(init.body).model);
+    return Response.json({ choices: [{ message: { content: "OK" } }] });
+  };
+  try {
+    for (const model of ["", "openai/gpt-5.6-luna"]) {
+      const result = await followTeacherForm(runtime, "/teacher/profiles", {
+        name: model || "Catalogue default", provider: "openrouter", defaultModel: model, apiKey: "fixture-only"
+      }, login.cookieHeader);
+      assert.match(result.response.headers.get("Location"), /AI%20account%20tested/);
+    }
+    assert.deepEqual(models, ["deepseek/deepseek-v4-flash", "openai/gpt-5.6-luna"]);
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("teacher can sign in locally, test-and-save an AI account, create a classroom, and students can connect", async () => {

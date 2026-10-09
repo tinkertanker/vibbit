@@ -524,6 +524,49 @@ export function createTkslopperClient({
     }
   };
 
+  // Display-only lookup. No model-list cache: clients/grants are credential-scoped.
+  const getModelMetadata = async () => {
+    const fallback = { id: selectedAlias };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
+    try {
+      return await raceWithSignal((async () => {
+        const grant = await getGrant(controller.signal);
+        const response = await doFetch(joinUrl(gatewayUrl, "/v1/models"), {
+          method: "GET", redirect: "error", credentials: "omit", cache: "no-store", signal: controller.signal,
+          headers: { Authorization: `Bearer ${grant.accessToken}`, Accept: "application/json" }
+        });
+        if (response.status === 401 || response.status === 403) dropGrant(grant);
+        if (!response.ok) return fallback;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let text = "", size = 0;
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            size += value.byteLength;
+            if (size > 131072) throw new Error("models_too_large");
+            text += decoder.decode(value, { stream: true });
+          }
+        } finally { await reader.cancel(); }
+        const body = JSON.parse(text + decoder.decode());
+        if (body?.object !== "list" || !Array.isArray(body.data) || body.data.length > 500) return fallback;
+        const matches = body.data.filter((item) => item?.id === selectedAlias);
+        if (matches.length !== 1) return fallback;
+        const item = matches[0];
+        return {
+          ...fallback,
+          ...(typeof item.display_name === "string" && item.display_name.trim() && item.display_name.length <= 120
+            && !/[\u0000-\u001f\u007f]/.test(item.display_name) ? { display_name: item.display_name } : {}),
+          ...(["openai", "anthropic", "gemini", "deepseek", "openrouter", "opencode-go", "opencode-zen"].includes(item.provider) ? { provider: item.provider } : {}),
+          ...(["economy", "balanced", "premium"].includes(item.tier) ? { tier: item.tier } : {})
+        };
+      })(), controller.signal);
+    } catch { return fallback; }
+    finally { clearTimeout(timer); controller.abort(); }
+  };
+
   const buildBody = (messages) => {
     const body = selectedEndpoint === "responses"
       ? { model: selectedAlias, input: messages, max_output_tokens: maxOutputTokens, stream: false }
@@ -681,6 +724,7 @@ export function createTkslopperClient({
   return {
     endpoint: selectedEndpoint,
     alias: selectedAlias,
+    getModelMetadata,
     complete
   };
 }

@@ -87,7 +87,7 @@ export function createByokBroker({ storageArea, fetchImpl = fetch } = {}) {
     const keys = source.keys && typeof source.keys === "object" ? source.keys : {};
     return {
       provider,
-      model: normaliseByokModel(provider, source.model),
+      model: source.model ? normaliseByokModel(provider, source.model) : "",
       thinkHarder: Boolean(source.thinkHarder),
       keys: Object.fromEntries(Object.entries(keys).map(([name, value]) => [
         normaliseByokProvider(name),

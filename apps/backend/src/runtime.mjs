@@ -38,12 +38,13 @@ import {
 } from "./tkslopper-client.mjs";
 import { createUsageStore } from "./usage-store.mjs";
 import { compileAndDecompile } from "../../../shared/makecode-decompile.mjs";
+import { createModelCatalogue } from "../../../shared/model-catalogue.mjs";
 
 const DEFAULT_FEEDBACK = "Model completed generation without explicit feedback notes.";
 const TKSLOPPER_PROVIDER_LABEL = "managed";
 const TKSLOPPER_REFUSAL_MESSAGE = "The AI service declined this request. Try rephrasing it.";
 const TKSLOPPER_UNAVAILABLE_MESSAGE = "Managed AI is unavailable right now. Please try again later or ask your teacher.";
-const SUPPORTED_PROVIDERS = ["openai", "gemini", "openrouter", "opencode"];
+const SUPPORTED_PROVIDERS = ["openai", "anthropic", "gemini", "openrouter", "opencode"];
 const DEFAULT_CORS_HEADERS = "Content-Type, Authorization, X-Vibbit-Class-Code, X-Vibbit-Session";
 const MAX_JSON_BYTES = 256 * 1024;
 const MAX_REQUEST_CHARS = 4000;
@@ -207,15 +208,17 @@ function generateClassCodeFromSeed(seed, length) {
 }
 
 function resolveModelForProvider(env, provider) {
-  if (provider === "openai") return env.VIBBIT_OPENAI_MODEL || env.VIBBIT_MODEL || "gpt-5.6-luna";
+  if (provider === "openai") return env.VIBBIT_OPENAI_MODEL || env.VIBBIT_MODEL || "gpt-6-luna";
+  if (provider === "anthropic") return env.VIBBIT_ANTHROPIC_MODEL || env.VIBBIT_MODEL || "claude-haiku-5-5";
   if (provider === "gemini") return env.VIBBIT_GEMINI_MODEL || env.VIBBIT_MODEL || "gemini-2.5-flash";
   if (provider === "openrouter") return env.VIBBIT_OPENROUTER_MODEL || env.VIBBIT_MODEL || "openai/gpt-5.6-luna";
   if (provider === "opencode") return env.VIBBIT_OPENCODE_MODEL || env.VIBBIT_MODEL || "gpt-5.6-luna";
-  return env.VIBBIT_MODEL || "gpt-5.6-luna";
+  return env.VIBBIT_MODEL || "gpt-6-luna";
 }
 
 function resolveKeyForProvider(env, provider) {
   if (provider === "openai") return env.VIBBIT_OPENAI_API_KEY || env.VIBBIT_API_KEY || "";
+  if (provider === "anthropic") return env.VIBBIT_ANTHROPIC_API_KEY || "";
   if (provider === "gemini") return env.VIBBIT_GEMINI_API_KEY || env.VIBBIT_API_KEY || "";
   if (provider === "openrouter") return env.VIBBIT_OPENROUTER_API_KEY || env.VIBBIT_API_KEY || "";
   if (provider === "opencode") return env.VIBBIT_OPENCODE_API_KEY || env.VIBBIT_API_KEY || "";
@@ -949,6 +952,7 @@ function buildAdminStatus(runtimeConfig, sessionStore, adminProviderState) {
 
 function providerDisplayName(provider) {
   if (provider === "openai") return "OpenAI";
+  if (provider === "anthropic") return "Anthropic (Claude)";
   if (provider === "openrouter") return "OpenRouter";
   if (provider === "opencode") return "OpenCode";
   if (provider === "gemini") return "Gemini";
@@ -1290,7 +1294,7 @@ function renderBookmarkletInstallPage({ bookmarkletHref, runtimeUrl, byokEnabled
   ].join("");
 }
 
-function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken) {
+function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken, modelPresets, managedModelLabel) {
   const status = buildAdminStatus(runtimeConfig, sessionStore, adminProviderState);
   const authHint = adminAuthToken
     ? "Admin token auth is enabled. Open this page with <code>?admin=...</code>, or send <code>X-Vibbit-Admin-Token</code>, or <code>Authorization: Bearer ...</code>."
@@ -1325,7 +1329,8 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProvider
     return [
       "<div class=\"metric\">",
       `<div class=\"label\">${escapeHtml(providerName)} model</div>`,
-      `<input class=\"input\" type=\"text\" name="${escapeHtml(provider)}Model" value="${escapeHtml(modelValue)}" placeholder="Model id">`,
+      `<input class=\"input\" type=\"text\" name="${escapeHtml(provider)}Model" list="models-${escapeHtml(provider)}" value="${escapeHtml(modelValue)}" placeholder="Model id">`,
+      `<datalist id="models-${escapeHtml(provider)}">${(modelPresets[provider] || []).map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.label)}</option>`).join("")}</datalist>`,
       "</div>",
       "<div class=\"metric\">",
       `<div class=\"label\">${escapeHtml(providerName)} API key (${escapeHtml(keyConfigured ? `configured via ${keySource}` : "missing")})</div>`,
@@ -1375,6 +1380,7 @@ function renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProvider
     `<div class=\"metric\"><div class=\"label\">Auth mode</div><div class=\"value\">${escapeHtml(status.authMode)}</div></div>`,
     `<div class=\"metric\"><div class=\"label\">Default provider</div><div class=\"value\">${escapeHtml(status.defaultProvider)}</div></div>`,
     `<div class=\"metric\"><div class=\"label\">Default model</div><div class=\"value\">${escapeHtml(status.defaultModel)}</div></div>`,
+    managedModelLabel ? `<div class="metric"><div class="label">Managed gateway model</div><div class="value">${escapeHtml(managedModelLabel)}</div></div>` : "",
     `<div class=\"metric\"><div class=\"label\">Active sessions</div><div class=\"value\">${escapeHtml(status.activeSessions)}</div></div>`,
     "</div>",
     "</div>",
@@ -1528,7 +1534,7 @@ function loadBookmarkletRuntimeTemplate() {
   return "";
 }
 
-function buildBookmarkletRuntimeSource(templateSource, backendUrl) {
+function buildBookmarkletRuntimeSource(templateSource, backendUrl, catalogueOrigin) {
   if (!templateSource) {
     return [
       `console.error(${JSON.stringify("Vibbit bookmarklet runtime source is unavailable on this backend deployment.")});`,
@@ -1537,6 +1543,7 @@ function buildBookmarkletRuntimeSource(templateSource, backendUrl) {
   }
 
   let output = templateSource;
+  output = output.replace(/const TKSLOPPER_GATEWAY_ORIGIN = ".*?";/, `const TKSLOPPER_GATEWAY_ORIGIN = ${JSON.stringify(catalogueOrigin)};`);
   const backendLine = `const BACKEND = ${JSON.stringify(backendUrl)};`;
   const appTokenLine = 'const APP_TOKEN = "";';
 
@@ -1639,6 +1646,7 @@ export function createBackendRuntime(options = {}) {
     persist: typeof options.persistUsageState === "function" ? options.persistUsageState : undefined,
     initialState: options.usageState || {}
   });
+  const modelCatalogue = createModelCatalogue({ origin: env.VIBBIT_TKSLOPPER_GATEWAY_URL, fetchImpl: options.catalogueFetch || globalThis.fetch });
   const teacherPortal = createTeacherPortal({
     env,
     initialState: options.teacherPortalState || {},
@@ -1646,7 +1654,14 @@ export function createBackendRuntime(options = {}) {
     respondCorsHeaders: (origin) => buildCorsHeaders(origin, runtimeConfig),
     deploymentPolicy: deployment,
     outboundUrlPolicy,
-    usageStore
+    usageStore,
+    modelCatalogue,
+    getManagedClassroomModels: async (classrooms) => {
+      const managed = classrooms.filter((classroom) => isTkslopperClassroom(runtimeConfig, classroom.id));
+      if (!managed.length || !tkslopperClient) return {};
+      const label = await getManagedModelLabel();
+      return Object.fromEntries(managed.map((classroom) => [classroom.id, label]));
+    }
   });
   const getEffectiveProviderConfig = () => buildEffectiveProviderConfig(runtimeConfig.providerConfig, adminProviderState);
   const tkslopperConfig = runtimeConfig.tkslopper;
@@ -1670,6 +1685,11 @@ export function createBackendRuntime(options = {}) {
     })
     : null;
   const tkslopperProviderConfig = tkslopperClient ? createTkslopperProviderConfig(tkslopperConfig) : null;
+  const getManagedModelLabel = async () => {
+    if (!tkslopperClient) return "";
+    const model = await tkslopperClient.getModelMetadata();
+    return [model.display_name ? `${model.display_name} (${model.id})` : model.id, model.provider, model.tier].filter(Boolean).join(" · ");
+  };
   const publicOriginFor = (request, requestUrl) => resolvePublicOrigin(request, requestUrl, deployment);
 
   const resolveProviderConfigForSession = async (session) => {
@@ -1890,7 +1910,7 @@ export function createBackendRuntime(options = {}) {
 
     if (runtimeConfig.bookmarkletEnabled && pathname === BOOKMARKLET_RUNTIME_ROUTE && request.method === "GET") {
       const publicOrigin = publicOriginFor(request, requestUrl);
-      const runtimeSource = buildBookmarkletRuntimeSource(bookmarkletRuntimeTemplate, publicOrigin);
+      const runtimeSource = buildBookmarkletRuntimeSource(bookmarkletRuntimeTemplate, publicOrigin, modelCatalogue.gatewayOrigin);
       return respondJavaScript(200, runtimeSource, origin, runtimeConfig, {
         "Cache-Control": "no-store"
       });
@@ -1991,7 +2011,8 @@ export function createBackendRuntime(options = {}) {
       if (!isAdminRequestAuthorised(request, runtimeConfig, requestUrl, adminAuthToken)) {
         return respondJson(401, { error: "Unauthorized" }, origin, runtimeConfig);
       }
-      const html = renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken);
+      const [presets, managedModelLabel] = await Promise.all([modelCatalogue.load(), getManagedModelLabel()]);
+      const html = renderAdminPanel(runtimeConfig, sessionStore, requestUrl, adminProviderState, adminAuthToken, presets, managedModelLabel);
       return respondHtml(200, html, origin, runtimeConfig);
     }
 

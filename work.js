@@ -1,6 +1,7 @@
 const BACKEND = "https://vibbit.tk.sg";
 const HOSTED_MANAGED = false;
 const APP_TOKEN = ""; // set only if your server enforces SERVER_APP_TOKEN
+const TKSLOPPER_GATEWAY_ORIGIN = "";
 const EXTENSION_BUILD = false;
 const EXTENSION_RUNTIME_REVISION = "source";
 
@@ -54,38 +55,109 @@ const EXTENSION_RUNTIME_REVISION = "source";
   // BEGIN_PAGE_BYOK_CONFIG
   const memoryProviderKeys = Object.create(null);
 
-  const MODEL_PRESETS = {
-    openai: [
-      { id: "gpt-5-mini", label: "GPT-5 Mini" },
-      { id: "gpt-5.2", label: "GPT-5.2" },
-      { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", default: true }
-    ],
-    gemini: [
-      { id: "gemini-3-flash-preview", label: "Gemini 3 Flash", default: true },
-      { id: "gemini-3-pro-preview", label: "Gemini 3 Pro" },
-      { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (Preview)" }
-    ],
-    openrouter: [
-      { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", default: true },
-      { id: "deepseek/deepseek-v4-flash-0731", label: "DeepSeek V4 Flash 0731" },
-      { id: "xiaomi/mimo-v2.5", label: "MiMo-V2.5" },
-      { id: "qwen/qwen3.8-27b", label: "Qwen3.8 27B" },
-      { id: "tencent/hy3", label: "Hy3" }
-    ],
-    opencode: [
-      { id: "go/responses/gpt-5.6-luna", label: "Go · GPT-5.6 Luna", default: true },
-      { id: "go/deepseek-v4-flash", label: "Go · DeepSeek V4 Flash" },
-      { id: "go/mimo-v2.5", label: "Go · MiMo-V2.5" },
-      { id: "go/kimi-k3", label: "Go · Kimi K3" },
-      { id: "go/glm-5.3", label: "Go · GLM-5.3" },
-      { id: "go/hy3", label: "Go · Hy3" },
-      { id: "go/responses/muse-spark-1.2-contributor", label: "Go · Muse Spark 1.2 Contributor (trains on data)" },
-      { id: "zen/hy3-free", label: "Zen · Hy3 Free" },
-      { id: "zen/big-pickle", label: "Zen · Big Pickle" },
-      { id: "zen/nemotron-3-ultra-free", label: "Zen · Nemotron 3 Ultra Free" },
-      { id: "zen/nemotron-3.5-lightning-free", label: "Zen · Nemotron 3.5 Lightning Free" }
-    ]
-  };
+  // BEGIN_MODEL_CATALOGUE
+  function createModelCatalogue({ origin = "", fetchImpl = globalThis.fetch, timeoutMs = 2500, now = Date.now } = {}) {
+    const fallback = {
+      openai: [{ id: "gpt-6-luna", label: "GPT-6 Luna", default: true }],
+      anthropic: [{ id: "claude-haiku-5-5", label: "Claude Haiku 5.5", default: true }],
+      gemini: [{ id: "gemini-3-flash-preview", label: "Gemini 3 Flash", default: true }],
+      openrouter: [{ id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", default: true }],
+      opencode: [
+        { id: "go/responses/gpt-5.6-luna", label: "Go · GPT-5.6 Luna", default: true },
+        { id: "zen/hy3-free", label: "Zen · Hy3 Free" }
+      ]
+    };
+    const providers = ["openai", "anthropic", "gemini", "deepseek", "openrouter", "opencode-go", "opencode-zen"];
+    const labelFor = (id, label = id) => /(?:^|\/)muse-spark-1\.2-contributor$/.test(id) && !/trains on data/i.test(label)
+      ? `${label} (trains on data)` : label;
+    const validId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/.test(value)
+      && !value.includes("://") && !value.split("/").some((part) => !part || part === "." || part === "..");
+    const gatewayOrigin = (() => {
+      try {
+        const url = new URL(origin);
+        if (url.username || url.password || url.search || url.hash) return "";
+        if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) return "";
+        return url.origin;
+      } catch { return ""; }
+    })();
+    let cached = fallback;
+    let expires = 0;
+    let pending;
+
+    function parse(value) {
+      if (value?.object !== "list" || value.version !== 1 || !Array.isArray(value.data) || !value.data.length || value.data.length > 500) throw new Error("invalid_catalogue");
+      const result = {};
+      const ids = new Set();
+      const defaults = new Set();
+      for (const item of value.data) {
+        if (!providers.includes(item?.provider) || !validId(item.id)
+          || typeof item.display_name !== "string" || !item.display_name.trim() || item.display_name.length > 120
+          || /[\u0000-\u001f\u007f]/.test(item.display_name)
+          || !["economy", "balanced", "premium"].includes(item.tier) || typeof item.is_default !== "boolean") throw new Error("invalid_catalogue");
+        const identity = item.provider + ":" + item.id;
+        if (ids.has(identity) || (item.is_default && defaults.has(item.provider))) throw new Error("invalid_catalogue");
+        ids.add(identity);
+        if (item.is_default) defaults.add(item.provider);
+        if (item.provider === "deepseek") continue; // No native DeepSeek transport in Vibbit.
+        const access = item.provider === "opencode-go" ? "go" : item.provider === "opencode-zen" ? "zen" : "";
+        if (access && (item.id.includes("/") || item.id === "responses")) throw new Error("invalid_catalogue");
+        const provider = access ? "opencode" : item.provider;
+        // Protocol knowledge is deliberately local, never supplied by catalogue fields.
+        const responses = ["gpt-5.6-luna", "grok-4.5", "muse-spark-1.2-contributor"].includes(item.id);
+        const id = access ? `${access}/${responses ? "responses/" : ""}${item.id}` : item.id;
+        (result[provider] ||= []).push({ id, label: labelFor(id, `${access ? (access === "go" ? "Go" : "Zen") + " · " : ""}${item.display_name} · ${item.tier}`), default: item.is_default && access !== "zen" });
+      }
+      return { ...fallback, ...result };
+    }
+
+    async function load() {
+      if (!gatewayOrigin || now() < expires) return cached;
+      if (pending) return pending;
+      pending = (async () => {
+        const controller = new AbortController();
+        let timer;
+        try {
+          cached = await Promise.race([
+            (async () => {
+              const response = await fetchImpl(gatewayOrigin + "/v1/model-catalogue", {
+                method: "GET", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer",
+                headers: { Accept: "application/json" }, signal: controller.signal
+              });
+              if (!response.ok) throw new Error("catalogue_unavailable");
+              const reader = response.body.getReader();
+              const chunks = [];
+              let size = 0;
+              try {
+                while (true) {
+                  const { value, done } = await reader.read();
+                  if (done) break;
+                  size += value.byteLength;
+                  if (size > 131072) throw new Error("catalogue_too_large");
+                  chunks.push(value);
+                }
+              } finally { await reader.cancel(); }
+              const bytes = new Uint8Array(size);
+              let offset = 0;
+              for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+              return parse(JSON.parse(new TextDecoder().decode(bytes)));
+            })(),
+            new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("catalogue_timeout")); }, timeoutMs); })
+          ]);
+          expires = now() + 300000;
+        } catch {
+          controller.abort();
+          cached = fallback;
+          expires = now() + 30000;
+        } finally { clearTimeout(timer); }
+        return cached;
+      })();
+      try { return await pending; } finally { pending = null; }
+    }
+    return { fallback, load, validId, labelFor, gatewayOrigin };
+  }
+  // END_MODEL_CATALOGUE
+  const modelCatalogue = createModelCatalogue({ origin: TKSLOPPER_GATEWAY_ORIGIN });
+  let MODEL_PRESETS = modelCatalogue.fallback;
 
   const OPENROUTER_THINK_MODELS = new Set([
     "openai/gpt-5.6-luna",
@@ -93,12 +165,12 @@ const EXTENSION_RUNTIME_REVISION = "source";
     "qwen/qwen3.8-27b",
     "tencent/hy3"
   ]);
-  const OPENCODE_THINK_MODELS = new Set(MODEL_PRESETS.opencode.map((preset) => preset.id));
 
   const supportsThinkHarder = (provider, model) => {
-    if (provider === "openai") return model === "gpt-5.6-luna";
+    if (provider === "openai") return model === "gpt-5.6-luna" || /^gpt-6[.-]/.test(model);
+    if (provider === "anthropic") return true;
     if (provider === "openrouter") return OPENROUTER_THINK_MODELS.has(model);
-    if (provider === "opencode") return OPENCODE_THINK_MODELS.has(model);
+    if (provider === "opencode") return true;
     return false;
   };
   // END_PAGE_BYOK_CONFIG
@@ -308,6 +380,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
     + '    <label for="setup-prov" style="' + S_LABEL + '">Provider</label>'
     + '    <select id="setup-prov" style="' + S_SELECT + '">'
     + '      <option value="openai">OpenAI</option>'
+    + '      <option value="anthropic">Anthropic (Claude)</option>'
     + '      <option value="gemini">Gemini</option>'
     + '      <option value="openrouter">OpenRouter</option>'
     + '      <option value="opencode">OpenCode</option>'
@@ -317,7 +390,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
     /* BYOK: model */
     + '  <div id="setup-byok-model" style="display:grid;gap:4px">'
     + '    <label for="setup-model" style="' + S_LABEL + '">Model</label>'
-    + '    <select id="setup-model" style="' + S_SELECT + '"></select>'
+    + '    <input id="setup-model" list="setup-model-options" maxlength="160" style="' + S_INPUT + '"><datalist id="setup-model-options"></datalist>'
     + '  </div>'
 
     /* BYOK: API key */
@@ -416,6 +489,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
     + '    <label for="set-prov" style="' + S_LABEL + '">Provider</label>'
     + '    <select id="set-prov" style="' + S_SELECT + '">'
     + '      <option value="openai">OpenAI</option>'
+    + '      <option value="anthropic">Anthropic (Claude)</option>'
     + '      <option value="gemini">Gemini</option>'
     + '      <option value="openrouter">OpenRouter</option>'
     + '      <option value="opencode">OpenCode</option>'
@@ -425,7 +499,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
     /* BYOK: model */
     + '  <div id="set-byok-model" style="display:grid;gap:4px">'
     + '    <label for="set-model" style="' + S_LABEL + '">Model</label>'
-    + '    <select id="set-model" style="' + S_SELECT + '"></select>'
+    + '    <input id="set-model" list="set-model-options" maxlength="160" style="' + S_INPUT + '"><datalist id="set-model-options"></datalist>'
     + '  </div>'
 
     /* BYOK: API key */
@@ -736,26 +810,28 @@ const EXTENSION_RUNTIME_REVISION = "source";
 
   /* ── model preset population ─────────────────────────────── */
   const populateModels = (selectEl, provider, savedModel) => {
-    selectEl.innerHTML = "";
+    selectEl.list.innerHTML = "";
     const presets = MODEL_PRESETS[provider] || [];
     let defaultId = null;
     presets.forEach((preset) => {
       const opt = document.createElement("option");
       opt.value = preset.id;
       opt.textContent = preset.label;
-      selectEl.appendChild(opt);
+      selectEl.list.appendChild(opt);
       if (preset.default) defaultId = preset.id;
     });
     if (savedModel && !presets.some((preset) => preset.id === savedModel)) {
       const savedOption = document.createElement("option");
       savedOption.value = savedModel;
-      savedOption.textContent = "Saved · " + savedModel;
-      selectEl.appendChild(savedOption);
+      savedOption.textContent = modelCatalogue.labelFor(savedModel, "Saved · " + savedModel);
+      selectEl.list.appendChild(savedOption);
     }
     if (savedModel) {
       selectEl.value = savedModel;
     } else if (defaultId) {
       selectEl.value = defaultId;
+    } else {
+      selectEl.value = presets[0]?.id || "";
     }
   };
 
@@ -1613,6 +1689,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
   const savedMode = forceMode || coerceMode(storageGet(STORAGE_MODE) || "byok");
   const savedProvider = storageGet(STORAGE_PROVIDER) || "openai";
   const savedModel = storageGet(STORAGE_MODEL);
+  const modelSelections = new Map(savedModel ? [[savedProvider, savedModel]] : []);
   const savedKey = getStoredProviderKey(savedProvider);
   const savedServer = storageGet(STORAGE_SERVER) || "";
   const savedClassCode = getStoredClassCode();
@@ -1644,6 +1721,19 @@ const EXTENSION_RUNTIME_REVISION = "source";
   /* show correct initial view */
   showView(setupDone ? "main" : "setup");
 
+  if (!EXTENSION_BUILD && enableByokMode) {
+    const initialSetupModel = setupModel.value;
+    const initialSettingsModel = setModel.value;
+    modelCatalogue.load().then((presets) => {
+      MODEL_PRESETS = presets;
+      const keepSetup = savedModel || setupModel.value !== initialSetupModel || setupProv.value !== savedProvider;
+      const keepSettings = storageGet(STORAGE_MODEL) || setModel.value !== initialSettingsModel || setProv.value !== savedProvider;
+      populateModels(setupModel, setupProv.value, keepSetup ? setupModel.value : null);
+      populateModels(setModel, setProv.value, keepSettings ? setModel.value : null);
+      refreshThinkHarderVisibility();
+    });
+  }
+
   /* ── setup view events ───────────────────────────────────── */
   setupMode.onchange = () => {
     applySetupMode();
@@ -1653,9 +1743,11 @@ const EXTENSION_RUNTIME_REVISION = "source";
 
   setupProv.onchange = () => {
     if (EXTENSION_BUILD) return;
-    populateModels(setupModel, setupProv.value, null);
+    populateModels(setupModel, setupProv.value, modelSelections.get(setupProv.value));
     setupKey.value = getStoredProviderKey(setupProv.value);
   };
+  setupModel.oninput = () => modelSelections.set(setupProv.value, setupModel.value);
+  setModel.oninput = () => modelSelections.set(setProv.value, setModel.value);
 
   const showSetupError = (message) => {
     if (!setupError) return;
@@ -1760,7 +1852,7 @@ const EXTENSION_RUNTIME_REVISION = "source";
 
   setProv.onchange = () => {
     if (EXTENSION_BUILD) return;
-    populateModels(setModel, setProv.value, null);
+    populateModels(setModel, setProv.value, modelSelections.get(setProv.value));
     storageSet(STORAGE_PROVIDER, setProv.value);
     /* select the default and persist */
     storageSet(STORAGE_MODEL, setModel.value);
@@ -3980,16 +4072,17 @@ const EXTENSION_RUNTIME_REVISION = "source";
   };
 
   const callOpenAI = (key, model, system, user, signal) => {
-    const resolvedModel = model || "gpt-5.6-luna";
+    const resolvedModel = model || "gpt-6-luna";
     const thinkHarderEnabled = storageGet(STORAGE_THINK_HARDER) === "1"
       && supportsThinkHarder("openai", resolvedModel);
-    if (resolvedModel === "gpt-5.6-luna") {
+    if (resolvedModel === "gpt-5.6-luna" || /^gpt-6[.-]/.test(resolvedModel)) {
       const body = {
         model: resolvedModel,
         max_output_tokens: thinkHarderEnabled ? 16384 : MAXTOK,
         input: [{ role: "system", content: system }, { role: "user", content: user }]
       };
       if (thinkHarderEnabled) body.reasoning = { effort: "max" };
+      else if (/^gpt-6[.-]/.test(resolvedModel)) body.reasoning = { effort: "low" };
       return withTimeout(
         fetch("https://api.openai.com/v1/responses", {
           method: "POST",
@@ -4031,6 +4124,44 @@ const EXTENSION_RUNTIME_REVISION = "source";
         .then((data) => ((data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || "").trim()),
       REQ_TIMEOUT_MS,
       "OpenAI"
+    );
+  };
+
+  const callAnthropic = (key, model, system, user, signal) => {
+    const harder = storageGet(STORAGE_THINK_HARDER) === "1";
+    return withTimeout(
+      fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        redirect: "error",
+        signal,
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({
+          model: model || "claude-haiku-5-5",
+          max_tokens: harder ? 16384 : MAXTOK,
+          system,
+          messages: [{ role: "user", content: user }],
+          thinking: { type: "adaptive" },
+          output_config: { effort: harder ? "high" : "low" }
+        })
+      }).then((response) => {
+        if (!response.ok) throw new Error("Anthropic error (" + response.status + ")");
+        return response.json();
+      }).then((data) => {
+        if (["refusal", "max_tokens", "model_context_window_exceeded"].includes(data?.stop_reason)) {
+          throw new Error("anthropic_" + data.stop_reason);
+        }
+        if (!["end_turn", "stop_sequence"].includes(data?.stop_reason)) throw new Error("anthropic_invalid_response");
+        return (Array.isArray(data?.content) ? data.content : [])
+          .filter((block) => block?.type === "text" && typeof block.text === "string")
+          .map((block) => block.text).join("").trim();
+      }),
+      harder ? 120000 : REQ_TIMEOUT_MS,
+      "Anthropic"
     );
   };
 
@@ -4180,8 +4311,8 @@ const EXTENSION_RUNTIME_REVISION = "source";
   // END_PAGE_BYOK_TRANSPORT
 
   const askValidated = (provider, apiKey, model, system, user, target, signal) => {
-    const providers = { openai: callOpenAI, gemini: callGemini, openrouter: callOpenRouter, opencode: callOpenCode };
-    const names = { openai: "OpenAI", gemini: "Gemini", openrouter: "OpenRouter", opencode: "OpenCode" };
+    const providers = { openai: callOpenAI, anthropic: callAnthropic, gemini: callGemini, openrouter: callOpenRouter, opencode: callOpenCode };
+    const names = { openai: "OpenAI", anthropic: "Anthropic", gemini: "Gemini", openrouter: "OpenRouter", opencode: "OpenCode" };
     const callProvider = providers[provider] || providers.openai;
     const providerName = names[provider] || provider;
 
@@ -4726,7 +4857,11 @@ const EXTENSION_RUNTIME_REVISION = "source";
       let message = EXTENSION_BUILD && extensionMessages[rawMessage]
         ? extensionMessages[rawMessage]
         : rawMessage;
-      if (EXTENSION_BUILD && /_http_error$/.test(rawMessage)) {
+      if (rawMessage === "anthropic_refusal") {
+        message = "Claude declined this request. Try rephrasing it. Your code was not changed.";
+      } else if (["anthropic_max_tokens", "anthropic_model_context_window_exceeded"].includes(rawMessage)) {
+        message = "Claude's response was cut short. Try a smaller request or Think harder. Your code was not changed.";
+      } else if (EXTENSION_BUILD && /_http_error$/.test(rawMessage)) {
         message = error && error.status === 401
           ? "The provider rejected this key. Check it in Vibbit extension settings."
           : (error && error.status === 429

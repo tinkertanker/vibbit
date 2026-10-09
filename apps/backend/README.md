@@ -10,7 +10,7 @@ Teachers:
 
 Students enter the classroom code (hosted package is code-only). Prefer the bookmarklet join flow unless school IT manages Chrome ZIP installs.
 
-The backend keeps provider API keys server-side and proxies generation requests through the classroom’s configured provider (OpenAI, OpenRouter, OpenCode, Gemini, or an allow-listed custom OpenAI-compatible gateway).
+The backend keeps provider API keys server-side and proxies generation requests through the classroom’s configured provider (OpenAI, Anthropic, OpenRouter, OpenCode, Gemini, or an allow-listed custom OpenAI-compatible gateway).
 
 ## Endpoints
 
@@ -154,17 +154,24 @@ Open `/teacher`, sign in with local/dev login, paste an OpenAI-compatible key + 
 
 ## LiteLLM and Claude-compatible endpoints
 
-Teachers can point a custom AI account at an OpenAI-compatible gateway. Built-in providers (OpenAI, OpenRouter, OpenCode, Gemini) need no allow-list. Custom public hosts require `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST`. Localhost or private HTTP gateways require self-hosted mode plus `VIBBIT_ALLOW_PRIVATE_ENDPOINTS=true`.
+Teachers can point a custom AI account at an OpenAI-compatible gateway. Built-in providers (OpenAI, Anthropic, OpenRouter, OpenCode, Gemini) need no allow-list. Custom public hosts require `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST`. Localhost or private HTTP gateways require self-hosted mode plus `VIBBIT_ALLOW_PRIVATE_ENDPOINTS=true`.
 
 | Provider / gateway | Example base URL |
 | --- | --- |
 | OpenAI | `https://api.openai.com/v1` |
+| Anthropic (native Claude) | `https://api.anthropic.com/v1/messages` |
 | OpenRouter | `https://openrouter.ai/api/v1` |
 | OpenCode Go | `https://opencode.ai/zen/go/v1` |
 | LiteLLM proxy | `http://localhost:4000/v1` (self-hosted + private endpoints) |
 | Claude via OpenAI-compatible proxy | your proxy’s `/v1` URL (allow-listed if public) |
 
-Vibbit normally calls `{baseUrl}/chat/completions` with the teacher’s API key. GPT-5.6 Luna on OpenAI and OpenCode models documented for the Responses API are routed to `/responses`. OpenCode model names may use `go/` or `zen/` prefixes (for example, `go/gpt-5.6-luna` or `zen/hy3-free`); an omitted prefix defaults to Go. You do not need to run LiteLLM inside this repo — point the classroom at an existing LiteLLM (or similar) deployment if you want multi-provider routing.
+Vibbit normally calls `{baseUrl}/chat/completions` with the teacher’s API key. GPT-6 models and GPT-5.6 Luna on OpenAI, and OpenCode models documented for the Responses API, are routed to `/responses`. Anthropic uses native Messages with adaptive low-effort thinking and no sampling parameters. New direct OpenAI accounts default to `gpt-6-luna`; Anthropic accounts default to `claude-haiku-5-5`. Leave the new-account model blank for the selected provider default, or choose a model explicitly. Existing account models are preserved. OpenCode model names may use `go/` or `zen/` prefixes (for example, `go/gpt-5.6-luna` or `zen/hy3-free`); an omitted prefix defaults to Go. You do not need to run LiteLLM inside this repo — point the classroom at an existing LiteLLM (or similar) deployment if you want multi-provider routing.
+
+Managed tkslopper routing is independent of native provider selection: `VIBBIT_TKSLOPPER_ALIAS` stays an authorized capability alias, never a physical Claude/GPT model ID. Use an operator-configured alias from `/v1/models`; this release does not assume a deployed Claude alias or remap existing aliases. Leave `VIBBIT_TKSLOPPER_TEMPERATURE` empty for Claude-backed capabilities. Vibbit's gateway requests use text transcripts, omit sampling by default, and end with a user turn; they do not call a public `/v1/messages` endpoint.
+
+Teacher and operator provider-key forms use public catalogue suggestions from the configured gateway origin, even when managed generation is disabled. See [model catalogue configuration and fallback](../../README.md#byok-mode). Explicit models are preserved; blank new-account models use the catalogue's provider default when available.
+
+When managed generation is configured, the admin status card and eligible teacher classroom cards show optional `display_name`, `provider`, and `tier` from authenticated `/v1/models`, alongside the unchanged configured alias. The backend uses its credential-scoped grant; credentials and listings never reach the browser. This display-only lookup has a 2.5-second deadline and 128 KiB/500-entry limits, uses no listing cache, and falls back to the alias on old servers or lookup failure. Student UI has no model-name display or picker; its routing/configuration remains unchanged.
 
 ## Environment variables
 
@@ -224,8 +231,9 @@ Provider routing (legacy shared fallback /admin):
 
 Provider keys/models (legacy shared fallback):
 
-- `VIBBIT_API_KEY` (shared fallback; optional)
+- `VIBBIT_API_KEY` (legacy shared fallback; optional; never used for Anthropic)
 - `VIBBIT_OPENAI_API_KEY`, `VIBBIT_OPENAI_MODEL` (optional)
+- `VIBBIT_ANTHROPIC_API_KEY`, `VIBBIT_ANTHROPIC_MODEL` (native Claude; explicit provider key required)
 - `VIBBIT_GEMINI_API_KEY`, `VIBBIT_GEMINI_MODEL` (optional)
 - `VIBBIT_OPENROUTER_API_KEY`, `VIBBIT_OPENROUTER_MODEL` (optional)
 - `VIBBIT_OPENCODE_API_KEY`, `VIBBIT_OPENCODE_MODEL` (optional; OpenCode Go/Zen, selected with a `go/` or `zen/` model prefix)
@@ -302,12 +310,10 @@ Roll out one classroom at a time and keep teacher credential profiles until cana
 
 ## Railway deployment option
 
-The instructions below describe a deployment option, not verified infrastructure for the live site.
-Earlier root guidance named Docker/SSH at `tinkertanker@dev.tk.sg:Docker/vibbit` for `vibbit.tk.sg`;
-the local deployment files are gitignored. Confirm the current target/account and procedure with
-the operator before any authorized deployment. See [deployment target preflight](../../docs/release.md#deployment-target-preflight--unresolved-infrastructure-history).
-Do not guess or create/mutate infrastructure to resolve this ambiguity. The steps below require
-authorization for the specific deployment, configuration, and shared-state changes.
+The instructions below describe an alternative deployment, not production. YJ confirmed on
+2026-10-09 that `vibbit.tk.sg` uses Docker/SSH at `tinkertanker@dev.tk.sg:Docker/vibbit`.
+See [deployment target preflight](../../docs/release.md#deployment-target-preflight).
+The steps below require authorization for the specific deployment, configuration, and shared-state changes.
 
 Deploy button (placeholder until template is published):
 

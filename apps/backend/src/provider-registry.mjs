@@ -7,7 +7,7 @@ const DEFAULT_OPENCODE_BASE_URL = "https://opencode.ai/zen/go/v1";
 const GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1";
 const OPENCODE_RESPONSES_MODELS = new Set(["gpt-5.6-luna", "grok-4.5", "muse-spark-1.2-contributor"]);
 
-export const CREDENTIAL_PROFILE_PROVIDERS = ["openai", "gemini", "openrouter", "opencode", "custom"];
+export const CREDENTIAL_PROFILE_PROVIDERS = ["openai", "anthropic", "gemini", "openrouter", "opencode", "custom"];
 
 export function normaliseCredentialProvider(value) {
   const provider = String(value || "").trim().toLowerCase();
@@ -17,6 +17,7 @@ export function normaliseCredentialProvider(value) {
 export function providerDisplayName(provider) {
   const normalised = normaliseCredentialProvider(provider);
   if (normalised === "openai") return "OpenAI";
+  if (normalised === "anthropic") return "Anthropic (Claude)";
   if (normalised === "gemini") return "Gemini";
   if (normalised === "openrouter") return "OpenRouter";
   if (normalised === "opencode") return "OpenCode";
@@ -26,7 +27,8 @@ export function providerDisplayName(provider) {
 
 export function defaultModelForCredentialProvider(provider) {
   const normalised = normaliseCredentialProvider(provider);
-  if (normalised === "openai") return "gpt-5.6-luna";
+  if (normalised === "openai") return "gpt-6-luna";
+  if (normalised === "anthropic") return "claude-haiku-5-5";
   if (normalised === "gemini") return "gemini-2.5-flash";
   if (normalised === "openrouter") return "openai/gpt-5.6-luna";
   if (normalised === "opencode") return "gpt-5.6-luna";
@@ -144,8 +146,39 @@ export async function callManagedProvider({
     : temperature;
   if (!key) throw new Error("Missing API key");
 
+  if (selectedProvider === "anthropic") {
+    const transcript = Array.isArray(messages) && messages.length ? messages : [
+      { role: "system", content: String(system || "") },
+      { role: "user", content: String(user || "") }
+    ];
+    const response = await fetchImpl("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal,
+      redirect: "error",
+      headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: selectedModel,
+        max_tokens: maxTokens,
+        system: transcript.filter((turn) => turn.role === "system").map((turn) => turn.content).join("\n\n"),
+        messages: transcript.filter((turn) => turn.role !== "system"),
+        thinking: { type: "adaptive" },
+        output_config: { effort: "low" }
+      })
+    });
+    if (!response.ok) throw new Error(`Anthropic error (${response.status})`);
+    const data = await response.json();
+    if (["refusal", "max_tokens", "model_context_window_exceeded"].includes(data?.stop_reason)) {
+      throw new Error(`anthropic_${data.stop_reason}`);
+    }
+    if (!["end_turn", "stop_sequence"].includes(data?.stop_reason)) throw new Error("anthropic_invalid_response");
+    return (Array.isArray(data?.content) ? data.content : [])
+      .filter((block) => block?.type === "text" && typeof block.text === "string")
+      .map((block) => block.text).join("").trim();
+  }
+
   if (selectedProvider === "gemini") {
-    const url = `${GEMINI_API_ROOT}/models/${encodeURIComponent(selectedModel)}:generateContent`;
+    const apiRoot = selectedModel.includes("-preview") ? `${GEMINI_API_ROOT}beta` : GEMINI_API_ROOT;
+    const url = `${apiRoot}/models/${encodeURIComponent(selectedModel)}:generateContent`;
     const flattened = Array.isArray(messages) && messages.length
       ? serializeTranscript(messages)
       : { system, user };
@@ -179,7 +212,7 @@ export async function callManagedProvider({
     return text;
   }
 
-  if ((selectedProvider === "openai" && selectedModel === "gpt-5.6-luna")
+  if ((selectedProvider === "openai" && (selectedModel === "gpt-5.6-luna" || /^gpt-6[.-]/.test(selectedModel)))
     || (openCodeTarget && openCodeTarget.responses)) {
     return callOpenAIResponsesCompatible({
       apiKey: key,

@@ -101,6 +101,7 @@ export async function callOpenAIResponsesCompatible({
     input: transcriptOrPair(messages, system, user)
   };
   if (!/^gpt-/i.test(body.model)) body.temperature = temperature;
+  if (/^gpt-6[.-]/.test(body.model)) body.reasoning = { effort: "low" };
 
   const response = await fetchImpl(url, {
     method: "POST",
@@ -129,7 +130,7 @@ export async function callOpenAIResponsesCompatible({
 }
 
 export function providerConfigFromClassroom(classroom) {
-  const model = String((classroom && classroom.model) || "gpt-5.6-luna").trim() || "gpt-5.6-luna";
+  const model = String((classroom && classroom.model) || "gpt-6-luna").trim() || "gpt-6-luna";
   const apiKey = String((classroom && classroom.apiKey) || "").trim();
   const baseUrl = String((classroom && classroom.apiBaseUrl) || "https://api.openai.com/v1").trim();
 

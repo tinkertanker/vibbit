@@ -871,3 +871,50 @@ test("abort: a fully downloaded answer is kept even if the timer fires just afte
   const { client } = createClient(fake);
   assert.equal(await client.complete({ messages: REPAIR_TRANSCRIPT, signal: controller.signal }), "paid answer");
 });
+
+test("managed model metadata is credential-scoped, projected, uncached and never changes the inference alias", async () => {
+  let metadata = { display_name: "Classroom Claude", provider: "anthropic", tier: "economy", endpoint: "https://evil.test" };
+  const makeClient = (credential) => createTkslopperClient({
+    controlPlaneUrl: CONTROL_PLANE_URL, gatewayUrl: GATEWAY_URL, serviceCredential: credential, alias: "text.chat.v1",
+    fetchImpl: async (url, init) => {
+      if (url.endsWith("/token")) {
+        assert.equal(init.headers.Authorization, `Bearer ${credential}`);
+        return Response.json({ access_token: `grant-${credential}`, expires_in: 900 });
+      }
+      assert.equal(init.headers.Authorization, `Bearer grant-${credential}`);
+      if (url.endsWith("/models")) {
+        assert.equal(init.cache, "no-store");
+        assert.equal(init.credentials, "omit");
+        return Response.json({ object: "list", data: [
+          { id: "other.alias.v1", display_name: "Wrong model" }, { id: "text.chat.v1", ...metadata }
+        ] });
+      }
+      const body = JSON.parse(init.body);
+      assert.equal(body.model, "text.chat.v1");
+      assert.equal(body.temperature, undefined);
+      return Response.json(chatBody());
+    }
+  });
+  const a = makeClient("credential-a");
+  assert.deepEqual(await a.getModelMetadata(), { id: "text.chat.v1", display_name: "Classroom Claude", provider: "anthropic", tier: "economy" });
+  metadata = {}; // Old server, or metadata removed from an existing route.
+  assert.deepEqual(await a.getModelMetadata(), { id: "text.chat.v1" });
+  const b = makeClient("credential-b");
+  assert.deepEqual(await b.getModelMetadata(), { id: "text.chat.v1" });
+  assert.equal(await a.complete({ messages: REPAIR_TRANSCRIPT }), "hello");
+});
+
+test("managed metadata failures, invalid fields and oversized responses fall back to configured alias", async () => {
+  for (const response of [
+    () => Response.json({ object: "list", data: [{ id: "text.chat.v1", display_name: "bad\nlabel", provider: "unknown", tier: "unknown" }] }),
+    () => Response.json({ object: "list", data: [{ id: "another.v1", display_name: "Not ours" }] }),
+    () => new Response("x".repeat(131073)),
+    () => new Response("", { status: 404 }),
+    () => { throw new Error("offline"); }
+  ]) {
+    const client = createTkslopperClient({ controlPlaneUrl: CONTROL_PLANE_URL, gatewayUrl: GATEWAY_URL, alias: "text.chat.v1",
+      fetchImpl: async (url) => url.endsWith("/token") ? Response.json({ access_token: "fixture-grant", expires_in: 900 }) : response()
+    });
+    assert.deepEqual(await client.getModelMetadata(), { id: "text.chat.v1" });
+  }
+});

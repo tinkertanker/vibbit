@@ -24,7 +24,8 @@ if (process.platform === "linux" && !process.env.DISPLAY && !process.env.VIBBIT_
 const CANARY = "extension-secret-canary";
 const REQUEST_EVENT_PREFIX = "__vibbit_extension_request_v2_";
 const RESPONSE_EVENT_PREFIX = "__vibbit_extension_response_v2_";
-const PROVIDER_URL = "https://api.openai.com/v1/responses";
+const PROVIDER = process.env.VIBBIT_AUDIT_PROVIDER === "anthropic" ? "anthropic" : "openai";
+const PROVIDER_URL = PROVIDER === "anthropic" ? "https://api.anthropic.com/v1/messages" : "https://api.openai.com/v1/responses";
 const runDir = await createAuditRunDir("extension-boundary");
 const profile = await mkdtemp(path.join(tmpdir(), "vibbit-extension-boundary-"));
 const extensionPath = path.join(repoRoot, "dist");
@@ -37,6 +38,7 @@ function check(step, pass, detail) {
 function runBuild(script) {
   const result = spawnSync("npm", ["run", script], {
     cwd: repoRoot,
+    env: { ...process.env, VIBBIT_TKSLOPPER_GATEWAY_URL: "https://catalogue.example.test" },
     encoding: "utf8"
   });
   if (result.status !== 0) {
@@ -79,6 +81,7 @@ try {
   context = await chromium.launchPersistentContext(profile, {
     headless: false,
     viewport: { width: 1400, height: 900 },
+    deviceScaleFactor: 2,
     args: [
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`
@@ -109,7 +112,13 @@ try {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
+        body: JSON.stringify(PROVIDER === "anthropic" ? {
+          stop_reason: "end_turn",
+          content: [
+            { type: "thinking", thinking: "not code", signature: "fixture" },
+            { type: "text", text: JSON.stringify({ feedback: ["ok"], code: "basic.showIcon(IconNames.Heart)" }) }
+          ]
+        } : {
           output_text: JSON.stringify({ feedback: ["ok"], code: "basic.showIcon(IconNames.Heart)" })
         })
       });
@@ -119,7 +128,55 @@ try {
   });
 
   const optionsPage = await context.newPage();
+  const catalogue = await readFile(path.join(repoRoot, "scripts/audit/fixtures/model-catalogue.json"), "utf8");
+  let catalogueMode = "online";
+  let catalogueSafe = true;
+  await context.route("https://catalogue.example.test/v1/model-catalogue", async (route) => {
+    const headers = await route.request().allHeaders();
+    catalogueSafe &&= !headers.authorization && !headers.cookie && !headers["x-api-key"];
+    await route.fulfill({ contentType: "application/json", headers: { "Access-Control-Allow-Origin": "*" },
+      body: catalogueMode === "online" ? catalogue : '{"object":"list","version":99,"data":[]}' });
+  });
   await optionsPage.goto(`chrome-extension://${extensionId}/options.html`);
+  await optionsPage.waitForFunction(() => document.querySelector("#model")?.value === "gpt-6-luna");
+  await optionsPage.bringToFront();
+  await optionsPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await optionsPage.screenshot({ path: path.join(runDir, "options-openai.png") });
+  await optionsPage.selectOption("#provider", PROVIDER);
+  await optionsPage.waitForFunction((provider) => document.querySelector("#model")?.value === (
+    provider === "anthropic" ? "claude-haiku-5-5" : "gpt-6-luna"
+  ), PROVIDER);
+  check("Current provider default", true, `${PROVIDER}: ${await optionsPage.locator("#model").inputValue()}`);
+  await optionsPage.screenshot({ path: path.join(runDir, `options-${PROVIDER}.png`) });
+  check("Public catalogue options", await optionsPage.locator("#model-options option").count() === 3 && catalogueSafe,
+    "Actual coordinator fixture offers all three direct-provider tiers without cookies or credentials.");
+  await optionsPage.fill("#model", "invalid model");
+  await optionsPage.click("button[type='submit']");
+  await optionsPage.waitForFunction(() => document.querySelector("#status").dataset.error === "true");
+  const unchangedConfig = await optionsPage.evaluate(async () => (await chrome.runtime.sendMessage({ type: "vibbit:byok:config:get" })).value);
+  check("Invalid model input does not silently save a different model", unchangedConfig.model !== "invalid model"
+    && await optionsPage.locator("#model").inputValue() === "invalid model", "Shows a validation error without saving.");
+  await optionsPage.screenshot({ path: path.join(runDir, "options-invalid-model.png") });
+  await optionsPage.fill("#model", "");
+  await optionsPage.click("button[type='submit']");
+  await optionsPage.waitForFunction(() => /Settings saved/.test(document.querySelector("#status").textContent));
+  check("Blank input restores visible catalogue default", await optionsPage.locator("#model").inputValue() === (PROVIDER === "anthropic" ? "claude-haiku-5-5" : "gpt-6-luna"), "The displayed and saved model agree.");
+  await optionsPage.fill("#model", "saved-custom-model");
+  await optionsPage.click("button[type='submit']");
+  await optionsPage.waitForFunction(() => /Settings saved/.test(document.querySelector("#status").textContent));
+  catalogueMode = "invalid";
+  await optionsPage.reload();
+  await optionsPage.waitForFunction(() => document.querySelector("#model")?.value === "saved-custom-model");
+  check("Invalid catalogue preserves saved custom model", await optionsPage.locator("#model-options option").count() === 2,
+    "Malformed response uses the small fallback plus the persisted custom ID.");
+  await optionsPage.screenshot({ path: path.join(runDir, "options-offline-custom.png") });
+  catalogueMode = "online";
+  await optionsPage.reload();
+  await optionsPage.waitForFunction(() => document.querySelector("#model")?.value === "saved-custom-model");
+  await optionsPage.selectOption("#provider", PROVIDER === "anthropic" ? "openai" : "anthropic");
+  await optionsPage.selectOption("#provider", PROVIDER);
+  check("Provider switching preserves custom selection", await optionsPage.locator("#model").inputValue() === "saved-custom-model", "No menu refresh overwrites the chosen ID.");
+  await optionsPage.fill("#model", PROVIDER === "anthropic" ? "claude-haiku-5-5" : "gpt-6-luna");
   await optionsPage.fill("#api-key", CANARY);
   await optionsPage.click("button[type='submit']");
   await optionsPage.waitForFunction(() => /Saved securely/.test(document.querySelector("#status")?.textContent || ""));
@@ -587,6 +644,8 @@ try {
     "__vibbit_extension_request_v2_",
     "vibbit:byok:",
     "memoryProviderKeys",
+    "gpt-6-luna",
+    "claude-haiku-5-5",
     "gpt-5.6-luna",
     "gemini-3-flash-preview",
     "deepseek/deepseek-v4-flash-0731",
@@ -599,6 +658,7 @@ try {
       && hostedProviderCalls === 0
       && !hostedManifest.options_page
       && !(hostedManifest.permissions || []).includes("storage")
+      && !(hostedManifest.host_permissions || []).includes("https://api.anthropic.com/*")
       && !(hostedManifest.content_scripts || []).some((entry) => entry.js.includes("page-bridge.js"))
       && !hostedRuntimeHasByokCapability
       && hostedFilesMissing,
