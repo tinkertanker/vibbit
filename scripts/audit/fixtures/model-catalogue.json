@@ -1,0 +1,286 @@
+{
+  "object": "list",
+  "version": 1,
+  "data": [
+    {
+      "id": "gpt-6-luna",
+      "provider": "openai",
+      "display_name": "GPT-6 Luna",
+      "tier": "economy",
+      "is_default": true
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "provider": "openai",
+      "display_name": "GPT-6.1 Sol",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "gpt-6-astra",
+      "provider": "openai",
+      "display_name": "GPT-6 Astra",
+      "tier": "premium",
+      "is_default": false
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "provider": "anthropic",
+      "display_name": "Claude Haiku 5.5",
+      "tier": "economy",
+      "is_default": true
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "provider": "anthropic",
+      "display_name": "Claude Sonnet 5.5",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "claude-opus-5-5",
+      "provider": "anthropic",
+      "display_name": "Claude Opus 5.5",
+      "tier": "premium",
+      "is_default": false
+    },
+    {
+      "id": "gemini-3-flash-preview",
+      "provider": "gemini",
+      "display_name": "Gemini 3 Flash (Preview)",
+      "tier": "economy",
+      "is_default": true
+    },
+    {
+      "id": "gemini-3-pro-preview",
+      "provider": "gemini",
+      "display_name": "Gemini 3 Pro (Preview)",
+      "tier": "premium",
+      "is_default": false
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "provider": "gemini",
+      "display_name": "Gemini 3.1 Pro (Preview)",
+      "tier": "premium",
+      "is_default": false
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "provider": "gemini",
+      "display_name": "Gemini 2.5 Flash",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "provider": "deepseek",
+      "display_name": "DeepSeek V4 Flash",
+      "tier": "economy",
+      "is_default": true
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "provider": "deepseek",
+      "display_name": "DeepSeek V4 Pro",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "provider": "openrouter",
+      "display_name": "DeepSeek V4 Flash",
+      "tier": "economy",
+      "is_default": true
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-0731",
+      "provider": "openrouter",
+      "display_name": "DeepSeek V4 Flash 0731",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "provider": "openrouter",
+      "display_name": "DeepSeek V4 Pro",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "openai/gpt-5.6-luna",
+      "provider": "openrouter",
+      "display_name": "OpenAI GPT-5.6 Luna",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "openai/gpt-5.6-terra",
+      "provider": "openrouter",
+      "display_name": "OpenAI GPT-5.6 Terra",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "anthropic/claude-sonnet-5",
+      "provider": "openrouter",
+      "display_name": "Anthropic Claude Sonnet 5",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "anthropic/claude-haiku-4.5",
+      "provider": "openrouter",
+      "display_name": "Anthropic Claude Haiku 4.5",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "xiaomi/mimo-v2.5",
+      "provider": "openrouter",
+      "display_name": "MiMo V2.5",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "qwen/qwen3.7-plus",
+      "provider": "openrouter",
+      "display_name": "Qwen3.7 Plus",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "provider": "openrouter",
+      "display_name": "Qwen3.8 27B",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "tencent/hy3",
+      "provider": "openrouter",
+      "display_name": "Hy3",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "provider": "opencode-go",
+      "display_name": "DeepSeek V4 Flash",
+      "tier": "economy",
+      "is_default": true
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "provider": "opencode-go",
+      "display_name": "DeepSeek V4 Pro",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "provider": "opencode-go",
+      "display_name": "GPT-5.6 Luna",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "mimo-v2.5",
+      "provider": "opencode-go",
+      "display_name": "MiMo V2.5",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "kimi-k3",
+      "provider": "opencode-go",
+      "display_name": "Kimi K3",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "glm-5.3",
+      "provider": "opencode-go",
+      "display_name": "GLM 5.3",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "hy3",
+      "provider": "opencode-go",
+      "display_name": "Hy3",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "muse-spark-1.2-contributor",
+      "provider": "opencode-go",
+      "display_name": "Muse Spark 1.2 Contributor (trains on data)",
+      "tier": "premium",
+      "is_default": false
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "provider": "opencode-zen",
+      "display_name": "DeepSeek V4 Flash",
+      "tier": "economy",
+      "is_default": true
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "provider": "opencode-zen",
+      "display_name": "DeepSeek V4 Pro",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "kimi-k3",
+      "provider": "opencode-zen",
+      "display_name": "Kimi K3",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "glm-5.2",
+      "provider": "opencode-zen",
+      "display_name": "GLM 5.2",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "minimax-m3",
+      "provider": "opencode-zen",
+      "display_name": "MiniMax M3",
+      "tier": "balanced",
+      "is_default": false
+    },
+    {
+      "id": "hy3-free",
+      "provider": "opencode-zen",
+      "display_name": "Hy3 Free",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "big-pickle",
+      "provider": "opencode-zen",
+      "display_name": "Big Pickle",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "nemotron-3-ultra-free",
+      "provider": "opencode-zen",
+      "display_name": "Nemotron 3 Ultra Free",
+      "tier": "economy",
+      "is_default": false
+    },
+    {
+      "id": "nemotron-3.5-lightning-free",
+      "provider": "opencode-zen",
+      "display_name": "Nemotron 3.5 Lightning Free",
+      "tier": "economy",
+      "is_default": false
+    }
+  ]
+}

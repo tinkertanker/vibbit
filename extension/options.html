@@ -23,7 +23,7 @@
   <p class="note">Your provider key is kept in extension session storage. It is not exposed to MakeCode and is cleared when Chrome exits. Previously stored MakeCode-page keys should be rotated.</p>
   <form id="settings">
     <label>Provider <select id="provider"></select></label>
-    <label>Model <select id="model"></select></label>
+    <label>Model <input id="model" list="model-options" aria-describedby="model-warning" maxlength="160" placeholder="Choose a suggestion or enter a model ID"><datalist id="model-options"></datalist><span id="model-warning" role="status" hidden>Muse Contributor trains on submitted data.</span></label>
     <label>API key <input id="api-key" type="password" autocomplete="off" placeholder="Leave blank to keep the current session key"></label>
     <label><span><input id="think-harder" type="checkbox" style="width:auto"> Think harder when supported</span></label>
     <div class="actions">

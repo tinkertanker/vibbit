@@ -46,6 +46,7 @@
   "host_permissions": [
     "https://vibbit.tk.sg/*",
     "https://api.openai.com/*",
+    "https://api.anthropic.com/*",
     "https://generativelanguage.googleapis.com/*",
     "https://openrouter.ai/*",
     "https://opencode.ai/*",

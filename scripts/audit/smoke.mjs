@@ -138,6 +138,7 @@ async function installFetchMock(page) {
         }
         if (url.includes("api.openai.com/v1/chat/completions")
           || url.includes("api.openai.com/v1/responses")
+          || url.includes("api.anthropic.com/v1/messages")
           || url.includes("openrouter.ai/api/v1/chat/completions")
           || url.includes("opencode.ai/zen/")) {
           window.__smokeByokCalls += 1;
@@ -146,7 +147,11 @@ async function installFetchMock(page) {
           const generated = window.__smokeForceInvalid
             ? "{\"feedback\":[\"retry\"],\"code\":\"const bad = () => 1\"}"
             : "{\"feedback\":[],\"code\":\"basic.showString(\\\"BYOK\\\")\"}";
-          const responseBody = url.endsWith("/responses")
+          const responseBody = url.endsWith("/messages")
+            ? { stop_reason: window.__smokeClaudeStop || "end_turn", content: [
+              { type: "thinking", thinking: "not code" }, { type: "text", text: generated }
+            ] }
+            : url.endsWith("/responses")
             ? { output: [{ content: [{ type: "output_text", text: generated }] }] }
             : { choices: [{ message: { content: generated } }] };
           return Promise.resolve(new Response(JSON.stringify(responseBody), {
@@ -171,6 +176,7 @@ async function runBuildAndPackage() {
   );
   const neutralScript = await readFile(path.join(repoRoot, "dist", "content-script.js"), "utf8");
   const neutralHasByokPerms = (neutralManifest.host_permissions || []).includes("https://api.openai.com/*")
+    && (neutralManifest.host_permissions || []).includes("https://api.anthropic.com/*")
     && (neutralManifest.host_permissions || []).includes("https://generativelanguage.googleapis.com/*")
     && (neutralManifest.host_permissions || []).includes("https://openrouter.ai/*")
     && (neutralManifest.host_permissions || []).includes("https://opencode.ai/*");
@@ -217,6 +223,7 @@ async function runBuildAndPackage() {
   const hostedZipStripped = hostedForbiddenFiles.every((name) => !zipEntries.split(/\r?\n/).includes(name));
   const hostedHasByokPerms = (hostedManifest.host_permissions || []).some((item) => (
     item.includes("api.openai.com")
+    || item.includes("api.anthropic.com")
     || item.includes("generativelanguage.googleapis.com")
     || item.includes("openrouter.ai")
     || item.includes("opencode.ai")
@@ -225,6 +232,8 @@ async function runBuildAndPackage() {
     "__vibbit_extension_request_v2_",
     "vibbit:byok:",
     "memoryProviderKeys",
+    "gpt-6-luna",
+    "claude-haiku-5-5",
     "gpt-5.6-luna",
     "gemini-3-flash-preview",
     "deepseek/deepseek-v4-flash-0731",
@@ -249,7 +258,15 @@ async function runBuildAndPackage() {
 }
 
 async function runNeutralUiSmoke(page) {
-  const runtime = await readFile(path.join(repoRoot, "work.js"), "utf8");
+  await runCommand(process.execPath, ["apps/bookmarklet/scripts/build.mjs", "--enable-byok", "--runtime-url=https://example.test/vibbit-runtime.js"], {
+    cwd: repoRoot,
+    env: { ...process.env, VIBBIT_BACKEND: "https://vibbit.tk.sg", VIBBIT_APP_TOKEN: "", VIBBIT_TKSLOPPER_GATEWAY_URL: "https://catalogue.example.test" }
+  });
+  const catalogue = await readFile(path.join(repoRoot, "scripts/audit/fixtures/model-catalogue.json"), "utf8");
+  await page.route("https://catalogue.example.test/v1/model-catalogue", (route) => route.fulfill({
+    contentType: "application/json", headers: { "Access-Control-Allow-Origin": "*" }, body: catalogue
+  }));
+  const runtime = await readFile(path.join(repoRoot, "artifacts/bookmarklet/vibbit-runtime.js"), "utf8");
   pushCheck(
     "02 Prompt format guard",
     !runtime.includes("FEEDBACK:"),
@@ -269,7 +286,10 @@ async function runNeutralUiSmoke(page) {
     "Backend prompt keeps pxt-microbit icon/enum + blocks-test style guidance."
   );
 
-  await page.addScriptTag({ content: runtime });
+  await page.route("https://example.test/**", (route) => route.fulfill({
+    contentType: "application/javascript", body: runtime
+  }));
+  await page.addScriptTag({ content: await readFile(path.join(repoRoot, "artifacts/bookmarklet/loader-byok.js"), "utf8") });
   await page.waitForSelector("#vibbit-fab", { timeout: 20000 });
   await page.click("#vibbit-fab");
   await page.waitForSelector("#setup-go", { timeout: 20000 });
@@ -388,6 +408,13 @@ async function runNeutralUiSmoke(page) {
     `mode=${setupDefault.modeValue}, modeRowHidden=${setupDefault.modeRowHidden}, byokVisible=${setupDefault.byokProviderVisible}.`
   );
 
+  await page.selectOption("#setup-prov", "opencode");
+  await page.fill("#setup-model", "go/responses/muse-spark-1.2-contributor");
+  await page.locator("#setup-model").blur();
+  pushCheck("05a Setup Contributor disclosure", await page.locator("#setup-model-warning").isVisible(), "Training warning remains visible with the datalist closed.");
+  await page.screenshot({ path: path.join(runDir, "contributor-setup.png") });
+  await page.fill("#setup-model", "go/deepseek-v4-flash");
+  await page.selectOption("#setup-prov", "openai");
   await page.selectOption("#setup-mode", "managed");
   await page.waitForTimeout(400);
   const managedState = await page.evaluate(() => {
@@ -508,7 +535,7 @@ async function runNeutralUiSmoke(page) {
   await page.click("#go");
   await page.waitForFunction(() => (
     ["Done", "Applied, unverified", "Fallback applied", "Error"].includes(
-      document.querySelector("#status")?.textContent?.trim()
+      document.querySelector("#vibbit-live-status")?.textContent?.trim()
     )
   ), { timeout: 30000 });
   const liveUpgradeState = await page.evaluate(() => ({
@@ -604,16 +631,16 @@ async function runNeutralUiSmoke(page) {
   await page.selectOption("#set-prov", "openai");
   const openAiDefault = await page.locator("#set-model").inputValue();
   await page.selectOption("#set-prov", "openrouter");
-  const openRouterModels = await page.locator("#set-model option").evaluateAll((options) => options.map((option) => option.value));
+  const openRouterModels = await page.locator("#set-model-options option").evaluateAll((options) => options.map((option) => option.value));
   const openRouterDefault = await page.locator("#set-model").inputValue();
   await page.selectOption("#set-prov", "opencode");
-  const openCodeModels = await page.locator("#set-model option").evaluateAll((options) => options.map((option) => option.value));
+  const openCodeModels = await page.locator("#set-model-options option").evaluateAll((options) => options.map((option) => option.value));
   const openCodeDefault = await page.locator("#set-model").inputValue();
   pushCheck(
     "09 Provider model presets and defaults",
-    openAiDefault === "gpt-5.6-luna"
-      && openRouterDefault === "openai/gpt-5.6-luna"
-      && openCodeDefault === "go/responses/gpt-5.6-luna"
+    openAiDefault === "gpt-6-luna"
+      && openRouterDefault === "deepseek/deepseek-v4-flash"
+      && openCodeDefault === "go/deepseek-v4-flash"
       && openRouterModels.includes("qwen/qwen3.8-27b")
       && openRouterModels.includes("tencent/hy3")
       && openCodeModels.includes("go/hy3")
@@ -621,11 +648,13 @@ async function runNeutralUiSmoke(page) {
     `defaults=${openAiDefault},${openRouterDefault},${openCodeDefault}; openRouter=${openRouterModels.join(",")}; openCode=${openCodeModels.join(",")}.`
   );
   await page.selectOption("#set-prov", "openai");
-  await page.selectOption("#set-model", "gpt-5.2");
+  await page.fill("#set-model", "gpt-5.2");
+  await page.dispatchEvent("#set-model", "change");
   await page.fill("#set-key", "smoke-dummy-key");
   await page.click("#save");
   const unsupportedThinkingHidden = await page.locator("#think-harder-wrap").evaluate((element) => element.style.display === "none");
-  await page.selectOption("#set-model", "gpt-5.6-luna");
+  await page.fill("#set-model", "gpt-6-luna");
+  await page.dispatchEvent("#set-model", "change");
   const supportedThinkingVisible = await page.locator("#think-harder-wrap").evaluate((element) => element.style.display === "inline-flex");
   pushCheck(
     "10 Think harder follows model capability",
@@ -665,7 +694,7 @@ async function runNeutralUiSmoke(page) {
       && byokGenerationState.pastedCode.includes("basic.showString(\"BYOK\")")
       && byokGenerationState.byokCalls >= 1
       && byokGenerationState.byokUrl === "https://api.openai.com/v1/responses"
-      && byokGenerationState.byokBody?.model === "gpt-5.6-luna"
+      && byokGenerationState.byokBody?.model === "gpt-6-luna"
       && byokGenerationState.byokBody?.max_output_tokens === 16384
       && byokGenerationState.byokBody?.reasoning?.effort === "max",
     `status='${byokGenerationState.status}', byokCalls=${byokGenerationState.byokCalls}, url='${byokGenerationState.byokUrl}', model='${byokGenerationState.byokBody?.model || ""}', reasoning='${byokGenerationState.byokBody?.reasoning?.effort || ""}'.`
@@ -676,7 +705,14 @@ async function runNeutralUiSmoke(page) {
 
   await page.click("#gear");
   await page.selectOption("#set-prov", "opencode");
-  await page.selectOption("#set-model", "go/hy3");
+  await page.fill("#set-model", "invalid model");
+  await page.dispatchEvent("#set-model", "change");
+  pushCheck("12a Bookmarklet invalid model feedback", await page.locator("#set-model").evaluate((input) => !input.validity.valid), "Invalid IDs are rejected instead of silently saved.");
+  await page.fill("#set-model", "");
+  await page.dispatchEvent("#set-model", "change");
+  pushCheck("12b Bookmarklet blank restores catalogue default", await page.locator("#set-model").inputValue() === "go/deepseek-v4-flash", "Visible selection agrees with the persisted catalogue default.");
+  await page.fill("#set-model", "go/hy3");
+  await page.dispatchEvent("#set-model", "change");
   await page.fill("#set-key", "smoke-dummy-key");
   await page.click("#save");
   await page.click("#back");
@@ -698,7 +734,11 @@ async function runNeutralUiSmoke(page) {
   );
 
   await page.click("#gear");
-  await page.selectOption("#set-model", "go/responses/muse-spark-1.2-contributor");
+  await page.fill("#set-model", "go/responses/muse-spark-1.2-contributor");
+  await page.dispatchEvent("#set-model", "change");
+  await page.locator("#set-model").blur();
+  pushCheck("13a Settings Contributor disclosure", await page.locator("#set-model-warning").isVisible(), "Saved selection visibly discloses training outside the suggestion list.");
+  await page.screenshot({ path: path.join(runDir, "contributor-settings.png") });
   await page.click("#back");
   await page.fill("#p", "Create another tiny byok program");
   await page.click("#go");
@@ -738,10 +778,38 @@ async function runNeutralUiSmoke(page) {
       && /minimal fallback was applied/i.test(fallbackState.warning),
     `calls=${fallbackState.calls - callsBeforeFallback}, code='${fallbackState.code}', warning=${/minimal fallback was applied/i.test(fallbackState.warning)}.`
   );
+
+  await page.evaluate(() => { window.__smokeForceInvalid = false; });
+  await page.click("#gear");
+  await page.selectOption("#set-prov", "anthropic");
+  const claudeModels = await page.locator("#set-model-options option").evaluateAll((options) => options.map((option) => option.value));
+  pushCheck("16 Claude options", await page.locator("#set-model").inputValue() === "claude-haiku-5-5"
+    && claudeModels.includes("claude-sonnet-5-5") && claudeModels.includes("claude-opus-5-5"), claudeModels.join(", "));
+  await page.fill("#set-key", "smoke-dummy-key");
+  await page.click("#save");
+  await page.screenshot({ path: path.join(runDir, "claude-settings.png") });
+  await page.click("#back");
+  await page.uncheck("#think-harder");
+  await page.fill("#p", "Create a tiny Claude program");
+  await page.click("#go");
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Applied, unverified");
+  const claude = await page.evaluate(() => ({ url: window.__smokeByokUrl, body: window.__smokeByokBody, code: window.__smokeMonacoValue }));
+  pushCheck("17 Claude native generation", claude.url === "https://api.anthropic.com/v1/messages"
+    && claude.body.model === "claude-haiku-5-5" && claude.body.thinking.type === "adaptive"
+    && claude.body.output_config.effort === "low" && claude.body.temperature === undefined
+    && claude.code.includes('basic.showString("BYOK")'), "Native Messages produced applied code, excluding thinking.");
+  await page.screenshot({ path: path.join(runDir, "claude-generated.png") });
+  await page.evaluate(() => { window.__smokeClaudeStop = "refusal"; });
+  await page.fill("#p", "Exercise Claude refusal");
+  await page.click("#go");
+  await page.waitForFunction(() => document.querySelector("#status")?.textContent?.trim() === "Error");
+  pushCheck("18 Claude refusal preserves editor", await page.evaluate((code) => window.__smokeMonacoValue === code, claude.code),
+    "Refusal shows Error without applying partial output or a fallback.");
+  await page.screenshot({ path: path.join(runDir, "claude-refusal.png") });
 }
 
 async function runHostedUiSmoke(browser) {
-  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, deviceScaleFactor: 2 });
   try {
     await page.addInitScript(() => {
       try {
@@ -813,7 +881,8 @@ async function runHostedUiSmoke(browser) {
 
 async function runSmokeUi() {
   const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  // MakeCode's service worker otherwise intercepts the fixture script before Playwright routing.
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, deviceScaleFactor: 2, serviceWorkers: "block" });
 
   try {
     await page.addInitScript(() => {
@@ -874,7 +943,7 @@ const report = [
   "",
   "## Runtime source",
   "",
-  `- Neutral source: \`${path.join(repoRoot, "work.js")}\``,
+  `- Neutral bookmarklet loader/runtime: \`${path.join(repoRoot, "artifacts/bookmarklet")}\` (fixture URL; service workers blocked for routing)`,
   `- Hosted package: \`${path.join(repoRoot, "dist", "content-script.js")}\``,
   "",
   "## Outcome",

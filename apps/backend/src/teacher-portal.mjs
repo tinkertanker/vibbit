@@ -16,6 +16,7 @@ import {
 import { createMagicLinkAuth } from "./magic-link-auth.mjs";
 import { resolveTrustedClientIp } from "./deployment-policy.mjs";
 import { createRateLimitConfig } from "./rate-limit.mjs";
+import { createModelCatalogue } from "../../../shared/model-catalogue.mjs";
 
 const TEACHER_SESSION_COOKIE = "vibbit_teacher_session";
 const OAUTH_STATE_COOKIE = "vibbit_oauth_state";
@@ -472,7 +473,7 @@ async function testCredentialProfileConnection(profile, { outboundUrlPolicy } = 
     user: "Reply with OK.",
     signal,
     customBaseUrl,
-    maxTokens: 32,
+    maxTokens: provider === "anthropic" || /^gpt-6[.-]/.test(defaultModel) ? 1024 : 32,
     fetchImpl
   }), 12000);
 }
@@ -552,6 +553,8 @@ function renderLoginPage({
 
 function renderDashboardPage({
   teacher,
+  modelPresets,
+  managedClassroomModels,
   classrooms,
   credentialProfiles,
   publicOrigin,
@@ -581,7 +584,7 @@ function renderDashboardPage({
             <strong>${escapeHtml(profile.name)}</strong>
             <span class="status ${statusClass}">${escapeHtml(statusLabel)}</span>
           </div>
-          <div class="hint">${escapeHtml(profile.providerLabel)} · ${escapeHtml(profile.defaultModel)}${profile.isDefault ? " · default" : ""} · used by ${escapeHtml(profile.usageCount)} classroom${profile.usageCount === 1 ? "" : "s"}</div>
+          <div class="hint">${escapeHtml(profile.providerLabel)} · ${escapeHtml(profile.modelLabel)}${profile.isDefault ? " · default" : ""} · used by ${escapeHtml(profile.usageCount)} classroom${profile.usageCount === 1 ? "" : "s"}</div>
         </div>
         <details class="settings">
           <summary>Edit AI account</summary>
@@ -596,8 +599,9 @@ function renderDashboardPage({
               </select>
             </label>
             <label>Default model
-              <input type="text" name="defaultModel" value="${escapeHtml(profile.defaultModel)}" maxlength="160" required />
+              <input type="text" name="defaultModel" list="current-models" value="${escapeHtml(profile.defaultModel)}" maxlength="160" required />
             </label>
+            <p class="hint">Muse Contributor trains on submitted data. Choose it only if your school permits this.</p>
             <label>API key ${profile.hasApiKey ? "(leave blank to keep the saved key)" : ""}
               <input type="password" name="apiKey" autocomplete="off" placeholder="${profile.hasApiKey ? "••••••••" : "sk-..."}" />
             </label>
@@ -645,7 +649,9 @@ function renderDashboardPage({
             <a class="btn secondary" href="${escapeHtml(joinPath)}">Share with students</a>
           </div>
           <div class="hint">${escapeHtml(usageLine)}</div>
-          <div class="hint">AI account: ${escapeHtml(classroom.resolvedCredentialProfileName || "Not set")}${classroom.usingTeacherDefault ? " (default)" : ""} · ${escapeHtml(classroom.resolvedProviderLabel || "—")} / ${escapeHtml(classroom.resolvedModel || "—")}</div>
+          ${managedClassroomModels[classroom.id]
+            ? `<div class="hint">Managed gateway: ${escapeHtml(managedClassroomModels[classroom.id])}</div>`
+            : `<div class="hint">AI account: ${escapeHtml(classroom.resolvedCredentialProfileName || "Not set")}${classroom.usingTeacherDefault ? " (default)" : ""} · ${escapeHtml(classroom.resolvedProviderLabel || "—")} / ${escapeHtml(classroom.modelLabel || "—")}</div>`}
         </div>
         <details class="settings">
           <summary>Classroom settings</summary>
@@ -753,9 +759,16 @@ function renderDashboardPage({
             ${renderCredentialProviderOptions("openai")}
           </select>
         </label>
-        <label>Default model
-          <input type="text" name="defaultModel" value="${escapeHtml(defaultModelForCredentialProvider("openai"))}" maxlength="160" required />
+        <label>Default model (optional)
+          <input type="text" name="defaultModel" value="" maxlength="160" list="current-models" placeholder="Leave blank for the provider default" />
         </label>
+        <p class="hint">Muse Contributor trains on submitted data. Choose it only if your school permits this.</p>
+        <datalist id="current-models">
+          ${Object.entries(modelPresets).flatMap(([provider, models]) => models.map((model) =>
+            `<option value="${escapeHtml(model.id)}">${escapeHtml(providerDisplayName(provider) + " · " + model.label + (model.default ? " (default)" : ""))}</option>`
+          )).join("")}
+        </datalist>
+        <p class="hint">Suggestions come from the configured tkslopper catalogue, with offline defaults if unavailable. Leave blank for the provider default, or enter any model ID supported by your account. Saved models are kept.</p>
         <label>API key
           <input type="password" name="apiKey" autocomplete="off" required placeholder="sk-..." />
         </label>
@@ -876,7 +889,9 @@ export function createTeacherPortal({
   respondCorsHeaders = () => ({}),
   deploymentPolicy = null,
   outboundUrlPolicy = null,
-  usageStore = null
+  usageStore = null,
+  modelCatalogue = createModelCatalogue({ origin: env.VIBBIT_TKSLOPPER_GATEWAY_URL }),
+  getManagedClassroomModels = async () => ({})
 } = {}) {
   const google = resolveGoogleConfig(env, deploymentPolicy);
   const magicLink = createMagicLinkAuth(env);
@@ -920,6 +935,11 @@ export function createTeacherPortal({
     const provider = normaliseCredentialProvider(
       body.provider || (existingProfile && existingProfile.provider) || "openai"
     );
+    let defaultModel = body.defaultModel ?? existingProfile?.defaultModel;
+    if (!String(defaultModel || "").trim()) {
+      const models = (await modelCatalogue.load())[provider] || [];
+      defaultModel = models.find((model) => model.default)?.id || models[0]?.id || defaultModelForCredentialProvider(provider);
+    }
     return {
       name: body.name,
       provider,
@@ -930,7 +950,7 @@ export function createTeacherPortal({
           ? body.customBaseUrl
           : (existingProfile && existingProfile.customBaseUrl)
       ),
-      defaultModel: body.defaultModel,
+      defaultModel,
       makeDefault: parseBoolean(body.makeDefault, false)
     };
   };
@@ -1031,6 +1051,7 @@ export function createTeacherPortal({
       }
       const classrooms = store.listClassroomsForTeacher(teacher.id).map((classroom) => {
         const view = store.publicClassroomView(classroom);
+        view.modelLabel = modelCatalogue.labelFor(view.resolvedModel || "");
         if (usageStore && typeof usageStore.publicView === "function") {
           view.usage = usageStore.publicView(classroom.id);
         }
@@ -1044,12 +1065,18 @@ export function createTeacherPortal({
       }
       const credentialProfiles = store.listCredentialProfilesForTeacher(teacher.id).map((profile) => {
         const view = store.publicCredentialProfileView(profile);
+        view.modelLabel = modelCatalogue.labelFor(view.defaultModel);
         view.isDefault = teacher.defaultCredentialProfileId === profile.id;
         view.usageCount = profileUsageCounts[profile.id] || 0;
         return view;
       });
+      const [modelPresets, managedClassroomModels] = await Promise.all([
+        modelCatalogue.load(), getManagedClassroomModels(classrooms)
+      ]);
       const html = renderDashboardPage({
         teacher,
+        modelPresets,
+        managedClassroomModels,
         classrooms,
         credentialProfiles,
         publicOrigin,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { callByokProvider, ProviderRequestError } from "./provider-transport.mjs";
+import { defaultByokModel, normaliseByokModel } from "./byok-config.mjs";
 
 const MESSAGES = [
   { role: "system", content: "system" },
@@ -46,7 +47,7 @@ test("provider and model are allowlisted instead of becoming an arbitrary fetch 
     }
   });
   assert.equal(calls[0].url, "https://api.openai.com/v1/responses");
-  assert.equal(calls[0].body.model, "gpt-5.6-luna");
+  assert.equal(calls[0].body.model, "gpt-6-luna");
 });
 
 test("provider failures expose a normalized code without response content", async () => {
@@ -120,4 +121,76 @@ test("OpenAI Responses uses the bounded reasoning contract", async () => {
   assert.equal(requestBody.max_output_tokens, 16384);
   assert.deepEqual(requestBody.reasoning, { effort: "max" });
   assert.deepEqual(requestBody.input, MESSAGES);
+});
+
+test("current OpenAI defaults use Responses without resetting valid stored choices", async () => {
+  assert.equal(defaultByokModel("openai"), "gpt-6-luna");
+  for (const model of ["gpt-5-mini", "gpt-5.2", "gpt-5.6-luna", "gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"]) {
+    assert.equal(normaliseByokModel("openai", model), model);
+  }
+  for (const model of ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"]) {
+    await callByokProvider({
+      provider: "openai", model, apiKey: "fixture", messages: MESSAGES,
+      fetchImpl: async (url, init) => {
+        assert.equal(url, "https://api.openai.com/v1/responses");
+        const body = JSON.parse(init.body);
+        assert.equal(body.model, model);
+        assert.equal(body.temperature, undefined);
+        assert.deepEqual(body.reasoning, { effort: "low" });
+        return jsonResponse({ output_text: "ok" });
+      }
+    });
+  }
+});
+
+test("Anthropic separates system text, preserves correction turns, and returns only answer blocks", async () => {
+  const messages = [...MESSAGES, { role: "assistant", content: "bad code" }, { role: "user", content: "fix it" }];
+  for (const thinkHarder of [false, true]) {
+    const controller = new AbortController();
+    const output = await callByokProvider({
+      provider: "anthropic", apiKey: "anthropic-fixture", messages, thinkHarder, signal: controller.signal,
+      fetchImpl: async (url, init) => {
+        assert.equal(url, "https://api.anthropic.com/v1/messages");
+        assert.equal(init.headers["x-api-key"], "anthropic-fixture");
+        assert.equal(init.headers["anthropic-version"], "2023-06-01");
+        assert.equal(init.redirect, "error");
+        assert.equal(init.signal, controller.signal);
+        const body = JSON.parse(init.body);
+        assert.equal(body.model, "claude-haiku-5-5");
+        assert.equal(body.system, "system");
+        assert.deepEqual(body.messages, messages.slice(1));
+        assert.deepEqual(body.thinking, { type: "adaptive" });
+        assert.deepEqual(body.output_config, { effort: thinkHarder ? "high" : "low" });
+        assert.equal(body.max_tokens, thinkHarder ? 16384 : 3072);
+        for (const field of ["temperature", "top_p", "top_k", "seed", "tools"]) assert.equal(body[field], undefined);
+        return jsonResponse({ stop_reason: "end_turn", content: [
+          { type: "thinking", thinking: "private", signature: "hidden" },
+          { type: "text", text: "answer " }, { type: "text", text: "only" }
+        ] });
+      }
+    });
+    assert.equal(output, "answer only");
+  }
+});
+
+test("Anthropic refuses to apply refused or truncated output", async () => {
+  for (const model of ["claude-3-haiku-20240307", "claude-sonnet-4-5", "custom-claude-id"]) {
+    assert.equal(await callByokProvider({
+      provider: "anthropic", model, apiKey: "fixture", messages: MESSAGES, thinkHarder: true,
+      fetchImpl: async (_, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.model, model);
+        assert.equal(body.thinking, undefined);
+        assert.equal(body.output_config, undefined);
+        assert.equal(body.max_tokens, 3072);
+        return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: "legacy answer" }] });
+      }
+    }), "legacy answer");
+  }
+  for (const stop_reason of ["refusal", "max_tokens", "model_context_window_exceeded"]) {
+    await assert.rejects(callByokProvider({
+      provider: "anthropic", apiKey: "fixture", messages: MESSAGES,
+      fetchImpl: async () => jsonResponse({ stop_reason, content: [{ type: "text", text: "partial code" }] })
+    }), (error) => error instanceof ProviderRequestError && error.code === `anthropic_${stop_reason}`);
+  }
 });

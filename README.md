@@ -30,7 +30,7 @@ This repo ships one Vibbit runtime supporting both:
   - `GET {BACKEND}/download/vibbit-extension.zip`
   - `GET {BACKEND}/bookmarklet`
   - `GET {BACKEND}/bookmarklet/runtime.js`
-- Teacher classrooms accept OpenAI, OpenRouter, OpenCode, Gemini, or a custom OpenAI-compatible base URL (LiteLLM / Claude-compatible proxies). Custom public hosts require `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST`; localhost/private gateways need self-hosted mode plus `VIBBIT_ALLOW_PRIVATE_ENDPOINTS=true`. The URL must expose a `/chat/completions` endpoint (or equivalent path normalised to `/v1`).
+- Teacher classrooms accept OpenAI, Anthropic (Claude), OpenRouter, OpenCode, Gemini, or a custom OpenAI-compatible base URL (LiteLLM / Claude-compatible proxies). Custom public hosts require `VIBBIT_CUSTOM_ENDPOINT_ALLOWLIST`; localhost/private gateways need self-hosted mode plus `VIBBIT_ALLOW_PRIVATE_ENDPOINTS=true`. The URL must expose a `/chat/completions` endpoint (or equivalent path normalised to `/v1`).
 - Optionally, operators can route allow-listed classrooms through Tinkertanker's managed gateway (tkslopper) with a backend-only service credential. It is off by default; see [Managed gateway (tkslopper)](apps/backend/README.md#managed-gateway-tkslopper).
 - Request payload supports:
   - `target`, `request`, `currentCode`, `pageErrors`, `conversionDialog`
@@ -38,7 +38,8 @@ This repo ships one Vibbit runtime supporting both:
 
 ### BYOK mode
 
-- OpenAI key -> `https://api.openai.com/v1/responses` for GPT-5.6 Luna; older presets use `/v1/chat/completions`
+- OpenAI key -> `https://api.openai.com/v1/responses` for GPT-6 Luna (default), GPT-6.1 Sol, GPT-6 Astra, and GPT-5.6 Luna; older presets use `/v1/chat/completions`
+- Anthropic key -> `https://api.anthropic.com/v1/messages` for Claude Haiku 5.5 (default), Sonnet 5.5, or Opus 5.5
 - Gemini key -> `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
 - OpenRouter key -> `https://openrouter.ai/api/v1/chat/completions`
 - OpenCode key -> OpenCode Go or Zen (`https://opencode.ai/zen/go/v1` or `https://opencode.ai/zen/v1`)
@@ -46,6 +47,14 @@ This repo ships one Vibbit runtime supporting both:
 In the Chrome extension, BYOK configuration lives on the extension's options page. Keys are kept in trusted `chrome.storage.session`, cleared when Chrome exits, and never placed in MakeCode's DOM, events, `localStorage`, or provider requests from the page. Clicking the Vibbit toolbar action arms that exact MakeCode document for a fixed 15 minutes and at most 10 generations; one request may run at a time, and cancellation, navigation, or tab close aborts provider work. While armed, hostile code already running on the MakeCode page can invoke the bounded generation capability and spend that quota, but it cannot read the key or choose an arbitrary endpoint, model, header, or provider request body. Schools that require prevention of all page-initiated quota use should distribute the hosted-managed package (`npm run package`), whose service worker denies BYOK; merely selecting Managed mode inside a neutral dual-mode build is not a security boundary.
 
 The bookmarklet cannot provide the same origin boundary: its BYOK key is memory-only and disappears on reload, but other scripts on the page can observe it while the bookmarklet is running. Rotate any key previously entered into an older Vibbit build that persisted keys in MakeCode `localStorage`.
+
+Existing valid model selections are retained. Current direct OpenAI/Claude defaults use low reasoning effort; “Think harder” uses max for GPT and high for the Claude Haiku/Sonnet/Opus 5.5 families. Older/custom Claude IDs are submitted unchanged without adaptive-thinking or effort overrides; those knobs are only enabled for the current 5.5 families. Claude requests omit sampling parameters, extract only text blocks, and reject refused or truncated output rather than applying partial code. Model IDs and constraints were checked against the [OpenAI GPT-6 guide](https://developers.openai.com/api/docs/guides/latest-model), [Claude Haiku 5.5 migration guide](https://platform.claude.com/docs/en/models/haiku-5-5/migration-guide), and [per-model thinking support](https://platform.claude.com/docs/en/build-with-claude/thinking).
+
+Model suggestions for extension BYOK, bookmarklets, and teacher/operator provider-key forms come from `GET <VIBBIT_TKSLOPPER_GATEWAY_URL origin>/v1/model-catalogue`. Set this variable when building clients and on the backend; it is independent of enabling managed gateway generation. No gateway URL is invented when unset. The request sends no credentials or cookies, rejects redirects, times out after 2.5 seconds, and accepts at most 128 KiB and 500 validated entries. Successes cache for five minutes; failures for 30 seconds. Unavailable/invalid catalogues use a small bundled fallback. Inputs also accept saved/custom IDs; catalogue refreshes do not reset them. Suggestions never authorize models or supply credentials, endpoints, or protocols. OpenCode native IDs receive the existing Go/Zen adapter prefixes; native DeepSeek is omitted because Vibbit has no direct DeepSeek adapter. Managed generation still submits the configured authorized alias, not these native IDs.
+
+`shared/model-catalogue.mjs` owns the catalogue logic generated into `work.js`. After editing it run `npm run sync:model-catalogue`; `npm run check:compat-core` also checks this generated block. The 40-entry coordinator contract fixture is in `scripts/audit/fixtures/model-catalogue.json` and is test-only, not a bundled menu.
+
+Muse Contributor selections show a persistent training disclosure, including offline/custom selections. A catalogue that would make a training model the default is rejected in favor of offline defaults; selecting that model must remain an explicit school/user decision.
 
 ## Files
 

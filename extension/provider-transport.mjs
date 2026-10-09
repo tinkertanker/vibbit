@@ -65,7 +65,7 @@ export async function callByokProvider({
   fetchImpl = fetch
 } = {}) {
   const safeProvider = normaliseByokProvider(provider);
-  const safeModel = normaliseByokModel(safeProvider, model);
+  const safeModel = normaliseByokModel(provider, model);
   const key = String(apiKey || "").trim();
   if (!key) throw new ProviderRequestError("missing_key");
   const harder = Boolean(thinkHarder) && supportsByokThinkHarder(safeProvider, safeModel);
@@ -74,6 +74,39 @@ export async function callByokProvider({
     role: turn?.role === "assistant" || turn?.role === "system" ? turn.role : "user",
     content: String(turn?.content || "")
   })) : [];
+
+  if (safeProvider === "anthropic") {
+    const conversation = transcript.filter((turn) => turn.role !== "system");
+    const data = await fetchJson(fetchImpl, "https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: JSON.stringify({
+        model: safeModel,
+        max_tokens: maxTokens,
+        system: transcript.filter((turn) => turn.role === "system").map((turn) => turn.content).join("\n\n"),
+        messages: conversation,
+        ...(supportsByokThinkHarder(safeProvider, safeModel) ? {
+          thinking: { type: "adaptive" },
+          output_config: { effort: harder ? "high" : "low" }
+        } : {})
+      })
+    }, safeProvider);
+    if (["refusal", "max_tokens", "model_context_window_exceeded"].includes(data?.stop_reason)) {
+      throw new ProviderRequestError(`anthropic_${data.stop_reason}`);
+    }
+    if (!["end_turn", "stop_sequence"].includes(data?.stop_reason)) {
+      throw new ProviderRequestError("anthropic_invalid_response");
+    }
+    return (Array.isArray(data?.content) ? data.content : [])
+      .filter((block) => block?.type === "text" && typeof block.text === "string")
+      .map((block) => block.text).join("").trim();
+  }
 
   if (safeProvider === "gemini") {
     const flattened = serializeTranscript(transcript);
@@ -94,11 +127,13 @@ export async function callByokProvider({
   }
 
   if (safeProvider === "openai") {
-    const responses = safeModel === "gpt-5.6-luna";
+    const current = /^gpt-6[.-]/.test(safeModel);
+    const responses = safeModel === "gpt-5.6-luna" || current;
     const body = responses
       ? { model: safeModel, max_output_tokens: maxTokens, input: transcript }
       : { model: safeModel, messages: transcript };
     if (responses && harder) body.reasoning = { effort: "max" };
+    else if (current) body.reasoning = { effort: "low" };
     if (!responses && /^gpt-5/i.test(safeModel)) body.max_completion_tokens = maxTokens;
     if (!responses && !/^gpt-5/i.test(safeModel)) {
       body.temperature = 0.1;

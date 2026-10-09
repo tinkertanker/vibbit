@@ -64,17 +64,17 @@ Use changed surfaces to determine what may need shipping, not as automatic instr
 5. Only after required assets are live proceed to an authorized deployment of routes referencing
    their `releases/latest` URLs. A custom-target local package is not what this hosted workflow builds.
 
-## Deployment target preflight — unresolved infrastructure history
+## Deployment target preflight
 
-Earlier root guidance identifies production `vibbit.tk.sg` as Docker on
-`tinkertanker@dev.tk.sg:Docker/vibbit`. It describes gitignored `deploy.sh` (SSH, pull, rebuild,
-restart) and `docker-compose.yml` (external `devtksg` network). These files are not checked in
-and may not exist in an orb. The [backend guide](../apps/backend/README.md#railway-deployment-option)
-also contains Railway deployment instructions; this does not establish the live site's current host.
+YJ confirmed on 2026-10-09 that production `vibbit.tk.sg` runs in Docker at
+`tinkertanker@dev.tk.sg:Docker/vibbit`, not Railway. Deployment configuration is local to
+that host; inspect its Compose file, current image, state mounts and environment without
+printing secrets. The [Railway instructions](../apps/backend/README.md#railway-deployment-option)
+describe an alternative deployment only.
 
-Before an authorized deployment, confirm with the operator which environment/account, machine,
-source revision, infrastructure files, and rollback path are current. Do not guess Docker versus
-Railway, create replacement infrastructure, or SSH/deploy merely to resolve this documentation ambiguity.
+Before each authorized deployment, verify the actual checkout/container and record a rollback
+image and backup of configuration/state. Do not replace the host's deployment configuration with
+an inferred template or deploy unrelated services.
 Preserve hosted authentication, encryption, origin/endpoint restrictions, and sensitive persisted
 teacher/admin state; do not migrate/delete/overwrite state as an incidental deployment step.
 

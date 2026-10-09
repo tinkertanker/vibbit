@@ -9,7 +9,7 @@ and local backend state, not a school account or shared operator state.
 
 | Command | What it exercises | Limits and output profile |
 | --- | --- | --- |
-| `npm run audit:smoke` | Compat check, neutral build, hosted package, mocked Managed/BYOK UI, revert and error paths | Loads public MakeCode; injects raw `work.js` for neutral and built runtime for hosted. Provider/editor behavior is stubbed: not offline, installed-extension, or real compile proof. Leaves hosted `dist/` and zip. |
+| `npm run audit:smoke` | Compat check, neutral build, hosted package, built bookmarklet loader/runtime, mocked Managed/BYOK UI, revert and error paths | Loads public MakeCode; serves the bookmarklet runtime through a browser route fixture and injects built runtime for hosted. Provider/editor behavior is stubbed: not offline, installed-extension, or real compile proof. Leaves hosted `dist/` and zip, plus fixture-URL bookmarklet artifacts. |
 | `npm run audit:extension` | Actual unpacked extension, options/session credentials, bridge/broker, reload, hosted BYOK capability removal; mocked canary provider | Headful persistent Chromium requires a display. Seeds toolbar authorization rather than physically clicking browser chrome; exercises the shared toolbar helper after real reload. Builds both profiles and attempts to restore neutral `dist/`; check the report. |
 | `npm run audit:editor` | Real released micro:bit/Arcade/Maker editors, submitted-source diagnostics and native Blocks acceptance/rejection | No build/package, extension install, or LLM call. Uses public MakeCode. Filter with `--target` or supply `--input` JSONL fixtures; optional `--headful`. |
 | `npm run audit:live` | Configured real Managed/BYOK transport using environment or `.env.audit` | Requires authorization for quota/data use. Builds/packages but injects raw runtime with stubbed Monaco and Node transport proxies (bypassing browser CORS). Not extension-isolation or real-editor proof; leaves hosted outputs if packaging succeeds. See token limitation below. |
@@ -42,6 +42,10 @@ relaunches under `xvfb-run` (which must be installed); an explicit equivalent is
 ```bash
 xvfb-run -a npm run audit:extension
 ```
+
+Set `VIBBIT_AUDIT_PROVIDER=anthropic npm run audit:extension` to exercise native Claude Messages with a mocked provider. The default remains mocked OpenAI Responses. Both check trusted session credentials, document-bound quotas, cancellation, reload, and hosted capability stripping; neither contacts a real provider.
+
+The smoke and extension audits serve the coordinator's 40-entry `fixtures/model-catalogue.json` from a mocked `catalogue.example.test` origin. Extension checks cover credential-free fetching, invalid-response fallback, saved/custom selection retention and provider switching. Audit-generated clients may contain that fixture origin; rebuild with the intended `VIBBIT_TKSLOPPER_GATEWAY_URL` before distributing them. The fixture is not part of the shipped fallback.
 
 For installed-extension verification, build the **intended profile**, load/reload `dist/`
 at `chrome://extensions`, then refresh affected MakeCode tabs before retesting.

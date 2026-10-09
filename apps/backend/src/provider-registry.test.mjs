@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { callManagedProvider, defaultModelForCredentialProvider } from "./provider-registry.mjs";
 
-test("GPT-5.6 Luna is the default wherever it is available", () => {
-  assert.equal(defaultModelForCredentialProvider("openai"), "gpt-5.6-luna");
+test("direct providers use current cheap defaults without inventing reseller model IDs", () => {
+  assert.equal(defaultModelForCredentialProvider("openai"), "gpt-6-luna");
+  assert.equal(defaultModelForCredentialProvider("anthropic"), "claude-haiku-5-5");
   assert.equal(defaultModelForCredentialProvider("openrouter"), "openai/gpt-5.6-luna");
   assert.equal(defaultModelForCredentialProvider("opencode"), "gpt-5.6-luna");
   assert.equal(defaultModelForCredentialProvider("custom"), "gpt-4o-mini");
@@ -283,4 +284,74 @@ test("callManagedProvider does not send native tool-calling fields", async () =>
 
   assert.equal(captured.length, 3);
   for (const body of captured) assertNoNativeTools(body);
+});
+
+test("Anthropic server credentials use native Messages and exclude thinking from generated text", async () => {
+  const messages = [
+    { role: "system", content: "sys" }, { role: "user", content: "first" },
+    { role: "assistant", content: "bad code" }, { role: "user", content: "fix" }
+  ];
+  const text = await callManagedProvider({
+    provider: "anthropic", apiKey: "server-fixture", model: "claude-sonnet-5-5", messages,
+    fetchImpl: async (url, init) => {
+      assert.equal(url, "https://api.anthropic.com/v1/messages");
+      assert.equal(init.redirect, "error");
+      assert.equal(init.headers["x-api-key"], "server-fixture");
+      assert.equal(init.headers["anthropic-version"], "2023-06-01");
+      const body = JSON.parse(init.body);
+      assert.deepEqual(body, {
+        model: "claude-sonnet-5-5", max_tokens: 3072, system: "sys", messages: messages.slice(1),
+        thinking: { type: "adaptive" }, output_config: { effort: "low" }
+      });
+      return Response.json({ stop_reason: "end_turn", content: [
+        { type: "thinking", thinking: "hidden" }, { type: "text", text: "answer" }
+      ] });
+    }
+  });
+  assert.equal(text, "answer");
+  for (const model of ["claude-3-haiku-20240307", "claude-sonnet-4-5", "custom-claude-id"]) {
+    assert.equal(await callManagedProvider({
+      provider: "anthropic", model, apiKey: "fixture", system: "sys", user: "hello",
+      fetchImpl: async (_, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.model, model);
+        assert.equal(body.thinking, undefined);
+        assert.equal(body.output_config, undefined);
+        return Response.json({ stop_reason: "end_turn", content: [{ type: "text", text: "legacy answer" }] });
+      }
+    }), "legacy answer");
+  }
+  for (const stop_reason of ["refusal", "max_tokens", "model_context_window_exceeded"]) {
+    await assert.rejects(callManagedProvider({
+      provider: "anthropic", apiKey: "fixture", system: "sys", user: "hello",
+      fetchImpl: async () => Response.json({ stop_reason, content: [{ type: "text", text: "partial" }] })
+    }), new RegExp(`anthropic_${stop_reason}`));
+  }
+});
+
+test("current direct OpenAI models use Responses without sampling", async () => {
+  for (const model of ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"]) {
+    const text = await callManagedProvider({
+      provider: "openai", apiKey: "fixture", model, system: "sys", user: "hello",
+      fetchImpl: async (url, init) => {
+        assert.equal(url, "https://api.openai.com/v1/responses");
+        const body = JSON.parse(init.body);
+        assert.equal(body.model, model);
+        assert.equal(body.temperature, undefined);
+        assert.deepEqual(body.reasoning, { effort: "low" });
+        return Response.json({ output_text: "answer" });
+      }
+    });
+    assert.equal(text, "answer");
+  }
+});
+
+test("catalogue Gemini preview selections use the documented beta endpoint", async () => {
+  const text = await callManagedProvider({ provider: "gemini", model: "gemini-3-flash-preview", apiKey: "fixture", user: "hello",
+    fetchImpl: async (url) => {
+      assert.equal(url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent");
+      return Response.json({ candidates: [{ content: { parts: [{ text: "answer" }] } }] });
+    }
+  });
+  assert.equal(text, "answer");
 });

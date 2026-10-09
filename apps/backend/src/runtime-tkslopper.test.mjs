@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createBackendRuntime } from "./runtime.mjs";
+import { followTeacherForm } from "./teacher-test-helpers.mjs";
 
 // Mocked tkslopper routing tests. No real gateway or provider traffic.
 const CONTROL_PLANE_URL = "https://control.tkslopper.test";
@@ -130,6 +131,7 @@ function createRuntime({ env = {}, fake = createFakeTkslopper() } = {}) {
     teacherPortalState: seededPortalState(),
     persistTeacherPortalState: async () => {},
     dnsLookup: async () => [{ address: "203.0.113.10", family: 4 }],
+    catalogueFetch: async () => new Response("", { status: 503 }),
     tkslopperFetch: fake.fetchImpl,
     tkslopperLogger: (record) => logs.push(record)
   });
@@ -516,4 +518,38 @@ test("errors: a malformed gateway answer is a generic 500, recorded as a failed 
   const usage = runtime.usageStore.getToday("cls_managed");
   assert.equal(usage.upstreamAttempts, 1);
   assert.equal(usage.failures, 1);
+});
+
+test("teacher and admin managed labels use approved metadata, fall back to alias, and keep routing unchanged", async () => {
+  const fake = createFakeTkslopper();
+  const originalFetch = fake.fetchImpl;
+  let metadata = { display_name: "Classroom Claude", provider: "anthropic", tier: "economy" };
+  let modelLookups = 0;
+  fake.fetchImpl = async (url, init) => {
+    if (url === `${GATEWAY_URL}/v1/models`) {
+      modelLookups++;
+      assert.equal(init.headers.Authorization, "Bearer grant-token-1");
+      return Response.json({ object: "list", data: [{ id: "text.chat.v1", ...metadata }] });
+    }
+    return originalFetch(url, init);
+  };
+  const { runtime } = createRuntime({ env: { ...TKSLOPPER_ENV, VIBBIT_TEACHER_DEV_LOGIN: "true" }, fake });
+  const adminRequest = () => new Request("https://example.test/admin", { headers: { "X-Vibbit-Admin-Token": ADMIN_TOKEN } });
+  const admin = await (await runtime.fetch(adminRequest())).text();
+  assert.match(admin, /Classroom Claude \(text.chat.v1\) · anthropic · economy/);
+  assert.doesNotMatch(admin, /grant-token|SyntheticSecret/);
+  const login = await followTeacherForm(runtime, "/teacher/dev-login", { email: "managed@school.edu" });
+  const teacher = await (await runtime.fetch(new Request("https://example.test/teacher", { headers: { Cookie: login.cookieHeader } }))).text();
+  assert.match(teacher, /Managed gateway: Classroom Claude \(text.chat.v1\) · anthropic · economy/);
+  assert.doesNotMatch(teacher, /grant-token|SyntheticSecret/);
+  metadata = {};
+  const oldServer = await (await runtime.fetch(adminRequest())).text();
+  assert.doesNotMatch(oldServer, /Classroom Claude/);
+  assert.match(oldServer, /Managed gateway model<\/div><div class="value">text.chat.v1/);
+  assert.equal(modelLookups, 3);
+  const managed = await connect(runtime, "MANAG");
+  assert.equal(managed.body.defaultModel, "text.chat.v1");
+  const result = await generate(runtime, managed.body.sessionToken);
+  assert.equal(result.response.status, 200);
+  assert.equal(fake.calls.inference[0].body.model, "text.chat.v1");
 });

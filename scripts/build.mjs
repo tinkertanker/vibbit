@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile, copyFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createModelCatalogue } from "../shared/model-catalogue.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +15,7 @@ const frogSvgPath = path.join(iconsSourceDir, "vibbit-frog.svg");
 const frogDataUriToken = "__VIBBIT_FROG_MARK_DATA_URI__";
 const byokHostPermissions = [
   "https://api.openai.com/*",
+  "https://api.anthropic.com/*",
   "https://generativelanguage.googleapis.com/*",
   "https://openrouter.ai/*",
   "https://opencode.ai/*"
@@ -72,6 +74,7 @@ function stripPageByokTransport(source) {
     startToken,
     "  const extensionOnlyProviderCall = () => Promise.reject(new Error(\"extension_broker_required\"));",
     "  const callOpenAI = extensionOnlyProviderCall;",
+    "  const callAnthropic = extensionOnlyProviderCall;",
     "  const callGemini = extensionOnlyProviderCall;",
     "  const callOpenRouter = extensionOnlyProviderCall;",
     "  const callOpenCode = extensionOnlyProviderCall;",
@@ -93,7 +96,8 @@ function replaceMarkedSection(source, name, replacement) {
 
 function stripHostedPageByokInternals(source) {
   let hosted = replaceMarkedSection(source, "PAGE_BYOK_CONFIG", [
-    "  const MODEL_PRESETS = { openai: [], gemini: [], openrouter: [], opencode: [] };",
+    "  const MODEL_PRESETS = { openai: [], anthropic: [], gemini: [], openrouter: [], opencode: [] };",
+    "  const modelCatalogue = { labelFor: (id, label) => label || id, trainsOnData: () => false };",
     "  const supportsThinkHarder = () => false;"
   ].join("\n"));
   hosted = replaceMarkedSection(hosted, "PAGE_BYOK_KEY_STATE", [
@@ -112,6 +116,8 @@ function assertExtensionCredentialBoundary(source) {
   const forbidden = [
     "https://api.openai.com/v1/responses",
     "https://api.openai.com/v1/chat/completions",
+    "https://api.anthropic.com/v1/messages",
+    "anthropic-dangerous-direct-browser-access",
     "https://generativelanguage.googleapis.com/v1beta/models/",
     "https://openrouter.ai/api/v1/chat/completions",
     "https://opencode.ai/zen/",
@@ -132,6 +138,8 @@ function assertHostedManagedRuntimeBoundary(source) {
     "__vibbit_extension_request_v2_",
     "vibbit:byok:",
     "memoryProviderKeys",
+    "gpt-6-luna",
+    "claude-haiku-5-5",
     "gpt-5.6-luna",
     "gemini-3-flash-preview",
     "deepseek/deepseek-v4-flash-0731",
@@ -158,6 +166,8 @@ async function build() {
   ]);
 
   let builtClient = rawClient.replace(userscriptHeaderPattern, "");
+  const catalogueOrigin = createModelCatalogue({ origin: process.env.VIBBIT_TKSLOPPER_GATEWAY_URL }).gatewayOrigin;
+  builtClient = overrideConst(builtClient, "TKSLOPPER_GATEWAY_ORIGIN", catalogueOrigin);
   const frogDataUri = svgToDataUri(frogSvgMarkup);
   builtClient = builtClient.replaceAll(frogDataUriToken, frogDataUri);
   const manifest = JSON.parse(rawManifest);
@@ -241,7 +251,10 @@ async function build() {
       copyFile(path.join(root, "extension", "provider-transport.mjs"), path.join(extensionModuleDir, "provider-transport.mjs")),
       copyFile(path.join(root, "extension", "page-bridge.js"), path.join(distDir, "page-bridge.js")),
       copyFile(path.join(root, "extension", "options.html"), path.join(distDir, "options.html")),
-      copyFile(path.join(root, "extension", "options.js"), path.join(distDir, "options.js")),
+      readFile(path.join(root, "extension", "options.js"), "utf8").then((source) => writeFile(
+        path.join(distDir, "options.js"), overrideConst(source, "TKSLOPPER_GATEWAY_ORIGIN", catalogueOrigin)
+      )),
+      copyFile(path.join(root, "shared", "model-catalogue.mjs"), path.join(sharedModuleDir, "model-catalogue.mjs")),
       copyFile(path.join(root, "shared", "makecode-compat-core.mjs"), path.join(sharedModuleDir, "makecode-compat-core.mjs"))
     );
   }

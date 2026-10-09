@@ -1,6 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createModelCatalogue } from "../../../shared/model-catalogue.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -110,6 +111,9 @@ async function run() {
     : String(process.env.VIBBIT_BACKEND || "").trim();
   const appTokenRaw = process.env.VIBBIT_APP_TOKEN;
   runtimeSource = overrideConst(runtimeSource, "BACKEND", backend);
+  runtimeSource = overrideConst(runtimeSource, "TKSLOPPER_GATEWAY_ORIGIN", createModelCatalogue({
+    origin: process.env.VIBBIT_TKSLOPPER_GATEWAY_URL
+  }).gatewayOrigin);
   if (appTokenRaw !== undefined) runtimeSource = overrideConst(runtimeSource, "APP_TOKEN", String(appTokenRaw));
 
   await rm(outputDir, { recursive: true, force: true });
