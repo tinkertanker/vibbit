@@ -49,6 +49,11 @@ Use changed surfaces to determine what may need shipping, not as automatic instr
 
 ## Publish the extension release — only when authorized
 
+The release workflow packages without an npm install or dependency cache: packaging uses Node
+built-ins, tracked sources, and the runner's `zip`, including checked-in icons (no `canvas` generation).
+There are no root install lifecycle hooks. This skips `npm ci`'s incidental package/lockfile validation;
+revisit the install step if packaging gains dependencies, required install hooks, or install-time generation.
+
 1. Integrate the verified release revision into `main` and push only with authorization for those
    operations. Do not merge unrelated work or assume local `main` equals `origin/main`.
 2. Create/push the approved release tag on the verified revision:
